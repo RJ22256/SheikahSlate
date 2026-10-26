@@ -67,15 +67,15 @@ jobs:
 
       - name: Dependencies (SDL3, shaderc, Vulkan headers, volk, VMA, DejaVu)
         if: steps.deps-cache.outputs.cache-hit != 'true'
-        run: bash android/deps/build_deps.sh
+        run: bash android/deps/build_deps.sh 2>&1 | tee "$RUNNER_TEMP/deps.log"
 
       - name: FFmpeg (the game's movies)
         if: steps.deps-cache.outputs.cache-hit != 'true'
-        run: bash android/deps/build_ffmpeg.sh
+        run: bash android/deps/build_ffmpeg.sh 2>&1 | tee "$RUNNER_TEMP/ffmpeg.log"
 
       - name: On-device game code builder (Python, capstone, unicorn, lz4, zig)
         if: steps.deps-cache.outputs.cache-hit != 'true'
-        run: bash android/deps/build_gen_deps.sh
+        run: bash android/deps/build_gen_deps.sh 2>&1 | tee "$RUNNER_TEMP/gen.log"
 
       - name: Save the built dependencies (kept even if the app's build fails)
         if: steps.deps-cache.outputs.cache-hit != 'true'
@@ -113,7 +113,7 @@ jobs:
         working-directory: android/sheikahslate
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease
+          ./gradlew --no-daemon assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"
           ls -la app/build/outputs/apk/release/
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk | head -3
 
@@ -125,6 +125,26 @@ jobs:
           cp android/sheikahslate/app/build/outputs/apk/release/app-release.apk "$N"
           sha256sum "$N"
           echo "name=$N" >> "$GITHUB_OUTPUT"
+
+      # (what the build made, as annotations on the run - readable where its logs aren't)
+      - name: APK report
+        run: |
+          BT=$ANDROID_HOME/build-tools/36.0.0
+          APK=${{ steps.apk.outputs.name }}
+          note() { printf '::notice title=%s::%s\n' "$1" "$(printf '%s' "$2" | sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g')"; }
+          note "APK" "$APK, $(du -m "$APK" | cut -f1) MB, sha256 $(sha256sum "$APK" | cut -c1-16)..."
+          note "Package" "$("$BT/aapt2" dump badging "$APK" | grep -E "^(package|sdkVersion|targetSdkVersion|application-label|native-code):")"
+          note "Manifest" "$("$BT/aapt2" dump xmltree --file AndroidManifest.xml "$APK" | grep -E "appCategory|screenOrientation|PROPERTY_COMPAT_ALLOW|resizeableActivity" | sed 's/^ *//' | head -12)"
+          note "Native libraries" "$(unzip -l "$APK" | awk '/lib\/arm64-v8a\//{printf "%s (%d KB)\n", $4, $1/1024}' | sed 's#lib/arm64-v8a/##')"
+          note "Assets" "$(unzip -l "$APK" | awk '/ assets\//{n++; s+=$1} END {printf "%d files, %d MB", n, s/1048576}')"
+          note "Signing" "$("$BT/apksigner" verify --print-certs "$APK" | grep -E "DN:|SHA-256")"
+
+      - name: Failure report
+        if: failure()
+        run: |
+          f=$(ls -t "$RUNNER_TEMP"/*.log 2>/dev/null | head -1)
+          [ -n "$f" ] || exit 0
+          printf '::error title=%s::%s\n' "$(basename "$f") (last lines)" "$(tail -40 "$f" | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
 
       - uses: actions/upload-artifact@v4
         with:
