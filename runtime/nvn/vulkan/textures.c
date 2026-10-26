@@ -811,6 +811,8 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (b->tp > 0) b->tp_gen = texpatch_generation();
     b->data_hash = h;
     b->uploaded = true;
+    extern uint64_t vk_sig_uploads;  // (exec.c vk_frame_check)
+    vk_sig_uploads++;
 #ifdef __ANDROID__
     if (b->format != mf.vf && !b->astc_bw && !b->bc_vf) return;  // unsupported format: nothing sensible to copy
 #else
@@ -1013,8 +1015,8 @@ VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uin
         if (e->b == b && e->k1 == k1 && e->k2 == k2) return e->view;
         if (!e->b) break;
     }
-    extern uint64_t prof_views_created;
-    prof_views_created++;
+    extern uint64_t prof_views_created, vk_sig_views;
+    prof_views_created++, vk_sig_views++;
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = b->image, .viewType = type,
                                 .format = fmt, .components = sw, .subresourceRange = {aspect, lv0, nlv, ly0, nly}};
     VkImageView v;
@@ -1089,6 +1091,20 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);
     }
     VkImageAspectFlags aspect = b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect;
+    if (fmt != b->format && b->gpu_owned) {  // (the frame check, exec.c: a target the GPU drew read in another format)
+        extern uint64_t vk_sig_sampled_fmtviews;
+        vk_sig_sampled_fmtviews++;
+        static uint64_t seen[24];
+        static int nlog;
+        uint64_t key = (uint64_t)t->format | (uint64_t)b->format << 12 | (uint64_t)fmt << 24 | (uint64_t)t->width << 36 | (uint64_t)t->height << 50;
+        int k = 0;
+        while (k < 24 && seen[k] && seen[k] != key) k++;
+        if (k < 24 && !seen[k] && nlog++ < 24) {
+            seen[k] = key;
+            LOG("[frame-check] frame %llu: target %ux%u nvn %#x (image format %d) sampled through a format %d view\n",
+                (unsigned long long)renderer_present_count(), t->width, t->height, t->format, b->format, fmt);
+        }
+    }
     {   // sampled formats the GPU can't filter (Maxwell filters them all): a linear sampler on them is undefined in Vulkan
         static uint8_t told[256];
         VkFormatProperties fp;

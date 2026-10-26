@@ -34,6 +34,12 @@ static uint64_t prof_dsw, prof_cbuf, prof_set_hits, prof_set_miss;  // (sets: dr
 static uint64_t prof_exec, prof_draw, prof_sets, prof_vtx, prof_submit, prof_pre, prof_key, prof_dyn, prof_tex, prof_up, prof_gpu;
 static VkQueryPool prof_qp;
 static uint64_t cum_exec, cum_wait, cum_draws, cum_submits;  // (profiling) never reset: hitch log
+// (the frame check, vk_frame_check: never reset - each presented frame's share is compared with the frames before it)
+static uint64_t sig_passes, sig_draws, sig_skipped, sig_splits, sig_pipes, sig_rt_fmtviews, sig_pipe_mismatch;
+uint64_t vk_sig_uploads, vk_sig_views, vk_sig_sampled_fmtviews;  // (textures.c: uploads, views made, RT read in another format)
+static int fc_lines;  // (its log lines: at most 120 a run)
+static uint32_t fc_epoch;  // (presents so far: TexBackend.drawn_epoch)
+#define FC_LOG(...) do { if (fc_lines < 120) { fc_lines++; LOG(__VA_ARGS__); } } while (0)
 #ifdef __ANDROID__
 uint64_t vk_cum_wait_ns(void) { return cum_wait; }  // (the performance overlay: time spent waiting on the GPU)
 #endif
@@ -112,6 +118,9 @@ static bool gwin_mode;    // (heap placed, larger than a storage buffer reaches:
 static VkSpan gc_span;    // this draw's / dispatch's copy, gc_size bytes (0: none)
 static uint64_t gc_size;
 static void gcopy_retire(uint64_t done);
+static void ga_flush_dirty(void);  // (the arena's CPU writes to the GPU, before a submission: non-coherent memory)
+static void ga_invalidate(const uint8_t *p, uint64_t len);  // (what the GPU wrote there, before the CPU reads it)
+static uint64_t stat_ga_flushes, stat_ga_flush_bytes;  // (renderer_stats)
 #endif
 
 void vk_wait_seq(uint64_t seq) {
@@ -716,6 +725,9 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     }
     vk_cmd();  // (an empty main buffer still carries the semaphores)
 #ifdef __ANDROID__
+    ga_flush_dirty();
+#endif
+#ifdef __ANDROID__
     if (vk_counter_mode() == 2 && cq[cur_sub].pool) {  // the submission's end (cq_resolve: the idle between submissions)
         vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, cq[cur_sub].pool, CQ_MAX + 1);
         pthread_mutex_lock(&cq_lock);
@@ -1199,6 +1211,14 @@ const char *renderer_stats(void) {
              atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (unsigned long long)stat_inplace_breaks, (double)stat_upload_bytes / 1048576.0,
              (unsigned long long)stat_pipe_binds, (unsigned long long)stat_set_binds);
     stat_feedback_copies = stat_feedback_reads = stat_inplace_breaks = stat_upload_bytes = stat_build_wait_ns = stat_pipe_binds = stat_set_binds = 0;
+#ifdef __ANDROID__
+    if (stat_ga_flushes) {  // (non-coherent arena memory: its flushes, ga_flush_dirty)
+        size_t l = strlen(stats_text);
+        snprintf(stats_text + l, sizeof stats_text - l, ", arena flushes %llu (%.1fMB)", (unsigned long long)stat_ga_flushes,
+                 stat_ga_flush_bytes / 1048576.0);
+        stat_ga_flushes = stat_ga_flush_bytes = 0;
+    }
+#endif
     if (getenv("LARECOMP_LOG_CBUF_BYTES")) {
         LOG("[cbuf] fixed %llu x %.1f KB, dynamic %llu x %.1f KB; copied %.1f MB\n", (unsigned long long)stat_cb_n[0],
             stat_cb_n[0] ? stat_cb_bytes[0] / 1024.0 / stat_cb_n[0] : 0, (unsigned long long)stat_cb_n[1],
@@ -1715,6 +1735,20 @@ static void begin_pass(void) {
         }
         pass_color[i] = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && vk_format(t->format) == b->format
                       ? vk_format(st.rt.cview[i].format) : b->format;
+        b->drawn_fmt = pass_color[i], b->drawn_epoch = fc_epoch;  // (the frame check: the present compares them)
+        if (pass_color[i] != b->format) {  // (each kind logged once)
+            sig_rt_fmtviews++;
+            static uint64_t seen[24];
+            uint64_t key = (uint64_t)t->format | (uint64_t)b->format << 12 | (uint64_t)pass_color[i] << 24 | (uint64_t)t->width << 36 |
+                           (uint64_t)t->height << 50;
+            int k = 0;
+            while (k < 24 && seen[k] && seen[k] != key) k++;
+            if (k < 24 && !seen[k]) {
+                seen[k] = key;
+                FC_LOG("[frame-check] frame %llu: target %ux%u nvn %#x (image format %d) drawn through a format %d view\n",
+                       (unsigned long long)renderer_present_count(), t->width, t->height, t->format, b->format, pass_color[i]);
+            }
+        }
         uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
         uint32_t ew = level_extent(b->width, lv), eh = level_extent(b->height, lv);
         if (wb_eligible(t, b, lv) && !(st.rt.has_cview[i] && ((st.rt.cview[i].setmask & ~3u) || st.rt.cview[i].min_layer)))
@@ -1785,7 +1819,7 @@ static void begin_pass(void) {
     in_pass = true;
     pass_written = 0;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
-    stat_passes++;
+    stat_passes++, sig_passes++;
 }
 
 static void pass_size(int *w, int *h) {
@@ -3658,6 +3692,7 @@ static void gcopy_retire(uint64_t done) {
     int k = 0;
     for (int i = 0; i < gc_nback; i++) {
         if (gc_back[i].seq <= done) {
+            ga_invalidate(gc_back[i].src, gc_back[i].len);  // (non-coherent arena memory: the GPU's bytes, not the cache's)
             if (!gc_back[i].shadow) {
                 memcpy((void *)(uintptr_t)gc_back[i].addr, gc_back[i].src, gc_back[i].len);
                 continue;
@@ -3712,6 +3747,39 @@ static int gres_state = -1;
 static uint64_t stat_gres_res, stat_gres_sync;  // (resident ranges used, CPU-changed bytes uploaded)
 static uint64_t stat_gres_fail[4];  // (fell back to the plain copies: 0 no entry/space, 1 table full, 2 ring, 3 too big)
 
+// Non-coherent arena memory (ga_noncoherent: Arm's Mali driver): the range the CPU wrote since the last submission,
+// flushed by vk_submit_extra; what the GPU wrote, invalidated before the CPU reads it. Everywhere else: nothing.
+static bool ga_noncoherent;
+static pthread_mutex_t ga_dirty_lock = PTHREAD_MUTEX_INITIALIZER;  // (the range: copies and submissions may be on two threads)
+static uint64_t ga_dirty_lo = ~0ull, ga_dirty_hi;
+static uint64_t stat_ga_flushes, stat_ga_flush_bytes;
+static void ga_flush_dirty_locked(void) {
+    if (ga_dirty_hi <= ga_dirty_lo) return;
+    vmaFlushAllocation(g_vk.vma, ga_mem, ga_dirty_lo, ga_dirty_hi - ga_dirty_lo);
+    stat_ga_flushes++, stat_ga_flush_bytes += ga_dirty_hi - ga_dirty_lo;
+    ga_dirty_lo = ~0ull, ga_dirty_hi = 0;
+}
+static void ga_flush_dirty(void) {
+    if (!ga_noncoherent) return;
+    pthread_mutex_lock(&ga_dirty_lock);
+    ga_flush_dirty_locked();
+    pthread_mutex_unlock(&ga_dirty_lock);
+}
+static void ga_dirty(uint64_t off, uint64_t len) {
+    if (!ga_noncoherent || !len) return;
+    pthread_mutex_lock(&ga_dirty_lock);
+    // (one range: a write far from it - the resident slots below GA_RES, the ring wrapping around - flushes what's
+    // pending first, so a submission's flush never covers megabytes the CPU didn't touch)
+    if (ga_dirty_hi > ga_dirty_lo && (off + len < ga_dirty_lo || off > ga_dirty_hi + (1u << 20))) ga_flush_dirty_locked();
+    if (off < ga_dirty_lo) ga_dirty_lo = off;
+    if (off + len > ga_dirty_hi) ga_dirty_hi = off + len;
+    pthread_mutex_unlock(&ga_dirty_lock);
+}
+static void ga_invalidate(const uint8_t *p, uint64_t len) {
+    if (!ga_noncoherent || !ga_ptr || p < ga_ptr || p + len > ga_ptr + GA_SIZE) return;  // (outside the arena: the ring)
+    vmaInvalidateAllocation(g_vk.vma, ga_mem, (uint64_t)(p - ga_ptr), len);
+}
+
 static bool gres_init(void) {
     if (gres_state >= 0) return gres_state;
     gres_state = 0;
@@ -3720,16 +3788,18 @@ static bool gres_init(void) {
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = GA_SIZE,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
-    // (coherent memory, cached where the GPU has such a type: the CPU writes the ranges draws read and reads back what
-    // shaders stored, with no flush or invalidate anywhere. Arm's Mali driver - the Galaxy Tab S10 Ultra - lists its
-    // cached type as not coherent (0xb): there the arena's CPU writes reached the GPU only when the CPU's cache happened
-    // to evict them, and the game's text - whose vertices come through here - lost letters. Its coherent type is the one
-    // the transient ring already uses.)
+    // (host-cached: the CPU compares and reads back what it holds. Arm's Mali driver - the Galaxy Tab S10 Ultra - has
+    // no cached type that is also coherent (0xb): there the CPU's writes reached the GPU only when its cache happened to
+    // evict them, and the game's text - whose vertices come through here - lost letters. Its coherent type is uncached,
+    // and the CPU's compares and read-backs from it halved the frame rate (26 -> 12 fps). So: cached, and where it isn't
+    // coherent the CPU's writes are flushed before each submission (ga_dirty / ga_flush_dirty, one range a submission)
+    // and what the GPU wrote is invalidated before the CPU reads it (ga_invalidate). LARECOMP_GA_COHERENT=1: a coherent
+    // type instead, as 0.1.9-slate.3 had.)
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
                                   .flags = (getenv("LARECOMP_GA_UNCACHED") ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
                                                                            : VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT) |
-                                           VMA_ALLOCATION_CREATE_MAPPED_BIT,  // (cached: read back; LARECOMP_GA_UNCACHED=1, a test)
-                                  .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+                                           VMA_ALLOCATION_CREATE_MAPPED_BIT};  // (cached: read back; LARECOMP_GA_UNCACHED=1, a test)
+    if (getenv("LARECOMP_GA_COHERENT")) ai.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     VmaAllocationInfo inf;
     if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &ga_buf, &ga_mem, &inf) != VK_SUCCESS || !inf.pMappedData) {
         LOG("[vk] global memory arena: not available\n");
@@ -3739,8 +3809,10 @@ static bool gres_init(void) {
     gres_state = 1;
     VkMemoryPropertyFlags gf;
     vmaGetMemoryTypeProperties(g_vk.vma, inf.memoryType, &gf);
-    LOG("[vk] global memory arena: %llu MB (what shaders store stays on the GPU), memory type %u (%#x: %scoherent)\n",
-        (unsigned long long)(GA_SIZE >> 20), inf.memoryType, (unsigned)gf, gf & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? "cached, " : "");
+    ga_noncoherent = !(gf & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    LOG("[vk] global memory arena: %llu MB (what shaders store stays on the GPU), memory type %u (%#x: %s%s)\n",
+        (unsigned long long)(GA_SIZE >> 20), inf.memoryType, (unsigned)gf, gf & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? "cached, " : "",
+        ga_noncoherent ? "not coherent - flushed and invalidated" : "coherent");
     return true;
 }
 
@@ -3822,6 +3894,7 @@ static GaRes *gres_get(uint64_t lo, uint64_t hi, bool create) {
     ga_res_top += (len + 255) & ~255ull;
     memcpy(shadow, g, len);
     memcpy(ga_ptr + n->off, g, len);  // (a new slot: nothing on the GPU uses it yet)
+    ga_dirty(n->off, len);
     if (no) {  // the overlapped slots may hold the GPU's results: into the new one, in GPU order
         VkCommandBuffer cb = vk_cmd();
         vk_full_barrier(cb);
@@ -3887,6 +3960,7 @@ static uint64_t ga_load_copy(uint64_t at, uint64_t size) {
     uint64_t off = ga_ring(size);
     if (off == ~0ull) return off;
     memcpy(ga_ptr + off, src, size);
+    ga_dirty(off, size);
     cache[slot].at = at; cache[slot].size = size; cache[slot].off = off;
     cache[slot].seq = seq; cache[slot].gen = gcopy_gen; cache[slot].valid = true;
     return off;
@@ -3916,6 +3990,7 @@ static bool gres_prepare(const GcRange *r, int m, bool store) {
             static int logit = -1;
             if (logit < 0) logit = getenv("LARECOMP_GMISS") != NULL;
             uint32_t *w = (uint32_t *)(ga_ptr + (uint64_t)GMISS_WORD * 4);
+            ga_invalidate((const uint8_t *)w, 4096);  // (the shaders' records)
             uint32_t cnt = __atomic_load_n(&w[0], __ATOMIC_RELAXED);
             if (cnt) {
                 char b[1024];
@@ -3932,6 +4007,7 @@ static bool gres_prepare(const GcRange *r, int m, bool store) {
                 }
                 if (logit) LOG("[gmiss] frame %llu: %u accesses outside the tables, at:%s\n", (unsigned long long)last_frame, cnt, b);
                 w[0] = 0;
+                ga_dirty((uint64_t)GMISS_WORD * 4, 64);
             }
         }
     }
@@ -4746,7 +4822,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
                     (unsigned long long)st.sbuf[5][i].size);
     }
     CsProg *cp = compute_program(st.program);
-    if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
+    if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++, sig_skipped++; return; }
     {   // LARECOMP_SKIP_CS=<code address hex>[,...] (debug): skip those compute shaders' dispatches, to see what they do;
         // "store": every one that stores to global memory
         static uint64_t skip[16];
@@ -4758,9 +4834,9 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
             else
                 for (; e && *e && nskip < 16; e += *e == ',') skip[nskip++] = strtoull(e, (char **)&e, 16);
         }
-        if (skip_store && cp->si->uses_gmem_store) { stat_skipped++; return; }
+        if (skip_store && cp->si->uses_gmem_store) { stat_skipped++, sig_skipped++; return; }
         for (int i = 0; i < nskip; i++)
-            if (st.program->stages[5].code_addr == skip[i]) { stat_skipped++; return; }
+            if (st.program->stages[5].code_addr == skip[i]) { stat_skipped++, sig_skipped++; return; }
     }
     if (cp->si->uses_gmem && getenv("LARECOMP_LOG_CS_SBUF")) {  // (debug) the storage buffers bound to gmem dispatches
         static uint64_t seen_cs[16];
@@ -4846,7 +4922,7 @@ static void draw(CmdRec *r, bool indexed) {
 static uint64_t prof_tp_;
 static void draw_(CmdRec *r, bool indexed) {
     if (prof) prof_tp_ = SDL_GetTicksNS();
-    if (!st.program) { stat_skipped++; return; }
+    if (!st.program) { stat_skipped++, sig_skipped++; return; }
     ShaderKey vkey = {0}, fkey = {0};
     vkey.glsl = fkey.glsl = 1;
     vkey.flip_y = fkey.flip_y = nvn_window_origin() == 0;
@@ -4880,7 +4956,7 @@ static void draw_(CmdRec *r, bool indexed) {
         keep = kkeep;
     }
     if (pr && keep) wait_built(&pr->state);
-    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++, sig_skipped++; return; }
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
         static uint64_t last_fs, last_hash;
         uint64_t fs = st.program->stages[1].code_addr;
@@ -4913,7 +4989,7 @@ static void draw_(CmdRec *r, bool indexed) {
                 while (*p == ',' || *p == '+') p++;
             }
         }
-        for (int i = 0; i < nskip; i++) if (last_hash == skip[i]) { stat_skipped++; return; }
+        for (int i = 0; i < nskip; i++) if (last_hash == skip[i]) { stat_skipped++, sig_skipped++; return; }
         if (g_debug_frame && getenv("LARECOMP_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
         g_cur_fs_hash = last_hash;
         {   // Widescreen: a menu's layout pane that shows a picture of the world (the blurred world behind the pause
@@ -5116,7 +5192,7 @@ static void draw_(CmdRec *r, bool indexed) {
     VkPrimitiveTopology topo;
     uint8_t cls;
     bool native = topology(mode, &topo, &cls);
-    if (!native && mode != 6 && mode != 7 && mode != 9) { stat_skipped++; return; }
+    if (!native && mode != 6 && mode != 7 && mode != 9) { stat_skipped++, sig_skipped++; return; }
     VkBool32 pre = st.prim_restart && native && (mode == 3 || mode == 5);
     uint8_t pre_key = !g_vk.eds2 && pre;  // (no extended dynamic state 2: in the pipeline, PipeKey.prim_restart)
 
@@ -5266,6 +5342,7 @@ static void draw_(CmdRec *r, bool indexed) {
         while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (PIPE_TAB - 1);
         pp = pipe_tab[pslot].pipe;
         if (!pp) {
+            sig_pipes++;
             pp = calloc(1, sizeof *pp);
             pp->k = k;
             pipe_tab[pslot].key = ph;
@@ -5280,10 +5357,16 @@ static void draw_(CmdRec *r, bool indexed) {
         last_pipeline = pp;
         pipeline_dirty = false;
     }
+    if (pp->k.ncolor != pass_ncolor || memcmp(pp->k.color, pass_color, sizeof pp->k.color)) {  // (the frame check)
+        sig_pipe_mismatch++;
+        FC_LOG("[frame-check] frame %llu: a pipeline made for %u targets (format %d, %d) drew into %u (format %d, %d)%s\n",
+               (unsigned long long)renderer_present_count(), pp->k.ncolor, pp->k.color[0], pp->k.color[1], pass_ncolor,
+               pass_color[0], pass_color[1], hit ? " (reused)" : "");
+    }
     if (keep) wait_built(&pp->state);
     if (atomic_load(&pp->state) != 1) {
         if (g_debug_frame) LOG("[draw]   skipped: pipeline %s\n", atomic_load(&pp->state) ? "failed" : "still building");
-        stat_skipped++;
+        stat_skipped++, sig_skipped++;
         return;
     }
     ss_enabled();
@@ -5548,7 +5631,7 @@ static void draw_(CmdRec *r, bool indexed) {
     if (!use_index) vkCmdDraw(cb, count, inst, first, base_inst);
     else vkCmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
     pass_written |= draw_writes(pr);
-    stat_draws++;
+    stat_draws++, sig_draws++;
     cum_draws++;
     if (g_gpuprof_frame && gp_n) {
         if (!gp_draws[gp_n - 1]) {  // first draw of the row: its fragment shader hash
@@ -6289,6 +6372,52 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
     vkCmdSetViewport(cb, 0, 1, &full);
 }
 
+// ---- the frame check (Sheikah Slate): what each presented frame did, against the steady frames before it.
+// A menu draws the same thing every frame. On the Galaxy Tab S10 Ultra about one frame in a hundred of the "Load save
+// data?" screen came out with the final image's 10-bit pixels shown as 8-bit ones (rainbow bands over everything, one
+// frame, every ~3.5 s). A frame whose work differs from 30+ identical frames before it is logged with its counts (and
+// the frame after it), as are targets drawn or read through a view of another format, pipelines made for other targets
+// and a presented image not drawn since the last present or last drawn in another format - so a log taken while it
+// happens shows what those frames do differently. Cheap counters only. LARECOMP_FRAME_CHECK=0: off.
+enum { FC_PASSES, FC_DRAWS, FC_SKIPPED, FC_SPLITS, FC_PIPES, FC_UPLOADS, FC_VIEWS, FC_RTFMT, FC_SMPFMT, FC_MISMATCH,
+       FC_IMG_FMT, FC_IMG_STALE, FC_COMPARED, FC_SUBMITS = FC_COMPARED, FC_N };  // (submissions vary by timing: not compared)
+void vk_frame_check(NvnTexture *t, TexBackend *b) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_FRAME_CHECK");
+        on = !e || atoi(e) != 0;
+        if (on) LOG("[frame-check] on: frames unlike the steady ones before them are logged (at most 120 lines)\n");
+    }
+    fc_epoch++;
+    if (!on) return;
+    static uint64_t last[FC_N];
+    const uint64_t now[FC_N] = {sig_passes, sig_draws, sig_skipped, sig_splits, sig_pipes, vk_sig_uploads, vk_sig_views,
+                                sig_rt_fmtviews, vk_sig_sampled_fmtviews, sig_pipe_mismatch, 0, 0, cum_submits};
+    uint32_t d[FC_N];
+    for (int i = 0; i < FC_N; i++) d[i] = (uint32_t)(now[i] - last[i]), last[i] = now[i];
+    // (the presented image: last drawn through a view of another format / not drawn since the last present)
+    d[FC_IMG_FMT] = b && b->drawn_fmt && b->drawn_fmt != b->format;
+    d[FC_IMG_STALE] = b && b->drawn_epoch + 1 != fc_epoch;
+    uint64_t frame = renderer_present_count();
+    static uint32_t steady[FC_N];
+    static int nsteady, after;
+    bool same = !memcmp(d, steady, FC_COMPARED * sizeof *d);
+    if (!same && (nsteady >= 30 || after))
+        FC_LOG("[frame-check] frame %llu%s: passes %u, draws %u (skipped %u), submissions %u (split %u), new pipelines %u, "
+               "uploads %u, new views %u, targets drawn / read in another format %u / %u, pipeline-target mismatches %u; "
+               "presented %ux%u format %d, %s%s | the %d frames before: passes %u, draws %u, submissions %u, uploads %u, "
+               "views %u\n",
+               (unsigned long long)frame, after && nsteady < 30 ? " (the one after)" : "", d[FC_PASSES], d[FC_DRAWS],
+               d[FC_SKIPPED], d[FC_SUBMITS], d[FC_SPLITS], d[FC_PIPES], d[FC_UPLOADS], d[FC_VIEWS], d[FC_RTFMT], d[FC_SMPFMT],
+               d[FC_MISMATCH], b ? b->width : 0, b ? b->height : 0, b ? (int)b->format : 0,
+               !b ? "no image" : d[FC_IMG_STALE] ? "not drawn since the last present" : "drawn this frame",
+               d[FC_IMG_FMT] ? " (last through a view of another format)" : "", nsteady,
+               steady[FC_PASSES], steady[FC_DRAWS], steady[FC_SUBMITS], steady[FC_UPLOADS], steady[FC_VIEWS]);
+    if (same) nsteady++, after = 0;
+    else after = nsteady >= 30, nsteady = 1, memcpy(steady, d, sizeof d);
+    (void)t;
+}
+
 // Screenshot of a game texture (presented crop applied to build/frame_* shots), via the present shader into RGBA8.
 // (debug frame, LARECOMP_DEBUG_RAW_PASSES=1) a color target's texels as they are, level 0 / layer 0: <path>.raw, its
 // Vulkan format and size in the log - the PNGs clip HDR values at 1
@@ -6411,8 +6540,10 @@ static void split_long_pass(void) {
     extern bool vk_async_on(void);
     static unsigned n;  // (the clock every 32 draws: a clock read per draw showed up in the profile)
     if (split > 0 && in_pass && !(++n & 31) && vk_ab("split") != 1 && vk_async_on() && last_submit_ns &&
-        SDL_GetTicksNS() - last_submit_ns > (uint64_t)split * 1000)
+        SDL_GetTicksNS() - last_submit_ns > (uint64_t)split * 1000) {
+        sig_splits++;
         renderer_submit();
+    }
 #endif
 }
 

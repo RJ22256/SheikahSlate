@@ -126,6 +126,8 @@ typedef struct TexBackend {
     int tp;              // runtime/nvn/texpatch.c: 0 not checked yet, -1 none, else known UI texture + 1
     uint32_t tp_gen;     // texpatch_generation() it was last uploaded with
     int reg;  // slot in textures.c's live list + 1 (a reboot destroys them all)
+    VkFormat drawn_fmt;  // the format of the view its last pass drew through (exec.c begin_pass: the frame check)
+    uint32_t drawn_epoch;  // (the frame check: the present it was last drawn into before - exec.c fc_epoch)
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)

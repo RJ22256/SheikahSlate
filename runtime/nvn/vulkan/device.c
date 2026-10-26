@@ -1265,6 +1265,8 @@ void backend_present(NvnTexture *t) {
     g_last_presented = t;
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
+    extern void vk_frame_check(NvnTexture *t, TexBackend *b);  // (exec.c: frames unlike the steady ones, logged)
+    vk_frame_check(t, b);
     vk_end_pass();
     static const float black[4] = {0, 0, 0, 1};
     uint64_t t0 = SDL_GetTicksNS();

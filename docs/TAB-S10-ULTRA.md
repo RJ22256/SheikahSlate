@@ -179,6 +179,36 @@ drawn into a font's glyph cache could miss every sampled byte, leaving blanks un
 The engine's per-pass GPU timer (`LARECOMP_GPUPROF_AT`, adb only) from the menu: three frames, about 10 seconds after
 pressing it, into the log as `[gpuprof]` rows - where this GPU's time goes, for the next optimizations.
 
+## Update 4 (0.1.9-slate.4): speed back, and a check for the menu flash
+
+The Update 3 log: the text right, but the world at 12-15 fps (Update 2: ~26) with the GPU busy only ~27 ms a frame -
+the CPU had become the limit. Coherent memory on this driver is also **uncached**, and the CPU reads the arena back
+(what shaders stored, compared and copied out every draw): those reads crawled.
+
+### 15. The arena cached again, flushed and invalidated by hand (`exec.c` ga_dirty / ga_flush_dirty / ga_invalidate)
+
+The arena takes the cached type again (type 1 here) and, where it is not coherent, keeps it right explicitly: every CPU
+write into it (a resident range copied in, a range loaded for a draw, the miss log reset) widens one dirty range, flushed
+once just before each submission; what the GPU wrote is invalidated before the CPU reads it (the stores read back for
+the game, the shaders' miss log). One flush a submission instead of uncached writes and reads everywhere. The log's
+arena line says "not coherent - flushed and invalidated", and the fps lines add `arena flushes N (X MB)`.
+`LARECOMP_GA_COHERENT=1` (adb) brings back Update 3's coherent arena for comparison.
+
+### 16. The frame check (`exec.c` vk_frame_check): what the menu flash is
+
+The video of the "Load save data?" screen: one frame every ~3.5 s (107 frames apart) shows the whole game image in
+rainbow contour bands, then it's back. Decoded: that frame shows the final image's **10-bit pixels (RGB10A2, the menu's
+target) read as 8-bit RGBA** - re-encoding a normal frame that way reproduces the flash almost pixel for pixel (mean
+error 48 against 94 for the frame unchanged; 8-bit read as 10-bit: 85). The on-screen controls and the FPS overlay,
+drawn after the game's image, stay clean. The code paths that could do that were read and ruled out (pipeline keys,
+render-target and texture views, the view / descriptor-set / texture caches, copy aliases, write-backs, texture
+copies, the scene upscaler, slot rewrites), so this update logs it instead of guessing: a frame whose work differs
+from 30+ identical frames before it is logged with its counts (passes, draws, submissions and mid-pass splits, new
+pipelines and views, uploads, targets drawn or read through a view of another format, pipelines made for other
+targets, and whether the presented image was drawn this frame and through which format) - plus each kind of format
+mismatch once. In a menu, the flash frames stand out by frame number. `[frame-check]` in the log; at most 120 lines
+a run; `LARECOMP_FRAME_CHECK=0` turns it off.
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep
