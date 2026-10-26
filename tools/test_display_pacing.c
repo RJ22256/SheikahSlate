@@ -29,6 +29,7 @@ typedef struct {
     bool ignore_desired;           // a compositor that ignores the asked-for times
     bool pace;                     // ask for times (else only measure)
     bool no_earliest;              // the system doesn't report the earliest times
+    double report_offset;          // the system reports present times this much later than the frames went up (ns)
     int frames;
 } Sim;
 
@@ -58,8 +59,9 @@ static void run(const Sim *s, Result *res) {
         if (s->spike_every > 0 && urand() < 1.0 / s->spike_every) g += s->spike_ns;
         // the records available by this present
         while (next_feedback < i && avail_at[next_feedback] <= q) {
-            dp_feedback(&res->p, (uint32_t)next_feedback, (uint64_t)shown_at[next_feedback],
-                        s->no_earliest ? 0 : (uint64_t)earliest_at[next_feedback]);
+            double off = shown_at[next_feedback] ? s->report_offset : 0;
+            dp_feedback(&res->p, (uint32_t)next_feedback, (uint64_t)(shown_at[next_feedback] + off),
+                        s->no_earliest ? 0 : (uint64_t)(earliest_at[next_feedback] + off));
             next_feedback++;
         }
         uint64_t desired = dp_desired(&res->p, (uint32_t)i, (uint64_t)q, 1e9 / 30, s->pace);
@@ -183,6 +185,22 @@ int main(void) {
     run(&s, &r);
     report("120 Hz, times ignored", &s, &r);
     expect(fabs(share(&r, 4) - ign_unpaced) < 0.02, "times ignored: the same as unpaced");
+
+    // 6b. A system that reports present times a refresh late (or 2 ms late, or a refresh early): still even, and the
+    // grid doesn't run away.
+    {
+        double offs[] = {1e9 / 120.0, 2e6, -1e9 / 120.0};
+        const char *names[] = {"120 Hz, times reported +1 refresh", "120 Hz, times reported +2 ms", "120 Hz, times reported -1 refresh"};
+        for (int k = 0; k < 3; k++) {
+            s = base;
+            s.report_offset = offs[k];
+            s.pace = true;
+            run(&s, &r);
+            report(names[k], &s, &r);
+            expect(share(&r, 4) >= 0.97, "an offset in the reported times: 97% at 4 refreshes");
+            expect(r.latency_sum / r.total < 50e6, "an offset in the reported times: latency stays under 50 ms");
+        }
+    }
 
     // 7. No refresh period from the system: no times asked, no crash.
     s = base;

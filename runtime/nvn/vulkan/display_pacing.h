@@ -19,7 +19,10 @@ typedef struct {
     uint32_t gen;           // the grid's generation: frames are judged only against the grid they were aimed with
     uint32_t anchor_id;     // the frame the slots count from
     double anchor_t;        // its slot (a refresh, ns on CLOCK_MONOTONIC)
-    int late_run, early_run;  // aimed frames in a row shown a refresh or more after / before their slot
+    int late_run;           // frames in a row presented after their slot had gone by (dp_desired)
+    int nrun;               // aimed frames in a row shown half a refresh or more off their slot, the same way: how far
+    double run_err[4];
+    double bias;            // a steady offset between when the system says frames went up and when they were asked for
     int tight_n;            // aimed frames in a row on their slots, and of them the least spare (could have gone up
     double tight_min;       // that much earlier: the system's earliest time): a refresh or more over 300 - a slot earlier
     bool have_last;
@@ -28,7 +31,7 @@ typedef struct {
     struct { uint32_t id, gen; uint64_t desired; } sent[DP_SENT];  // the last frames' requests, by id
     // since dp_stats_take:
     uint32_t shown[9];      // frames by how long the one before stayed up: [k] k refreshes (1..7), [8] longer, [0] other
-    uint32_t aimed, on_time, late, early, regrids, ahead, missing, tightened;
+    uint32_t aimed, on_time, late, early, regrids, ahead, missing, tightened, offsets;
 } DPace;
 
 // A new swapchain or refresh rate: everything learnt starts again. nominal_ns 0: unknown (no pacing).
