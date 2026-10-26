@@ -307,6 +307,47 @@ the vertex cache, the arena, the process's resident memory and what the system h
 - The constant-buffer copies shared across a frame's submissions (#19) measured ~3 MB of ~510 MB every 2 s: per
   submission again by default (`LARECOMP_GCOPY_PER_FRAME=1`: per frame).
 
+## Update 8 (0.1.9-slate.8): even frame pacing, and what the next GPU savings need
+
+The Update 7 log: 30 fps nearly throughout (29-30.3 in 2-second readings), the resolution at its top (1440x810)
+except half-second dips to 1152x648 every 5-10 s - the game then waiting on the GPU (113-186 ms per 2 s, against 3-30
+when steady). The CPU had room (the busiest threads 64% of a core, clusters at 1.0-1.6 GHz); the GPU took ~25-28 ms of
+the 33 ms frame at full resolution. Nothing here trades image quality for speed (no 40 fps mode at a lower resolution,
+no 16-bit upscaler maths, no lossy texture conversion).
+
+### 25. Video > Even frame pacing (`device.c`, `display_pacing.c`)
+
+At 30 fps on the 120 Hz panel a frame should stay up for 4 refreshes. It went up at the first refresh after the GPU
+finished it, and that time varies by several milliseconds, so frames stayed up for 3, 4 or 5 refreshes (25-42 ms) at a
+steady 30 - in a simulation with frames ready 15-30 ms after their grid time (`tools/test_display_pacing.c`) only ~56%
+of frames got 4. Now each present carries an id and a time it asks not to go up before (`VK_GOOGLE_display_timing`,
+Android's own swapchain): a slot of its own on a grid of refreshes learnt from when earlier frames really went up, one
+refresh of slack. The game's frame grid (`framepace.c`) runs at 4 of the panel's measured refreshes rather than 1/30 s
+of our clock. In the simulation: 100% of frames at 4 refreshes (99% with a slow GPU frame in 40), ~10 ms more latency.
+**Automatic** (on where the system reports present times), **On**, **Off** (as before). The fps line now says how long
+frames stayed up: `on screen 4x 98% (3x 1.0%, 5x 1.0%), paced: ... late N, early N, regrids N` - early frames mean the
+system ignores the asked-for times. `LARECOMP_EVEN_PACING=0/1`, `LARECOMP_NO_DISPLAY_TIMING=1`.
+
+### 26. What the next GPU savings need
+
+- **Pass breaks** (the stats line's `breaks`, ~1 a frame in some places): the first 40 different reasons a draw ended
+  its pass to read a target it draws, `[vk] pass break N: fs ... slot ... - why` (`exec.c` tile_read_why, break_note).
+- **The heaviest small passes' shaders**: one draw into a 200x112 target took 3.3 ms. The capture now logs the
+  fragment shader of its three heaviest passes of 1-4 draws (0.5 ms or more), with what they sample, as `[glsl]` lines
+  (`exec.c` gp_dump_shaders; six a run at most).
+- **Textures by format** (`[gpumem] textures by format`): the decoded BC textures by kind (BC1 is decoded to 8x its
+  size), the ASTC ones, the rest - to see what a lossless or near-lossless conversion would save.
+
+### 27. The profiler names more, and who called
+
+- Each sample keeps the link register and three frames of return addresses (frame pointers, read with
+  `process_vm_readv` so a bad pointer can't fault): per thread, `libc called from:` puts its libc / vDSO time (locks,
+  system calls, memcpy, clock reads) down to the runtime or game function that called.
+- Places are named from each module's dynamic symbols with their sizes (dladdr named any address after an exported
+  function by it - `libc.so!syscall` may have been other code), libc's string functions by the implementation chosen,
+  and the game's code as `botwgame.so!f_<address>` (its own addresses: 0x7000000000 + offset in main).
+- CI also commits the runtime's symbols to the branch `symbols` (`libmain-<commit>.txt`).
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep

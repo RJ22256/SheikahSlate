@@ -916,16 +916,32 @@ void plat_adpf_stats(PlatAdpfStats *out) {
 // (libmain.so: the HLE, the renderer), libc, the GPU driver and the rest, and its hottest places (a dynamic symbol
 // when one is near, else module + offset - libmain.so's symbolized from the CI build's libmain-symbols.txt).
 // Binder, ART and other system threads are measured but not sampled. LARECOMP_NO_THREAD_SAMPLING=1: off.
+// Update 8: each sample also keeps where it was called from - the link register, then return addresses up the frame
+// pointer chain, read with process_vm_readv (an unmapped address is an error, not a fault) - so time in libc (locks,
+// system calls, memcpy) is put down to the runtime or game code that called it ("called from"); places are named from
+// the modules' own dynamic symbol tables with their sizes (an address past a function's end is module + offset, not
+// the nearest exported name before it, as dladdr gave), and libc's string functions by the implementation dlsym picks.
+#include <link.h>
+#include <sys/uio.h>
 #define TS_MAX 256  // (the game has well over 64 threads: Update 6's 64 left the render thread out)
 #define TS_RING 32768
+#define TS_DEPTH 4  // (the link register and three frames up)
 static struct { int tid; timer_t timer; bool sampled; char name[20]; uint64_t cpu0, cpu1; } ts_thr[TS_MAX];
 static int ts_n;
 static _Atomic uint32_t ts_head;
 static uint64_t ts_pc[TS_RING];
+static uint64_t ts_ra[TS_RING][TS_DEPTH];
 static uint16_t ts_who[TS_RING];
 static volatile sig_atomic_t ts_on;
 static _Atomic int ts_busy;
 static struct sigaction ts_prev;
+static pid_t ts_pid;
+
+static uint64_t ts_strip(uint64_t a) { return a & 0x0000FFFFFFFFFFFFull; }  // (pointer authentication's bits off)
+static bool ts_read16(uint64_t addr, uint64_t out[2]) {  // (async-signal-safe; a bad address fails instead of faulting)
+    struct iovec l = {out, 16}, r = {(void *)(uintptr_t)addr, 16};
+    return process_vm_readv(ts_pid, &l, 1, &r, 1, 0) == 16;
+}
 
 static void ts_handler(int sig, siginfo_t *si, void *ctx) {
     if (!ts_on || !ctx) {  // (between captures: whoever had SIGPROF before - a late signal must not reach SIG_DFL, which kills)
@@ -934,16 +950,176 @@ static void ts_handler(int sig, siginfo_t *si, void *ctx) {
             ts_prev.sa_handler(sig);
         return;
     }
+    int saved_errno = errno;
     ucontext_t *uc = ctx;
+    uint64_t ra[TS_DEPTH] = {0};
 #if defined(__aarch64__)
-    uint64_t pc = uc->uc_mcontext.pc;
+    uint64_t pc = uc->uc_mcontext.pc, fp = uc->uc_mcontext.regs[29], sp = uc->uc_mcontext.sp;
+    ra[0] = ts_strip(uc->uc_mcontext.regs[30]);
 #elif defined(__x86_64__)
-    uint64_t pc = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+    uint64_t pc = (uint64_t)uc->uc_mcontext.gregs[REG_RIP], fp = (uint64_t)uc->uc_mcontext.gregs[REG_RBP];
+    uint64_t sp = (uint64_t)uc->uc_mcontext.gregs[REG_RSP];
+    {   uint64_t w[2];  // (no link register: the word at the stack pointer - a frameless leaf's return address; desktop test)
+        if (ts_read16(sp, w)) ra[0] = w[0];
+    }
 #else
-    uint64_t pc = 0;
+    uint64_t pc = 0, fp = 0, sp = 0;
 #endif
+    for (int d = 1; d < TS_DEPTH; d++) {  // (frame records {previous fp, return address}, up the stack)
+        uint64_t rec[2];
+        if (fp < sp || fp - sp > (1u << 20) || (fp & 7) || !ts_read16(fp, rec)) break;
+        ra[d] = ts_strip(rec[1]);
+        if (rec[0] <= fp) break;
+        fp = rec[0];
+    }
     uint32_t i = atomic_fetch_add_explicit(&ts_head, 1, memory_order_relaxed);
-    if (i < TS_RING) ts_pc[i] = pc, ts_who[i] = (uint16_t)si->si_value.sival_int;
+    if (i < TS_RING) {
+        ts_pc[i] = pc, ts_who[i] = (uint16_t)si->si_value.sival_int;
+        for (int d = 0; d < TS_DEPTH; d++) ts_ra[i][d] = ra[d];
+    }
+    errno = saved_errno;
+}
+
+// ---- naming places (the report, after the capture): the loaded modules and their dynamic symbols, by address
+typedef struct { uint64_t lo, hi; const char *name; } TsSym;  // (offsets in the module)
+typedef struct { uint64_t lo, hi, bias; char name[48]; int kind; TsSym *sym; int nsym; } TsMod;
+static TsMod ts_mods[128];
+static int ts_nmods;
+
+static int ts_sym_cmp(const void *a, const void *b) {
+    const TsSym *x = a, *y = b;
+    return x->lo < y->lo ? -1 : x->lo > y->lo;
+}
+
+static uint32_t ts_gnu_count(const uint32_t *gh, const TsMod *m) {  // (symbols in a DT_GNU_HASH table: the last chain's end)
+    uint32_t nb = gh[0], off = gh[1], bloom = gh[2];
+    const uint32_t *buckets = gh + 4 + bloom * (sizeof(ElfW(Addr)) / 4), *chain = buckets + nb;
+    uint32_t last = 0;
+    for (uint32_t b = 0; b < nb; b++) if (buckets[b] > last) last = buckets[b];
+    if (last < off) return off;
+    while ((uint64_t)(uintptr_t)&chain[last - off] < m->hi && !(chain[last - off] & 1)) last++;
+    return last + 1;
+}
+
+static int ts_mod_cb(struct dl_phdr_info *info, size_t size, void *data) {
+    (void)size, (void)data;
+    if (ts_nmods >= 128) return 1;
+    TsMod *m = &ts_mods[ts_nmods];
+    memset(m, 0, sizeof *m);
+    m->bias = info->dlpi_addr;
+    m->lo = UINT64_MAX;
+    const ElfW(Dyn) *dyn = NULL;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        if (ph->p_type == PT_LOAD) {
+            uint64_t a = info->dlpi_addr + ph->p_vaddr;
+            if (a < m->lo) m->lo = a;
+            if (a + ph->p_memsz > m->hi) m->hi = a + ph->p_memsz;
+        } else if (ph->p_type == PT_DYNAMIC) {
+            dyn = (const ElfW(Dyn) *)(uintptr_t)(info->dlpi_addr + ph->p_vaddr);
+        }
+    }
+    if (m->lo >= m->hi) return 0;
+    const char *n = info->dlpi_name && *info->dlpi_name ? info->dlpi_name : "(main)";
+    snprintf(m->name, sizeof m->name, "%s", strrchr(n, '/') ? strrchr(n, '/') + 1 : n);
+    m->kind = strstr(m->name, "botwgame") ? 0 : !strcmp(m->name, "libmain.so") ? 1 : !strncmp(m->name, "libc.", 5) ? 2
+            : (strstr(m->name, "mali") || strstr(m->name, "GLES") || strstr(m->name, "vulkan") || strstr(m->name, "gpu")) ? 3 : 4;
+    const ElfW(Sym) *sym = NULL;
+    const char *str = NULL;
+    const uint32_t *hash = NULL, *gnu = NULL;
+    for (const ElfW(Dyn) *d = dyn; d && d->d_tag != DT_NULL; d++) {
+        uint64_t p = d->d_un.d_ptr;
+        if (p && p < m->bias) p += m->bias;  // (bionic leaves them as in the file; glibc relocates them)
+        if (p < m->lo || p >= m->hi) continue;
+        if (d->d_tag == DT_SYMTAB) sym = (const ElfW(Sym) *)(uintptr_t)p;
+        else if (d->d_tag == DT_STRTAB) str = (const char *)(uintptr_t)p;
+        else if (d->d_tag == DT_HASH) hash = (const uint32_t *)(uintptr_t)p;
+        else if (d->d_tag == DT_GNU_HASH) gnu = (const uint32_t *)(uintptr_t)p;
+    }
+    uint32_t count = !sym || !str ? 0 : hash ? hash[1] : gnu ? ts_gnu_count(gnu, m) : 0;
+    if (count > 1000000) count = 0;
+    if (count) m->sym = malloc(count * sizeof *m->sym);
+    for (uint32_t i = 0; m->sym && i < count; i++) {
+        const ElfW(Sym) *e = &sym[i];
+        if ((uint64_t)(uintptr_t)(e + 1) > m->hi) break;
+        if (ELF64_ST_TYPE(e->st_info) != STT_FUNC || !e->st_shndx || !e->st_size || !e->st_value) continue;
+        m->sym[m->nsym++] = (TsSym){e->st_value, e->st_value + e->st_size, str + e->st_name};
+    }
+    ts_nmods++;
+    return 0;
+}
+
+static void ts_mods_load(void) {
+    for (int i = 0; i < ts_nmods; i++) free(ts_mods[i].sym);
+    ts_nmods = 0;
+    dl_iterate_phdr(ts_mod_cb, NULL);
+    // libc's string functions: the implementation each resolves to (ifuncs: the dynamic symbol is the resolver)
+    static const char *const ifn[] = {"memcpy", "memmove", "memset", "memcmp", "memchr", "strlen", "strnlen", "strcmp",
+                                      "strncmp", "strchr", "strrchr", "strcpy", "stpcpy", "strncpy", "__memcpy_chk",
+                                      "__memset_chk", "__memmove_chk", "wmemset", "bcmp"};
+    for (int k = 0; k < ts_nmods; k++) {
+        TsMod *m = &ts_mods[k];
+        if (m->kind == 2 && m->nsym) {
+            TsSym *grown = realloc(m->sym, (size_t)(m->nsym + 32) * sizeof *m->sym);
+            if (grown) {
+                m->sym = grown;
+                for (size_t i = 0; i < sizeof ifn / sizeof *ifn; i++) {
+                    void *a = dlsym(RTLD_DEFAULT, ifn[i]);
+                    uint64_t off = (uint64_t)(uintptr_t)a - m->bias;
+                    if (!a || (uint64_t)(uintptr_t)a < m->lo || (uint64_t)(uintptr_t)a >= m->hi) continue;
+                    bool have = false;  // (an exported function already: its own size)
+                    for (int j = 0; j < m->nsym && !have; j++) have = m->sym[j].lo == off;
+                    if (!have) m->sym[m->nsym++] = (TsSym){off, off + 0x800, ifn[i]};  // (its length unknown: 2 KB at most)
+                }
+            }
+        }
+        if (m->nsym) qsort(m->sym, (size_t)m->nsym, sizeof *m->sym, ts_sym_cmp);
+        for (int j = 0; j + 1 < m->nsym; j++)  // (an estimated length ends where the next function starts)
+            if (m->sym[j].hi > m->sym[j + 1].lo && m->sym[j].hi - m->sym[j].lo == 0x800) m->sym[j].hi = m->sym[j + 1].lo;
+    }
+}
+
+// (dispatch.c: a host address in the game code -> "f_<guest address>" of the recompiled function holding it; weak: the
+// desktop test has none)
+extern const char *rt_host_fn_name(uint64_t pc, uint64_t *offset) __attribute__((weak));
+extern uint64_t g_guest_lo __attribute__((weak));
+
+// pc -> "module!function" or "module+offset" (64-byte steps) - the game's code as "botwgame.so!f_<address>", the
+// recompiled guest function by the game's own addresses (0x7000000000 + its offset in main, as framepace.c's notes); its
+// module's kind: 0 game, 1 runtime, 2 libc, 3 GPU driver, 4 other, 5 unknown
+static int ts_name(uint64_t pc, char *key, size_t size) {
+    for (int k = 0; k < ts_nmods; k++) {
+        const TsMod *m = &ts_mods[k];
+        if (pc < m->lo || pc >= m->hi) continue;
+        uint64_t off = pc - m->bias;
+        if (m->kind == 0 && rt_host_fn_name && &g_guest_lo) {
+            uint64_t fo;
+            const char *f = rt_host_fn_name(pc, &fo);
+            unsigned long long ga = 0;
+            if (f && sscanf(f, "f_%llx", &ga) == 1 && ga >= g_guest_lo) {
+                snprintf(key, size, "%s!f_%llx", m->name, ga - g_guest_lo + 0x7000000000ull);
+                return 0;
+            }
+        }
+        int lo = 0, hi = m->nsym - 1, at = -1;
+        while (lo <= hi) {  // (the last function starting at or before it)
+            int mid = (lo + hi) / 2;
+            if (m->sym[mid].lo <= off) at = mid, lo = mid + 1;
+            else hi = mid - 1;
+        }
+        for (int j = at; j >= 0 && j > at - 8; j--)
+            if (off < m->sym[j].hi) { snprintf(key, size, "%s!%s", m->name, m->sym[j].name); return m->kind; }
+        snprintf(key, size, "%s+%#llx", m->name, (unsigned long long)(off & ~0x3Full));
+        return m->kind;
+    }
+    snprintf(key, size, "%#llx", (unsigned long long)(pc & ~0xFFFull));
+    return 5;
+}
+
+static int ts_kind(uint64_t pc) {
+    for (int k = 0; k < ts_nmods; k++)
+        if (pc >= ts_mods[k].lo && pc < ts_mods[k].hi) return strstr(ts_mods[k].name, "vdso") ? 2 : ts_mods[k].kind;
+    return 5;
 }
 
 static clockid_t ts_clock(int tid) { return (clockid_t)((~(unsigned)tid << 3) | 6); }  // (MAKE_THREAD_CPUCLOCK(tid, SCHED))
@@ -984,7 +1160,8 @@ static void *ts_report(void *arg) {
             if (ts_thr[order[j]].cpu1 - ts_thr[order[j]].cpu0 > ts_thr[order[i]].cpu1 - ts_thr[order[i]].cpu0) { int t = order[i]; order[i] = order[j]; order[j] = t; }
     LOG("[threadprof] %.1f s, %u samples (1 per ms of a thread's CPU time); presenting thread %d, render thread %d, "
         "write-tracking faults so far %llu\n", wall, total, s_presenting_tid, s_render_tid, (unsigned long long)plat_wt_faults());
-    static TsHot hot[512];
+    static TsHot hot[512], from[256];
+    ts_mods_load();
     for (int r = 0; r < ts_n && r < 14; r++) {
         int i = order[r];
         double pct = (ts_thr[i].cpu1 - ts_thr[i].cpu0) / 1e9 / wall * 100;
@@ -992,32 +1169,32 @@ static void *ts_report(void *arg) {
         char tag[32] = "";
         if (ts_thr[i].tid == s_presenting_tid) strcpy(tag, " (presents frames)");
         else if (ts_thr[i].tid == s_render_tid) strcpy(tag, " (renderer)");
-        int nh = 0;
-        uint32_t mod[6] = {0}, n = 0;  // game, runtime, libc, driver, other, unknown
+        int nh = 0, nf = 0;
+        uint32_t mod[6] = {0}, n = 0, nlibc = 0;  // game, runtime, libc, driver, other, unknown
         for (uint32_t k = 0; k < total; k++) {
             if (ts_who[k] != i) continue;
             n++;
-            Dl_info di;
-            const char *base = "?";
             char key[96];
-            int m = 5;
-            if (dladdr((void *)(uintptr_t)ts_pc[k], &di) && di.dli_fname) {
-                base = strrchr(di.dli_fname, '/') ? strrchr(di.dli_fname, '/') + 1 : di.dli_fname;
-                m = strstr(base, "botwgame") ? 0 : !strcmp(base, "libmain.so") ? 1 : !strncmp(base, "libc.", 5) ? 2
-                  : (strstr(base, "mali") || strstr(base, "GLES") || strstr(base, "vulkan") || strstr(base, "gpu")) ? 3 : 4;
-                uint64_t off = ts_pc[k] - (uint64_t)(uintptr_t)di.dli_fbase;
-                if (di.dli_sname && di.dli_saddr && ts_pc[k] - (uint64_t)(uintptr_t)di.dli_saddr < 0x4000)
-                    snprintf(key, sizeof key, "%s!%s", base, di.dli_sname);
-                else
-                    snprintf(key, sizeof key, "%s+%#llx", base, (unsigned long long)(off & ~0x3Full));
-            } else {
-                snprintf(key, sizeof key, "%#llx", (unsigned long long)(ts_pc[k] & ~0xFFFull));
-            }
+            int m = ts_name(ts_pc[k], key, sizeof key);
             mod[m]++;
             int h = 0;
             while (h < nh && strcmp(hot[h].key, key)) h++;
             if (h == nh && nh < 512) { snprintf(hot[nh].key, sizeof hot[nh].key, "%s", key); hot[nh++].n = 0; }
             if (h < nh) hot[h].n++;
+            if (ts_kind(ts_pc[k]) != 2) continue;
+            // (in libc or the vDSO: the first caller outside them - the runtime's or the game's code that asked)
+            nlibc++;
+            int d = 0;
+            while (d < TS_DEPTH && ts_ra[k][d] && ts_kind(ts_ra[k][d]) == 2) d++;
+            if (d < TS_DEPTH && ts_ra[k][d]) {
+                ts_name(ts_ra[k][d] - 4, key, sizeof key);  // (the call instruction, before the return address)
+            } else {
+                snprintf(key, sizeof key, "(not found)");
+            }
+            h = 0;
+            while (h < nf && strcmp(from[h].key, key)) h++;
+            if (h == nf && nf < 256) { snprintf(from[nf].key, sizeof from[nf].key, "%s", key); from[nf++].n = 0; }
+            if (h < nf) from[h].n++;
         }
         if (!ts_thr[i].sampled || !n) {
             LOG("[threadprof] %s tid %d%s: %.0f%% of a core (not sampled)\n", ts_thr[i].name, ts_thr[i].tid, tag, pct);
@@ -1032,6 +1209,13 @@ static void *ts_report(void *arg) {
         for (int h = 0; h < nh && h < 24 && hot[h].n * 200 >= n; h++)  // (each at least 0.5%)
             o += snprintf(line + o, sizeof line - (size_t)o, "%s %s %.1f%%", h ? "," : "", hot[h].key, hot[h].n * 100.0 / n);
         if (o) LOG("[threadprof]   hottest:%s\n", line);
+        if (nlibc * 50 >= n) {  // (2% or more of its time in libc / the vDSO: who called)
+            qsort(from, (size_t)nf, sizeof *from, ts_hot_cmp);
+            o = 0;
+            for (int h = 0; h < nf && h < 16 && from[h].n * 200 >= n; h++)
+                o += snprintf(line + o, sizeof line - (size_t)o, "%s %s %.1f%%", h ? "," : "", from[h].key, from[h].n * 100.0 / n);
+            if (o) LOG("[threadprof]   libc called from:%s\n", line);
+        }
     }
     {   // (the clusters' clocks at the end: whether the big cores ran fast)
         PlatDeviceStats st;
@@ -1047,6 +1231,7 @@ static void *ts_report(void *arg) {
 
 void plat_thread_sample(int ms) {
     if (getenv("LARECOMP_NO_THREAD_SAMPLING") || atomic_exchange(&ts_busy, 1)) return;
+    ts_pid = getpid();
     ts_n = 0;
     atomic_store(&ts_head, 0);
     struct sigaction sa;

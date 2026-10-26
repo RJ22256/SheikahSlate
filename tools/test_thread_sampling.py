@@ -2,8 +2,9 @@
 """The performance capture's thread sampler (runtime/platform/android.c plat_thread_sample) on the desktop: cut out of
 the file, built with stubs for the rest of the runtime, run against two busy threads (one in a loop of its own, one
 in memcpy) and a sleeping one for 1 s. Checks the report names the busy threads with most of a core each, finds the
-loop and memcpy among their hottest places, leaves the sleeper unsampled-idle, and that the process survives signals
-arriving after the capture. Usage: python3 tools/test_thread_sampling.py [cc]   (Linux)"""
+loop and memcpy (libc's implementation, by name) among their hottest places, puts the libc time down to the function
+that called memcpy, leaves the sleeper unsampled-idle, and that the process survives signals arriving after the
+capture. Usage: python3 tools/test_thread_sampling.py [cc]   (Linux)"""
 from pathlib import Path
 import subprocess
 import sys
@@ -42,7 +43,7 @@ __attribute__((noinline)) void busy_loop_here(void) {
     for (;;) x = x * 6364136223846793005ull + 1442695040888963407ull;
 }
 static void *spin(void *a) { (void)a; s_presenting_tid = (int32_t)syscall(SYS_gettid); busy_loop_here(); return NULL; }
-static void *copier(void *a) {
+void *copier(void *a) {  // (exported: named in the report, as libmain.so's functions are)
     (void)a;
     s_render_tid = (int32_t)syscall(SYS_gettid);
     static char x[1 << 20], y[1 << 20];
@@ -92,6 +93,9 @@ check(bool(gm) and int(re.search(r'(\d+)% of a core', gm[0]).group(1)) >= 70, 't
 check(bool(rd) and int(re.search(r'(\d+)% of a core', rd[0]).group(1)) >= 70, 'the copying thread: most of a core')
 check(any('busy_loop_here' in l for l in lines), 'the spinning thread\'s loop among its hottest places')
 check(bool(rd) and float(re.search(r'libc (\d+)%', rd[0]).group(1)) >= 50, 'the copying thread: mostly in libc')
+check(any('hottest' in l and re.search(r'libc\.so[.0-9]*!memcpy', l) for l in lines), 'memcpy named (the implementation libc picked)')
+called = [l for l in lines if 'libc called from' in l]
+check(bool(called) and 'copier' in called[0], 'the libc time put down to its caller (copier)')
 check(not any('sleeper' in l and 'of a core' in l for l in lines), 'the sleeping thread under 2%: not listed')
 check(any('(presents frames)' in l for l in lines) and any('(renderer)' in l for l in lines), 'the presenting / render threads tagged')
 print('all passed' if not fails else f'{fails} FAILED')

@@ -689,6 +689,10 @@ static int gp_n;
 #endif
 static char gp_label[GP_MAX][112];
 static uint32_t gp_draws[GP_MAX];
+// (a row's first draw: its fragment shader, and what it draws with - the report's shader dumps)
+static const ShaderInfo *gp_fi[GP_MAX];
+static uint64_t gp_fs_code[GP_MAX];
+static char gp_what[GP_MAX][160];
 // LARECOMP_VK_DEVLOST_TRACE=1: the last 64 GPU operations, dumped on device loss (with LARECOMP_SYNC_SUBMIT=1 the
 // dump ends with the command list that faulted).
 static char dl_ring[64][128];
@@ -721,7 +725,41 @@ static void gp_mark(VkCommandBuffer cb, const char *fmt, ...) {
     vsnprintf(gp_label[gp_n], sizeof gp_label[0], fmt, ap);
     va_end(ap);
     gp_draws[gp_n] = 0;
+    gp_fi[gp_n] = NULL;
+    gp_what[gp_n][0] = 0;
     gp_n++;
+}
+
+// The capture's heaviest small passes (1-4 draws, 0.5 ms or more): their fragment shader's text into the log, three a
+// capture and six a run at most, each once - what makes a few draws into a small target take milliseconds.
+static void gp_dump_shaders(const uint64_t *t, double per) {
+    static uint64_t dumped[6];
+    static int ndumped;
+    for (int pick = 0; pick < 3 && ndumped < 6; pick++) {
+        int best = -1;
+        double best_ms = 0.5;
+        for (int i = 0; i + 1 < gp_n; i++) {
+            if (!gp_fi[i] || !gp_fi[i]->msl || gp_draws[i] < 1 || gp_draws[i] > 4) continue;
+            double ms = (t[i + 1] - t[i]) * per;
+            bool seen = false;
+            for (int k = 0; k < ndumped; k++) seen |= dumped[k] == gp_fs_code[i];
+            if (!seen && ms > best_ms) best_ms = ms, best = i;
+        }
+        if (best < 0) return;
+        dumped[ndumped++] = gp_fs_code[best];
+        const char *src = gp_fi[best]->msl;
+        int lines = 0;
+        for (const char *q = src; *q; q++) lines += *q == '\n';
+        LOG("[gpuprof] shader of a heavy pass (%.3f ms): fs %llx, %s; %s; %d lines%s\n", best_ms,
+            (unsigned long long)gp_fs_code[best], gp_label[best], gp_what[best], lines, lines > 600 ? " (the first 600)" : "");
+        int n = 0;
+        for (const char *q = src; *q && n < 600; n++) {
+            const char *e = strchr(q, '\n');
+            int len = e ? (int)(e - q) : (int)strlen(q);
+            LOG("[glsl] %.*s%s\n", len > 400 ? 400 : len, q, len > 400 ? " ..." : "");
+            q += len + (e ? 1 : 0);
+        }
+    }
 }
 void renderer_flush(void);
 void vk_gpuprof_report(void) {
@@ -737,6 +775,7 @@ void vk_gpuprof_report(void) {
             if (gp_draws[i]) LOG(", %u draws\n", gp_draws[i]);
         }
         LOG("[gpuprof] (last mark: %s)\n", gp_label[gp_n - 1]);
+        gp_dump_shaders(t, per);
     }
     gp_n = 0;
 }
@@ -1324,6 +1363,11 @@ const char *renderer_stats(void) {
         snprintf(stats_text + l, sizeof stats_text - l, ", arena flushes %llu (%.1fMB)", (unsigned long long)stat_ga_flushes,
                  stat_ga_flush_bytes / 1048576.0);
         stat_ga_flushes = stat_ga_flush_bytes = 0;
+    }
+    {   // (device.c even frame pacing: how long frames stayed up on screen, in refreshes)
+        extern void vk_display_stats(char *out, size_t size);
+        size_t l = strlen(stats_text);
+        vk_display_stats(stats_text + l, sizeof stats_text - l);
     }
 #endif
     if (getenv("LARECOMP_LOG_CBUF_BYTES")) {
@@ -3065,28 +3109,36 @@ static VkShaderModule tile_fs(Prog *p, int n, const uint8_t *slot, const uint8_t
 }
 
 // Fragment texture slot i of this draw, a target of its pass: read on the tile? (the sampled side; the attachment
-// side - which colour slot, in its own format - is settled after begin_pass, draw_)
-static bool tile_read_ok(Prog *pr, int i, const NvnTexEntry *e) {
+// side - which colour slot, in its own format - is settled after begin_pass, draw_). NULL: yes; else why not (a
+// literal: break_note).
+static const char *tile_read_why(Prog *pr, int i, const NvnTexEntry *e) {
     static int off = -1;
     if (off < 0) off = getenv("LARECOMP_NO_TILE_READS") != NULL;
-    if (off || !g_vk.tile_image || i >= 64) return false;
+    if (off || !g_vk.tile_image) return "on-tile reads off";
+    if (i >= 64) return "texture slot over 63";
     const ShaderTexture *st_ = &pr->fi->tex[i];
-    if (st_->type != TEXTYPE_2D || st_->shadow || st_->is_image || st_->is_array) return false;
+    if (st_->is_image) return "a storage image";
+    if (st_->shadow) return "a depth-compare sampler";
+    if (st_->is_array) return "an array sampler";
+    if (st_->type != TEXTYPE_2D) return "not a 2D sampler";
     NvnTexture *t = e->tex;
     TexBackend *b = t ? t->backend : NULL;
-    if (!b || !b->image || b->samples != 1 || b->aspect != VK_IMAGE_ASPECT_COLOR_BIT || b->base_type != VK_IMAGE_VIEW_TYPE_2D ||
-        b->layers != 1 || rt_kind(t->format) != 0 || vk_format_alpha_one(t->format))
-        return false;
+    if (!b || !b->image) return "no image yet";
+    if (b->samples != 1) return "multisampled";
+    if (b->aspect != VK_IMAGE_ASPECT_COLOR_BIT) return "depth / stencil";
+    if (b->base_type != VK_IMAGE_VIEW_TYPE_2D || b->layers != 1) return "a layered image";
+    if (rt_kind(t->format) != 0) return "an integer format";
+    if (vk_format_alpha_one(t->format)) return "a format read with alpha 1";
     if (e->has_view) {
         const NvnTextureView *v = &e->view;
-        if ((v->setmask & 4) && vk_format(v->format) != b->format) return false;  // (read in another format)
-        if ((v->setmask & 1) && v->base_level) return false;
-        if ((v->setmask & 2) && v->min_layer) return false;
+        if ((v->setmask & 4) && vk_format(v->format) != b->format) return "read in another format";
+        if ((v->setmask & 1) && v->base_level) return "a mip level other than 0";
+        if ((v->setmask & 2) && v->min_layer) return "a layer other than 0";
     }
     const uint8_t *sw = e->has_view && (e->view.setmask & 8) ? e->view.swizzle : t->swizzle;
     for (int c = 0; c < 4; c++) {
         uint8_t v = sw[c] <= 5 ? sw[c] : (uint8_t)(2 + c);
-        if (v && v != 2 + c) return false;  // (a swizzle: the tile's value would come back unswizzled)
+        if (v && v != 2 + c) return "swizzled";  // (the tile's value would come back unswizzled)
     }
     uint64_t bit = 1ull << i;
     if (!(pr->tile_tried & bit)) {  // (the shader's lookups of that slot: some the rewrite takes)
@@ -3094,7 +3146,23 @@ static bool tile_read_ok(Prog *pr, int i, const NvnTexEntry *e) {
         if (pr->fi->msl && tile_rename(pr->fi->msl, 1, &sl, NULL) > 0) pr->tile_ok |= bit;
         pr->tile_tried |= bit;
     }
-    return (pr->tile_ok & bit) != 0;
+    return (pr->tile_ok & bit) ? NULL : "lookups the rewrite doesn't take (not at the pixel's own centre)";
+}
+
+// A draw ended its pass to read a target the pass draws (the in-place path: the read sees what the pass stored): the
+// first 40 different (shader, slot, reason)s, for the on-tile reads to take next. LARECOMP_LOG_BREAKS=n: n of them.
+static void break_note(const Prog *pr, int sg, int slot, const NvnTexture *t, const char *why) {
+    static int max = -1;
+    if (max < 0) max = getenv("LARECOMP_LOG_BREAKS") ? atoi(getenv("LARECOMP_LOG_BREAKS")) : 40;
+    static struct { uint64_t code; int slot; const char *why; } seen[256];
+    static int n;
+    uint64_t code = pr->code[sg ? 1 : 0];
+    for (int k = 0; k < n; k++) if (seen[k].code == code && seen[k].slot == slot && seen[k].why == why) return;
+    if (n >= max || n >= 256) return;
+    seen[n].code = code, seen[n].slot = slot, seen[n].why = why;
+    n++;
+    LOG("[vk] pass break %d: %s %llx texture slot %d reads a target the pass draws (%ux%u, format %#x) - %s\n", n,
+        sg ? "fs" : "vs", (unsigned long long)code, slot, t ? t->width : 0, t ? t->height : 0, t ? t->format : 0, why);
 }
 
 // This draw's on-tile reads: resolve_feedback's requests; after begin_pass, the colour slots they read (draw_)
@@ -3516,8 +3584,9 @@ static void resolve_feedback(Prog *pr) {
                 }
                 extern int vk_ab(const char *what);
                 // (on-tile reads: a colour target read by the fragment shader at its own pixel, no pass end)
+                const char *tw = NULL;  // (why not on the tile: break_note)
                 if (!g_inplace_copy && sg == 1 && bit && bit < 1u << 8 && ntileread < 4 && vk_ab("copy") != 1 &&
-                    tile_read_ok(pr, i, e)) {
+                    !(tw = tile_read_why(pr, i, e))) {
                     tileread_slot[ntileread] = (uint8_t)i;
                     tileread_tex[ntileread++] = t;
                     stat_tile_reads++;
@@ -3527,7 +3596,11 @@ static void resolve_feedback(Prog *pr) {
                     int si = -1;
                     for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
                     if (si < 0 || !snap_ok[si]) {
-                        if (in_pass && !st.rt_dirty && (pass_written & bit)) st.rt_dirty = true, stat_inplace_breaks++;
+                        if (in_pass && !st.rt_dirty && (pass_written & bit)) {
+                            st.rt_dirty = true, stat_inplace_breaks++;
+                            break_note(pr, sg, i, t, sg != 1 ? "read by the vertex shader" : ntileread >= 4 ? "a fifth on-tile read"
+                                                     : tw ? tw : "an A/B test");
+                        }
                         if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
                         snap_ok[si] = true;
                         snap_fb_dirty[si] = false;
@@ -5625,6 +5698,14 @@ static void draw_(CmdRec *r, bool indexed) {
             loc = k;
         }
         if (loc < 0) {  // (not bound so: as the in-place path, the pass ends - the read sees the target's memory)
+            const char *why = "not bound as one of the pass's targets";
+            for (int k = 0; k < st.rt.ncolor; k++) {
+                if (st.rt.color[k] != t) continue;
+                why = ((pass_dup_null >> k) & 1) ? "bound in two colour slots" : !tb || pass_color[k] != tb->format
+                      ? "bound as a target in another format" : "a mip level or layer bound as the target";
+                break;
+            }
+            break_note(pr, 1, tileread_slot[j], t, why);
             cur_ntl = 0;
             st.rt_dirty = true, stat_inplace_breaks++;
             begin_pass();
@@ -6089,6 +6170,17 @@ static void draw_(CmdRec *r, bool indexed) {
         if (!gp_draws[gp_n - 1]) {  // first draw of the row: its fragment shader hash
             size_t l = strlen(gp_label[gp_n - 1]);
             snprintf(gp_label[gp_n - 1] + l, sizeof gp_label[0] - l, ", first fs %016llx", (unsigned long long)g_cur_fs_hash);
+            int k = gp_n - 1;  // (and for the report's shader dumps: the shader, its draw, what it samples)
+            gp_fi[k] = pr->fi;
+            gp_fs_code[k] = pr->code[1];
+            int w = snprintf(gp_what[k], sizeof gp_what[0], "%u %s x%u, viewport %.0fx%.0f, samples", use_index ? icount : count,
+                             use_index ? "indices" : "vertices", inst, st.viewport[0][2], st.viewport[0][3]);
+            for (int i = 0; i < pr->fi->ntex && i < 6 && w > 0 && w < (int)sizeof gp_what[0]; i++) {
+                NvnTexture *tx = shader_texture_object(1, &pr->fi->tex[i]);
+                w += snprintf(gp_what[k] + w, sizeof gp_what[0] - (size_t)w, " %ux%u/%#x%s", tx ? tx->width : 0, tx ? tx->height : 0,
+                              tx ? tx->format : 0, tx && tx->levels > 1 ? "m" : "");
+            }
+            if (!pr->fi->ntex && w > 0 && w < (int)sizeof gp_what[0]) snprintf(gp_what[k] + w, sizeof gp_what[0] - (size_t)w, " nothing");
         }
         gp_draws[gp_n - 1]++;
 #ifdef __ANDROID__
@@ -6846,6 +6938,12 @@ void vk_memory_report(void) {
         "transient ring %d x 64 MB %.0f MB, vertex cache %.0f MB, arena %d MB | process %u MB, system available %u MB\n",
         used / 1048576.0, budget / 1048576.0, nrt, rt / 1048576.0, ntex, tex / 1048576.0, nbc, bc / 1048576.0, nchunks,
         ring / 1048576.0, vc_bytes / 1048576.0, ga_ptr ? (int)(GA_SIZE >> 20) : 0, ds.rss_mb, ds.avail_mb);
+    {
+        extern int vk_texture_memory_formats(char *out, size_t size);
+        char fm[512];
+        vk_texture_memory_formats(fm, sizeof fm);
+        LOG("[gpumem] textures by format: %s\n", fm);
+    }
 #else
     LOG("[gpumem] %.0f MB in use: render targets %d %.0f MB, textures %d %.0f MB, transient ring %.0f MB\n", used / 1048576.0,
         nrt, rt / 1048576.0, ntex, tex / 1048576.0, ring / 1048576.0);

@@ -51,6 +51,10 @@ typedef struct {
                           // reads as its frame's GPU time. 0 steadied (the median of the last 9 frames: a hitch no longer
                           // drops it several steps), 1 hold sharp (20 ms: its highest), 2 hold low (40 ms: its lowest),
                           // 3 as the game does (upstream's). ini: game_resolution = steady | sharp | low | game
+    int even_pacing;      // Video > Even frame pacing (vulkan/device.c, display_pacing.c): each frame aimed at a refresh of
+                          // its own, the same number of refreshes apart (4 at 30 fps on 120 Hz) - not the first refresh
+                          // after the GPU finishes it. -1 Automatic (on where the system reports present times), 1 on,
+                          // 0 off (frames go up as soon as they're ready, as before). ini: even_pacing = auto | on | off
     // Driver compatibility (the start screen's Settings > Prelaunch, ui/launcher.mm; from LASRecompAndroid), for GPUs
     // where a Turnip path draws wrong: read when the game starts (gpu_heap, inplace_reads) or when the app starts
     // (turnip_lrz, log_file). -1 Automatic: on for the Adreno 8xx GPUs these paths were made on, off elsewhere

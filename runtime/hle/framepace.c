@@ -108,9 +108,23 @@ int framepace_target(void) {
 // takes 1/30 of a minute times the step each frame).
 #define FPS_CEILING 300
 
+#ifdef __ANDROID__
+// (Sheikah Slate) on the display's own refresh: 4 of the panel's real refreshes at 30 fps on 120 Hz rather than 1/30 s of
+// our clock, the two drift apart a little - with Video > Even frame pacing (vulkan/device.c), which aims each frame at a
+// refresh of its own; the period itself otherwise
+extern uint64_t vk_display_frame_period(uint64_t period_ns);
+#endif
+static int g_fps_now = -1;  // (the last target, for the render thread: framepace_current_fps)
+int framepace_current_fps(void) { return __atomic_load_n(&g_fps_now, __ATOMIC_RELAXED); }
+
 uint64_t framepace_period_ns(void) {
     int fps = framepace_target();
-    return 1000000000ull / (uint64_t)(fps > 0 ? fps : FPS_CEILING);
+    __atomic_store_n(&g_fps_now, fps, __ATOMIC_RELAXED);
+    uint64_t period = 1000000000ull / (uint64_t)(fps > 0 ? fps : FPS_CEILING);
+#ifdef __ANDROID__
+    if (fps > 0) period = vk_display_frame_period(period);
+#endif
+    return period;
 }
 
 // The frame loop's vsync wait: the present keeps the pace instead (1: skipped; 0: the game's own wait).

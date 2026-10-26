@@ -14,6 +14,7 @@
 #include "vk.h"
 #include "timing_trace.h"
 #include "device_compat.h"
+#include "display_pacing.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -544,6 +545,10 @@ static void create_device(void) {
     // (Before the map extensions below: they are taken off the end again when unusable.) LARECOMP_NO_TILE_IMAGE=1: not.
     g_vk.tile_image = has_ext(ep, ne, VK_EXT_SHADER_TILE_IMAGE_EXTENSION_NAME) && !getenv("LARECOMP_NO_TILE_IMAGE");
     if (g_vk.tile_image) ext[n_ext++] = VK_EXT_SHADER_TILE_IMAGE_EXTENSION_NAME;
+    // (Sheikah Slate) VK_GOOGLE_display_timing - Android's own swapchain has it on every driver: when each present
+    // went up on screen, and a time to ask for (even frame pacing, below). LARECOMP_NO_DISPLAY_TIMING=1: not.
+    g_vk.display_timing = has_ext(ep, ne, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) && !getenv("LARECOMP_NO_DISPLAY_TIMING");
+    if (g_vk.display_timing) ext[n_ext++] = VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME;
     // the guest heap as GPU memory mapped at its own address (exec.c vk_heap_place; Turnip has it)
     g_vk.map_placed = has_ext(ep, ne, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
     if (g_vk.map_placed) {
@@ -914,6 +919,90 @@ static VkPresentModeKHR present_mode(void) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+#ifdef __ANDROID__
+// ---- even frame pacing (Sheikah Slate; display_pacing.c). Each present carries an id and, with Video > Even frame
+// pacing, the time it asks not to go up before: a refresh of its own, the same number of refreshes after the frame
+// before (4 at 30 fps on the 120 Hz panel), from the times the system reports the earlier frames went up
+// (VK_GOOGLE_display_timing, implemented by Android's swapchain on every driver). A frame then stays up for 4 refreshes
+// rather than 3, 4 or 5 by when the GPU happened to finish it. Measured either way: the stats line's "on screen".
+static DPace g_dp;
+static uint32_t g_present_id;
+static uint64_t g_dp_refresh_ps;  // (the refined refresh period, picoseconds, for the game's frame grid; 0: none)
+static uint32_t g_dp_presents;    // (presents on this swapchain: the system's period asked again every 240)
+static bool g_dp_aiming;          // (the last present asked for a time)
+
+static bool even_pacing_on(void) {
+    static int env = -2;  // LARECOMP_EVEN_PACING=0 / 1: instead of the setting
+    if (env == -2) { const char *e = getenv("LARECOMP_EVEN_PACING"); env = e ? atoi(e) != 0 : -1; }
+    int v = env >= 0 ? env : g_settings.even_pacing;
+    return g_vk.display_timing && v != 0;
+}
+
+// hle/framepace.c: the game's frame period on the display's refresh grid while frames are paced to it
+uint64_t vk_display_frame_period(uint64_t period_ns) {
+    uint64_t ps = __atomic_load_n(&g_dp_refresh_ps, __ATOMIC_RELAXED);
+    if (!ps || !even_pacing_on()) return period_ns;
+    return (uint64_t)(dp_locked_period(ps / 1000.0, (double)period_ns) + 0.5);
+}
+
+static double dp_query_refresh(void) {
+    VkRefreshCycleDurationGOOGLE rc = {0};
+    if (!vkGetRefreshCycleDurationGOOGLE || vkGetRefreshCycleDurationGOOGLE(g_vk.dev, g_vk.swapchain, &rc) != VK_SUCCESS) return 0;
+    double r = (double)rc.refreshDuration;
+    return r >= 4e6 && r <= 50e6 ? r : 0;  // (250 to 20 Hz: else not a figure to pace by)
+}
+
+static void dp_swapchain_created(void) {
+    if (!g_vk.display_timing || !g_vk.swapchain) return;
+    double r = dp_query_refresh();
+    dp_reset(&g_dp, r);
+    g_dp_presents = 0;
+    __atomic_store_n(&g_dp_refresh_ps, r > 0 ? (uint64_t)(r * 1000) : 0, __ATOMIC_RELAXED);
+    LOG("[display] refresh %.3f ms (%.1f Hz): even frame pacing %s\n", r / 1e6, r > 0 ? 1e9 / r : 0.0,
+        r <= 0 ? "unavailable (no refresh period)" : even_pacing_on() ? "on" : "off (measured only)");
+}
+
+// The present's id and asked-for time (into *pt), or false without display timing.
+static bool dp_before_present(VkPresentTimeGOOGLE *pt) {
+    if (!g_vk.display_timing) return false;
+    if (!++g_present_id) ++g_present_id;  // (ids from 1)
+    extern int framepace_current_fps(void);
+    extern bool framepace_on(void);
+    int fps = framepace_current_fps();
+    bool aim = even_pacing_on() && framepace_on() && fps > 0;
+    pt->presentID = g_present_id;
+    pt->desiredPresentTime = dp_desired(&g_dp, g_present_id, plat_now_ns(), aim ? 1e9 / fps : 0, aim);
+    g_dp_aiming = aim && g_dp.n > 0;
+    return true;
+}
+
+// After a present: the times the system has for earlier ones.
+static void dp_after_present(void) {
+    if (!g_vk.display_timing || !vkGetPastPresentationTimingGOOGLE) return;
+    VkPastPresentationTimingGOOGLE t[16];
+    uint32_t n = 16;
+    VkResult r = vkGetPastPresentationTimingGOOGLE(g_vk.dev, g_vk.swapchain, &n, t);
+    if (r != VK_SUCCESS && r != VK_INCOMPLETE) return;
+    for (uint32_t i = 0; i < n; i++) dp_feedback(&g_dp, t[i].presentID, t[i].actualPresentTime, t[i].earliestPresentTime);
+    if (g_dp.refresh > 0) __atomic_store_n(&g_dp_refresh_ps, (uint64_t)(g_dp.refresh * 1000), __ATOMIC_RELAXED);
+    if (++g_dp_presents % 240 == 0) {  // (a display mode change: Video > Display refresh rate, One UI)
+        double was = g_dp.nominal, now = dp_query_refresh();
+        if (now > 0 && (was <= 0 || fabs(now - was) > 0.01 * was)) {
+            dp_set_nominal(&g_dp, now);
+            __atomic_store_n(&g_dp_refresh_ps, (uint64_t)(now * 1000), __ATOMIC_RELAXED);
+            LOG("[display] refresh now %.3f ms (%.1f Hz)\n", now / 1e6, 1e9 / now);
+        }
+    }
+}
+
+// exec.c renderer_stats: ", on screen 4x 98% (...), paced: ..." since the last line
+void vk_display_stats(char *out, size_t size) {
+    if (!size) return;
+    out[0] = 0;
+    if (g_vk.display_timing) dp_stats_take(&g_dp, out, (int)size, g_dp_aiming);
+}
+#endif
+
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
@@ -1000,6 +1089,9 @@ static void create_swapchain(void) {
                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
         VK_CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &g_vk.sc_views[i]));
     }
+#ifdef __ANDROID__
+    dp_swapchain_created();
+#endif
 }
 
 static void recreate_swapchain(void) {
@@ -1178,11 +1270,15 @@ void vk_frame_end(const char *shot_path) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
 #ifdef __ANDROID__
+    VkPresentTimeGOOGLE ptime;
+    VkPresentTimesInfoGOOGLE ptimes = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, .swapchainCount = 1, .pTimes = &ptime};
+    if (dp_before_present(&ptime)) pi.pNext = &ptimes;
     uint64_t trace_start = vk_timing_trace_on() ? SDL_GetTicksNS() : 0;
 #endif
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
 #ifdef __ANDROID__
     if (trace_start) vk_timing_trace_wait(VK_TIMING_PRESENT, SDL_GetTicksNS() - trace_start);
+    if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) dp_after_present();
     if (r == VK_ERROR_OUT_OF_DATE_KHR) recreate_swapchain();  // (SUBOPTIMAL: every frame of an unrotated swapchain)
     else if (r == VK_ERROR_SURFACE_LOST_KHR) surface_lost = true;
 #else

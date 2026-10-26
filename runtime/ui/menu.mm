@@ -572,6 +572,17 @@ static void tab_display(void) {
             android_set_display_refresh(g_settings.display_refresh);
         }
     }
+    {   // (settings.h even_pacing: -1 Automatic, 1 on, 0 off - vulkan/device.c, display_pacing.c)
+        static const char *ep[] = {"Automatic", "On", "Off"};
+        int ei = g_settings.even_pacing < 0 ? 0 : g_settings.even_pacing ? 1 : 2;
+        if (opt_choice("Even frame pacing", &ei, ep, 3, 0,
+                       "Shows every frame for the same time: at 30 fps on a 120 Hz screen, exactly 4 refreshes each. "
+                       "Without it a frame goes up as soon as the GPU finishes it, so frames stay up for 3, 4 or 5 "
+                       "refreshes (25 to 42 ms) as that time varies - a judder even at a steady 30. Costs about 10 ms "
+                       "more delay. Automatic: on where the system reports when frames reach the screen (Android does). "
+                       "Off: as soon as ready, as before. Applies at once."))
+            g_settings.even_pacing = ei == 0 ? -1 : ei == 1 ? 1 : 0;
+    }
 #endif
 
     opt_section("Rendering");

@@ -505,6 +505,10 @@
 // Sheikah Slate (the Galaxy Tab S10 Ultra port)
 {"Display refresh rate",
  "Taxa de atualização da tela"},
+{"Even frame pacing",
+ "Ritmo uniforme dos quadros"},
+{"Shows every frame for the same time: at 30 fps on a 120 Hz screen, exactly 4 refreshes each. Without it a frame goes up as soon as the GPU finishes it, so frames stay up for 3, 4 or 5 refreshes (25 to 42 ms) as that time varies - a judder even at a steady 30. Costs about 10 ms more delay. Automatic: on where the system reports when frames reach the screen (Android does). Off: as soon as ready, as before. Applies at once.",
+ "Mostra cada quadro pelo mesmo tempo: a 30 fps numa tela de 120 Hz, exatamente 4 atualizações cada. Sem isso um quadro aparece assim que a GPU o termina, então os quadros ficam 3, 4 ou 5 atualizações (25 a 42 ms) conforme esse tempo varia - uma trepidação mesmo a 30 estáveis. Custa uns 10 ms a mais de atraso. Automático: ligado onde o sistema informa quando os quadros chegam à tela (o Android informa). Desligado: assim que prontos, como antes. Vale na hora."},
 {"Highest",
  "Máxima"},
 {"System",

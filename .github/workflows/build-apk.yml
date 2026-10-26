@@ -22,6 +22,8 @@ jobs:
   apk:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    permissions:
+      contents: write  # (the symbols branch: Runtime symbols)
     defaults:
       run:
         shell: bash  # (bash -eo pipefail: a failing build piped into tee still fails its step)
@@ -102,11 +104,13 @@ jobs:
           fi
           echo "::notice title=Game code id::$ID - the game code already built on the tablet stays valid"
 
-      - name: Desktop tests (tablet layout, threaded BC decode, on-tile read shaders, thread sampler)
+      - name: Desktop tests (tablet layout, threaded BC decode, on-tile read shaders, thread sampler, frame pacing)
         run: |
           mkdir -p build
           clang -O1 -Iruntime -o build/test_tablet_layout tools/test_tablet_layout.c -lm
           build/test_tablet_layout
+          clang -O1 -Wall -Iruntime/nvn/vulkan -o build/test_display_pacing tools/test_display_pacing.c runtime/nvn/vulkan/display_pacing.c -lm
+          build/test_display_pacing
           python3 tools/test_bc_threads.py
           sudo apt-get install -y -qq glslang-tools >/dev/null
           python3 tools/test_tile_glsl.py "$(command -v glslangValidator)"
@@ -171,6 +175,27 @@ jobs:
           name: libmain-symbols-${{ github.sha }}
           path: libmain-symbols.txt
           retention-days: 30
+
+      # (and onto the branch "symbols", one file a build: libmain-<commit>.txt - git fetch reaches it where artifact
+      # downloads and the annotations' 4 KB don't)
+      - name: Runtime symbols to the symbols branch
+        continue-on-error: true
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [ -s libmain-symbols.txt ] || exit 0
+          D="$RUNNER_TEMP/symbols"
+          rm -rf "$D" && mkdir -p "$D" && cd "$D"
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git fetch -q --depth 1 origin symbols; then git checkout -q -B symbols FETCH_HEAD; else git checkout -q --orphan symbols; fi
+          cp "$GITHUB_WORKSPACE/libmain-symbols.txt" "libmain-${GITHUB_SHA::7}.txt"
+          git add "libmain-${GITHUB_SHA::7}.txt"
+          git commit -qm "libmain symbols for ${GITHUB_SHA::7}"
+          git push -q origin HEAD:symbols
+          echo "::notice title=Runtime symbols::branch symbols, libmain-${GITHUB_SHA::7}.txt"
 
       # (what the build made, as annotations on the run - readable where its logs aren't)
       - name: APK report

@@ -622,6 +622,42 @@ void vk_texture_memory(uint64_t *rt_bytes, int *nrt, uint64_t *tex_bytes, int *n
     }
 }
 
+#ifdef __ANDROID__
+// The game's textures (not render targets) by the format they came in: the BC ones by kind with what their decoded
+// images take (this GPU can't sample BC - each decoded to RGBA8, RG8, R8 or RGBA16F: up to 8x the size), the ASTC ones
+// (sampled as they are), the rest. For the performance capture's [gpumem]: where converting them would save most.
+int vk_texture_memory_formats(char *out, size_t size) {
+    uint64_t bytes[7] = {0}, texels[7] = {0}, astc = 0, other = 0;
+    int n[7] = {0}, nastc = 0, nother = 0;
+    for (int i = 0; i < g_nlive; i++) {
+        TexBackend *b = g_live[i] ? g_live[i]->backend : NULL;
+        if (!b || !b->mem || b->gpu_owned) continue;
+        VmaAllocationInfo ai;
+        vmaGetAllocationInfo(g_vk.vma, b->mem, &ai);
+        if (b->bc_vf && is_bc(b->bc_vf)) {
+            int k = (int)(b->bc_vf - VK_FORMAT_BC1_RGB_UNORM_BLOCK) / 2;  // (pairs: BC1 RGB, BC1 RGBA, BC2, ... BC7)
+            k = k <= 1 ? 0 : k - 1;  // (BC1 RGB and RGBA together)
+            if (k < 0 || k > 6) continue;
+            bytes[k] += ai.size, texels[k] += (uint64_t)b->width * b->height * b->layers, n[k]++;
+        } else if (b->format >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && b->format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
+            astc += ai.size, nastc++;
+        } else {
+            other += ai.size, nother++;
+        }
+    }
+    static const char *const kind[] = {"BC1", "BC2", "BC3", "BC4", "BC5", "BC6H", "BC7"};
+    int len = snprintf(out, size, "decoded");
+    for (int k = 0; k < 7; k++)
+        if (n[k] && len >= 0 && (size_t)len < size)
+            len += snprintf(out + len, size - (size_t)len, " %s %d %.0f MB (%.0f Mtexels)", kind[k], n[k], bytes[k] / 1048576.0,
+                            texels[k] / 1e6);
+    if (len >= 0 && (size_t)len < size)
+        len += snprintf(out + len, size - (size_t)len, "; ASTC %d %.0f MB; other %d %.0f MB", nastc, astc / 1048576.0, nother,
+                        other / 1048576.0);
+    return len;
+}
+#endif
+
 // Reboot (device.c backend_reset; GPU idle): every game texture and its views go.
 void vk_textures_reset(void) {
     int n = g_nlive;
