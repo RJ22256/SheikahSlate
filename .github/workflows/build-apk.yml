@@ -1,0 +1,126 @@
+# Builds the Sheikah Slate APK (arm64, for the Galaxy Tab S10 Ultra) on GitHub's Ubuntu runners: the pinned
+# dependencies (android/deps/*.sh: SDL3, shaderc, Vulkan headers, FFmpeg, and the on-device game code builder -
+# Python for Android, capstone, unicorn, lz4, zig), then the app. No game files are involved: players bring their own.
+#
+# Signing: with the repository secrets SLATE_KEYSTORE_B64 (a base64 .jks), SLATE_KEYSTORE_PASSWORD, SLATE_KEY_ALIAS and
+# SLATE_KEY_PASSWORD the release APK is signed with that key, so each build installs over the last. Without them it is
+# signed with the runner's throwaway debug key.
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      NDK_VERSION: 30.0.16248370
+      CMAKE_VERSION: 3.30.4
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: libadrenotools (a submodule source archives leave out)
+        run: |
+          git clone --recursive --depth 1 https://github.com/bylaws/libadrenotools third_party/libadrenotools
+          git -C third_party/libadrenotools log -1 --format='libadrenotools %H %cs'
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Android SDK packages (NDK, CMake, platform 36)
+        run: |
+          SDKM=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" --install "ndk;$NDK_VERSION" "cmake;$CMAKE_VERSION" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_LINUX=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          ls "$ANDROID_HOME/ndk" "$ANDROID_HOME/cmake"
+
+      - name: Host tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkg-config nasm > /dev/null
+          cmake --version | head -1; ninja --version
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          df -h / | tail -1
+
+      - name: Restore the built dependencies
+        id: deps-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: android/deps/out
+          key: deps-${{ env.NDK_VERSION }}-${{ hashFiles('android/deps/*.sh', 'android/gen/**') }}
+
+      - name: Dependencies (SDL3, shaderc, Vulkan headers, volk, VMA, DejaVu)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: bash android/deps/build_deps.sh
+
+      - name: FFmpeg (the game's movies)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: bash android/deps/build_ffmpeg.sh
+
+      - name: On-device game code builder (Python, capstone, unicorn, lz4, zig)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: bash android/deps/build_gen_deps.sh
+
+      - name: Save the built dependencies (kept even if the app's build fails)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: android/deps/out
+          key: ${{ steps.deps-cache.outputs.cache-primary-key }}
+
+      - name: Desktop tests of the tablet logic
+        run: |
+          mkdir -p build
+          clang -O1 -Iruntime -o build/test_tablet_layout tools/test_tablet_layout.c -lm
+          build/test_tablet_layout
+
+      - name: Release signing key
+        env:
+          KS_B64: ${{ secrets.SLATE_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.SLATE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SLATE_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.SLATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KS_B64" ]; then echo "no signing secrets: the debug key signs this build"; exit 0; fi
+          mkdir -p ~/.sheikahslate
+          echo "$KS_B64" | base64 -d > ~/.sheikahslate/release.jks
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$HOME/.sheikahslate/release.jks" "$KS_PASS" "$KEY_ALIAS" "$KEY_PASS" > ~/.sheikahslate/keystore.properties
+          echo "release key: $KEY_ALIAS"
+
+      - name: Build the APK
+        working-directory: android/sheikahslate
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+          ls -la app/build/outputs/apk/release/
+
+      - name: Name the APK
+        id: apk
+        run: |
+          V=$(grep -o 'versionName = "[^"]*"' android/sheikahslate/app/build.gradle.kts | cut -d'"' -f2)
+          N="SheikahSlate-$V-${GITHUB_SHA::7}.apk"
+          cp android/sheikahslate/app/build/outputs/apk/release/app-release.apk "$N"
+          sha256sum "$N"
+          echo "name=$N" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.name }}
+          if-no-files-found: error
+          retention-days: 30
