@@ -674,6 +674,15 @@ static void tab_display(void) {
                        "flickers or draws in the wrong place, set it to Off. Applies at once."))
             g_settings.pass_overlap = pi == 0 ? -1 : pi == 1 ? 1 : 0;
     }
+    {   // (settings.h drs_mode: 0 steadied, 1 hold sharp, 2 hold low, 3 as the game does - vulkan/exec.c drs_filter)
+        static const char *dm[] = {"Steadied", "Hold sharp", "Hold low", "As the game does"};
+        opt_choice("Game's resolution changes", &g_settings.drs_mode, dm, 4, 0,
+                   "The game lowers its 3D scene's resolution when its GPU time looks long, from 1600x900 down to "
+                   "1280x720. Steadied: it goes by the last few frames together, so one slow frame no longer makes it "
+                   "swing down and back up - the big stutters. Hold sharp: always its highest (sharper; slower where the "
+                   "GPU is busy). Hold low: always its lowest (blurrier; lighter on the GPU and the battery). As the "
+                   "game does: every frame's time, as before. Applies at once.");
+    }
     if (opt_button("Capture a performance profile",
                    "Writes where the time goes into the log file, starting about 10 seconds from now: the GPU's for each "
                    "part of three frames, and the CPU's (the renderer's) for about 6 seconds. Close this menu and keep "

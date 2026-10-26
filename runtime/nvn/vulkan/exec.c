@@ -423,8 +423,32 @@ void vk_pace_frame(void) {
 // (it keeps 30 there at ~13-14 ms of GPU a frame) avoids. So by default the game chooses from the real times.
 #define PACE_FAST_NS 8000000ull
 #endif
-static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *entry, uint64_t value) {
+// (Sheikah Slate) Video > Game's resolution changes (settings.h drs_mode): what BOTW's own dynamic resolution reads as
+// its frame's GPU time - a counter pair's end minus its start. In the Tab S10 Ultra's logs it swung 1600x900 ->
+// 1280x720 -> 1600x900 within a second every few seconds, the longest frames (280-300 ms) on those swings: a hitch
+// read as GPU time took it down several steps at once. Steadied: the median of the last 9 frames' times (record: a
+// resolved GPU time joins them; the provisional host times only read them). Hold sharp / low: a steady 20 / 40 ms.
+static uint64_t drs_filter(const uint64_t *start_entry, uint64_t value, bool record) {
+    int mode = g_settings.drs_mode;
+    if (mode == 3 || value < start_entry[1]) return value;
+    if (mode == 1) return start_entry[1] + ns_to_gpu_ticks(20000000ull);
+    if (mode == 2) return start_entry[1] + ns_to_gpu_ticks(40000000ull);
+    static uint64_t hist[9];
+    static int n, at;
+    uint64_t d = value - start_entry[1];
+    if (d > ns_to_gpu_ticks(1000000000ull)) return value;  // (a second or more: a stall the game handles itself)
+    if (record) hist[at] = d, at = (at + 1) % 9, n = n < 9 ? n + 1 : 9;
+    if (n < 3) return value;
+    uint64_t s[9];
+    memcpy(s, hist, sizeof s);
+    for (int i = 1; i < n; i++)  // (insertion sort of the n kept)
+        for (int j = i; j > 0 && s[j - 1] > s[j]; j--) { uint64_t t = s[j]; s[j] = s[j - 1]; s[j - 1] = t; }
+    return start_entry[1] + s[n / 2];
+}
+
+static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *entry, uint64_t value, bool record) {
     if (!start_entry || (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
+    value = drs_filter(start_entry, value, record);
 #ifdef __ANDROID__
     static int fast = -1;
     if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") ? atoi(getenv("LARECOMP_FAST_COUNTERS")) : 0;
@@ -497,7 +521,7 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
 #endif
             if (log) LOG("[counter] seq %llu #%u at %llx host %.3f gpu %.3f ms\n", (unsigned long long)q->seq, k,
                          (unsigned long long)(uintptr_t)q->out[k], q->out[k][1] * 625.0 / 384 / 1e6, gpu * 625.0 / 384 / 1e6);
-            uint64_t delivered = pace_end_counter(start, q->out[k], gpu);
+            uint64_t delivered = pace_end_counter(start, q->out[k], gpu, true);
 #ifdef __ANDROID__
             if (vk_timing_trace_on()) {
                 VkTimingCounter sample = {.address = (uint64_t)(uintptr_t)q->out[k], .frame = q->frame[k],
@@ -1005,7 +1029,8 @@ static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t al
 // by a later submission keeps its ring chunk alive for that one (ring_keep). Dropped at each present, by
 // guest_copy_flush, by in-list writes (guest_copy_invalidate) and where the GPU's results are copied back into guest
 // memory (gcopy_retire, on any thread: gcopy_written queues the ranges, the render thread applies them).
-// LARECOMP_GCOPY_PER_SUBMISSION=1: per submission, as before.
+// Measured on the Tab (Update 6): ~3 MB of ~510 MB copied every 2 s shared that way - the copies are nearly all
+// the draws' own - so per submission again by default, as upstream; LARECOMP_GCOPY_PER_FRAME=1: per frame.
 #define GCOPY_TAB 4096
 static struct { uint64_t addr, size, key, use_seq; VkSpan span; } gcopy[GCOPY_TAB];
 static uint16_t gcopy_active[GCOPY_TAB];
@@ -1016,7 +1041,7 @@ static uint64_t stat_gcopy_reused;  // (bytes a later submission took from an ea
 static void guest_copy_flush(void) { gcopy_gen++; gcopy_nactive = 0; }
 static uint64_t guest_copy_key(void) {
     static int per_sub = -1;
-    if (per_sub < 0) per_sub = getenv("LARECOMP_GCOPY_PER_SUBMISSION") != NULL;
+    if (per_sub < 0) per_sub = getenv("LARECOMP_GCOPY_PER_FRAME") == NULL;
     // (the frame - fc_epoch, counted at each present - or the submission; with the drops)
     return ((per_sub ? vk_pending_seq() : (uint64_t)fc_epoch) << 24) + gcopy_gen;
 }
@@ -6799,6 +6824,34 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
     vkCmdSetViewport(cb, 0, 1, &full);
 }
 
+// (Sheikah Slate: the performance capture, device.c) where the GPU memory goes - on a phone or tablet it is the
+// system's RAM (the Tab S10 Ultra's Game Booster showed 84% in use): the game's render targets and textures (BC ones
+// decoded to their full size: this GPU can't sample BC), the transient ring, the vertex cache, the allocator's total
+void vk_memory_report(void) {
+    extern void vk_texture_memory(uint64_t *rt_bytes, int *nrt, uint64_t *tex_bytes, int *ntex, uint64_t *bc_bytes, int *nbc);
+    uint64_t rt, tex, bc, ring = 0;
+    int nrt, ntex, nbc;
+    vk_texture_memory(&rt, &nrt, &tex, &ntex, &bc, &nbc);
+    for (int i = 0; i < nchunks; i++) ring += chunks[i].size;
+    VmaBudget bud[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(g_vk.vma, bud);
+    const VkPhysicalDeviceMemoryProperties *mp;
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    uint64_t used = 0, budget = 0;
+    for (uint32_t i = 0; i < mp->memoryHeapCount; i++) used += bud[i].usage, budget += bud[i].budget;
+#ifdef __ANDROID__
+    PlatDeviceStats ds;
+    plat_device_stats(&ds);
+    LOG("[gpumem] %.0f MB in use (budget %.0f MB): render targets %d %.0f MB, textures %d %.0f MB (of which BC decoded %d %.0f MB), "
+        "transient ring %d x 64 MB %.0f MB, vertex cache %.0f MB, arena %d MB | process %u MB, system available %u MB\n",
+        used / 1048576.0, budget / 1048576.0, nrt, rt / 1048576.0, ntex, tex / 1048576.0, nbc, bc / 1048576.0, nchunks,
+        ring / 1048576.0, vc_bytes / 1048576.0, ga_ptr ? (int)(GA_SIZE >> 20) : 0, ds.rss_mb, ds.avail_mb);
+#else
+    LOG("[gpumem] %.0f MB in use: render targets %d %.0f MB, textures %d %.0f MB, transient ring %.0f MB\n", used / 1048576.0,
+        nrt, rt / 1048576.0, ntex, tex / 1048576.0, ring / 1048576.0);
+#endif
+}
+
 // ---- the frame check (Sheikah Slate): what each presented frame did, against the steady frames before it.
 // A menu draws the same thing every frame. On the Galaxy Tab S10 Ultra about one frame in a hundred of the "Load save
 // data?" screen came out with the final image's 10-bit pixels shown as 8-bit ones (rainbow bands over everything, one
@@ -7202,7 +7255,7 @@ static void exec_list(uint64_t handle, int depth) {
             out[0] = type == 1 && samples ? (samples_n += 1u << 20) : 0;
             out[1] = mode == 1 ? frame_ts : mode == 3 ? SDL_GetTicksNS() : ns_to_gpu_ticks(plat_now_ns());  // (3 legacy: ns, the old bug)
             static uint64_t *prev_out;  // (frame pacing: the pair's start)
-            if (mode == 0 || mode == 2) out[1] = pace_end_counter(prev_out, out, out[1]);
+            if (mode == 0 || mode == 2) out[1] = pace_end_counter(prev_out, out, out[1], false);
             prev_out = out;
             {   // (test) LARECOMP_TEST_COUNTER_DELAY_MS=<ms>: stall the host after a frame's first counter - a slow CPU
                 // (LARECOMP_TEST_SLOW_AT=<frame>:<count>: only those presented frames, 40 ms unless the delay is set:

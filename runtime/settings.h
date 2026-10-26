@@ -47,6 +47,10 @@ typedef struct {
     int pass_overlap;     // Video > Overlap render passes (vulkan/exec.c begin_pass): a pass after a pass starts with a
                           // barrier that holds back only its pixel work, so its geometry work overlaps the pass before
                           // on a tiler. -1 Automatic - on for Arm (Mali) GPUs - 1 on, 0 off (a full barrier, upstream's)
+    int drs_mode;         // Video > Game's resolution changes (vulkan/exec.c drs_filter): what BOTW's own dynamic resolution
+                          // reads as its frame's GPU time. 0 steadied (the median of the last 9 frames: a hitch no longer
+                          // drops it several steps), 1 hold sharp (20 ms: its highest), 2 hold low (40 ms: its lowest),
+                          // 3 as the game does (upstream's). ini: game_resolution = steady | sharp | low | game
     // Driver compatibility (the start screen's Settings > Prelaunch, ui/launcher.mm; from LASRecompAndroid), for GPUs
     // where a Turnip path draws wrong: read when the game starts (gpu_heap, inplace_reads) or when the app starts
     // (turnip_lrz, log_file). -1 Automatic: on for the Adreno 8xx GPUs these paths were made on, off elsewhere

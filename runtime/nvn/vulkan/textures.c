@@ -604,6 +604,24 @@ void backend_texture_destroyed(NvnTexture *t) {
     t->backend = NULL;
 }
 
+// (Sheikah Slate: the performance capture's memory line, exec.c vk_memory_report) the live game textures' images:
+// render targets and the rest, the BC-compressed ones this GPU can't sample decoded to their uncompressed size
+void vk_texture_memory(uint64_t *rt_bytes, int *nrt, uint64_t *tex_bytes, int *ntex, uint64_t *bc_bytes, int *nbc) {
+    *rt_bytes = *tex_bytes = *bc_bytes = 0;
+    *nrt = *ntex = *nbc = 0;
+    for (int i = 0; i < g_nlive; i++) {
+        TexBackend *b = g_live[i] ? g_live[i]->backend : NULL;
+        if (!b || !b->mem) continue;
+        VmaAllocationInfo ai;
+        vmaGetAllocationInfo(g_vk.vma, b->mem, &ai);
+        if (b->gpu_owned) *rt_bytes += ai.size, (*nrt)++;
+        else *tex_bytes += ai.size, (*ntex)++;
+#ifdef __ANDROID__
+        if (b->bc_vf) *bc_bytes += ai.size, (*nbc)++;
+#endif
+    }
+}
+
 // Reboot (device.c backend_reset; GPU idle): every game texture and its views go.
 void vk_textures_reset(void) {
     int n = g_nlive;

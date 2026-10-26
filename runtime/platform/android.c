@@ -916,13 +916,13 @@ void plat_adpf_stats(PlatAdpfStats *out) {
 // (libmain.so: the HLE, the renderer), libc, the GPU driver and the rest, and its hottest places (a dynamic symbol
 // when one is near, else module + offset - libmain.so's symbolized from the CI build's libmain-symbols.txt).
 // Binder, ART and other system threads are measured but not sampled. LARECOMP_NO_THREAD_SAMPLING=1: off.
-#define TS_MAX 64
+#define TS_MAX 256  // (the game has well over 64 threads: Update 6's 64 left the render thread out)
 #define TS_RING 32768
 static struct { int tid; timer_t timer; bool sampled; char name[20]; uint64_t cpu0, cpu1; } ts_thr[TS_MAX];
 static int ts_n;
 static _Atomic uint32_t ts_head;
 static uint64_t ts_pc[TS_RING];
-static uint8_t ts_who[TS_RING];
+static uint16_t ts_who[TS_RING];
 static volatile sig_atomic_t ts_on;
 static _Atomic int ts_busy;
 static struct sigaction ts_prev;
@@ -943,7 +943,7 @@ static void ts_handler(int sig, siginfo_t *si, void *ctx) {
     uint64_t pc = 0;
 #endif
     uint32_t i = atomic_fetch_add_explicit(&ts_head, 1, memory_order_relaxed);
-    if (i < TS_RING) ts_pc[i] = pc, ts_who[i] = (uint8_t)si->si_value.sival_int;
+    if (i < TS_RING) ts_pc[i] = pc, ts_who[i] = (uint16_t)si->si_value.sival_int;
 }
 
 static clockid_t ts_clock(int tid) { return (clockid_t)((~(unsigned)tid << 3) | 6); }  // (MAKE_THREAD_CPUCLOCK(tid, SCHED))

@@ -157,6 +157,13 @@ jobs:
           NM=$(find "$ANDROID_HOME/ndk" -name llvm-nm -type f | head -1)
           "$NM" --defined-only --numeric-sort --demangle "$L" | awk '$2 ~ /^[tTwW]$/' > libmain-symbols.txt
           echo "::notice title=Runtime symbols::$(wc -l < libmain-symbols.txt) functions from $L"
+          # (also as annotations, ~60 KB each - readable through the API where artifact downloads aren't: address
+          # without leading zeros, name cut at 48 characters)
+          awk '{a=$1; sub(/^0+/, "", a); n=$3; for (i = 4; i <= NF; i++) n = n " " $i; print a " " substr(n, 1, 48)}' \
+            libmain-symbols.txt > syms-short.txt
+          split -C 60000 -d syms-short.txt syms-part-
+          k=0; for f in syms-part-*; do k=$((k+1)); [ $k -le 8 ] || break
+            printf '::notice title=libmain symbols %d::%s\n' "$k" "$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' "$f")"; done
 
       - uses: actions/upload-artifact@v4
         continue-on-error: true

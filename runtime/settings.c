@@ -47,6 +47,7 @@ Settings g_settings = {
     .turnip_lrz = -1,
     .shader_int32 = -1,
     .pass_overlap = -1,
+    .drs_mode = 0,
     .fps_mode = 1,  // (30: the game's own choice dropped the overworld to 20, where the GPU's clocks settled low)
     .res_mode = 1,  // (1x: the Switch's 900p scene, the HUD at the screen's resolution - Match display drew the scene at
                     // 2560x1440 on the POCO F7 Ultra: 22 fps)
@@ -163,6 +164,7 @@ void settings_reset_defaults(void) {
     g_settings.display_refresh = d->display_refresh;
     g_settings.shader_int32 = d->shader_int32;
     g_settings.pass_overlap = d->pass_overlap;
+    g_settings.drs_mode = d->drs_mode;
 #endif
 }
 
@@ -208,6 +210,8 @@ void settings_load(void) {
         else if (!strcmp(key, "shader_math")) g_settings.shader_int32 = !strcmp(val, "32") ? 1 : !strcmp(val, "64") ? 0 : -1;
         else if (!strcmp(key, "shader_int32")) { if (atoi(val)) g_settings.shader_int32 = 1; }
         else if (!strcmp(key, "pass_overlap")) g_settings.pass_overlap = !strcmp(val, "on") ? 1 : !strcmp(val, "off") ? 0 : -1;
+        else if (!strcmp(key, "game_resolution"))
+            g_settings.drs_mode = !strcmp(val, "sharp") ? 1 : !strcmp(val, "low") ? 2 : !strcmp(val, "game") ? 3 : 0;
         else if (!strcmp(key, "gpu_heap")) g_settings.gpu_heap = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
         else if (!strcmp(key, "inplace_reads")) g_settings.inplace_reads = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
         else if (!strcmp(key, "turnip_lrz")) g_settings.turnip_lrz = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
@@ -280,6 +284,9 @@ void settings_save(void) {
     fprintf(f, "display_refresh = %s\n", g_settings.display_refresh == 1 ? "60" : g_settings.display_refresh == 2 ? "system" : "max");
     fprintf(f, "shader_math = %s\n", g_settings.shader_int32 < 0 ? "auto" : g_settings.shader_int32 ? "32" : "64");
     fprintf(f, "pass_overlap = %s\n", g_settings.pass_overlap < 0 ? "auto" : g_settings.pass_overlap ? "on" : "off");
+    {   static const char *const dm[] = {"steady", "sharp", "low", "game"};
+        fprintf(f, "game_resolution = %s\n", dm[g_settings.drs_mode >= 0 && g_settings.drs_mode < 4 ? g_settings.drs_mode : 0]);
+    }
     static const char *const tri[] = {"auto", "0", "1"};  // (-1 / 0 / 1)
 #define TRI(v) tri[(v) < 0 ? 0 : (v) ? 2 : 1]
     fprintf(f, "gpu_heap = %s\ninplace_reads = %s\nturnip_lrz = %s\nlog_file = %d\ngpu_model = %s\n", TRI(g_settings.gpu_heap),

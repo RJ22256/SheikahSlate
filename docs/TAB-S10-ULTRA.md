@@ -280,6 +280,33 @@ the rest, and its hottest places - libmain.so offsets readable with the CI's `li
 `tools/test_thread_sampling.py` (CI) runs it against busy and sleeping threads on Linux. The fps line also counts
 `write faults` - the game's threads trapping on pages the copy mode tracks (a signal and an mprotect each).
 
+## Update 7 (0.1.9-slate.7): a steadier resolution, the memory, the whole thread list
+
+The Update 6 log: ~26 fps at first, easing to ~19 over half a minute as the GPU's time per frame grew (the scene
+lighter meanwhile), ~16 during and after the capture; Game Booster's overlay: GPU 64%, CPU 47%, **RAM 84%** at 24 fps.
+And the "unstable" feel: BOTW's own dynamic resolution swinging 1600x900 -> 1280x720 -> 1600x900 within a second every
+few seconds, the longest frames (280-300 ms) on those swings.
+
+### 22. Video > Game's resolution changes (`exec.c` drs_filter)
+
+BOTW lowers its scene's resolution from what it reads as its frame's GPU time (a counter pair). A hitch read as GPU time
+took it down several steps at once. **Steadied** (default): the median of the last 9 frames' times. **Hold sharp** /
+**Hold low**: a steady 20 / 40 ms - always 1600x900 / always 1280x720. **As the game does**: as before.
+
+### 23. Memory and the capture (`exec.c` vk_memory_report, `textures.c` vk_texture_memory)
+
+On a tablet the GPU's memory is the system's RAM. The capture logs `[gpumem]`: in use and budget, render targets,
+textures (and how much of them are BC textures decoded to full size - this GPU can't sample BC), the transient ring,
+the vertex cache, the arena, the process's resident memory and what the system has left.
+
+### 24. Fixes to Update 6's measurements
+
+- The thread sampler took the first 64 threads only - the game has more, and the render thread came later: now 256.
+- The runtime's symbols are also annotations on the CI run (`libmain symbols N`), readable where artifact downloads
+  aren't, to name the sampler's `libmain.so+offset` places.
+- The constant-buffer copies shared across a frame's submissions (#19) measured ~3 MB of ~510 MB every 2 s: per
+  submission again by default (`LARECOMP_GCOPY_PER_FRAME=1`: per frame).
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep

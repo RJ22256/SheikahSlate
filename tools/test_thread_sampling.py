@@ -52,7 +52,8 @@ static void *copier(void *a) {
 }
 static void *sleeper(void *a) { (void)a; for (;;) { struct timespec t = {0, 5000000}; nanosleep(&t, NULL); } return NULL; }
 int main(void) {
-    pthread_t a, b, c;
+    pthread_t a, b, c, idle[80];
+    for (int i = 0; i < 80; i++) pthread_create(&idle[i], NULL, sleeper, NULL);  // (the game has dozens: the busy ones come after)
     pthread_create(&a, NULL, spin, NULL);
     pthread_create(&b, NULL, copier, NULL);
     pthread_create(&c, NULL, sleeper, NULL);

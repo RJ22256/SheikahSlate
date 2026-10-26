@@ -1404,6 +1404,8 @@ void backend_present(NvnTexture *t) {
                 vk_cpuprof_start();
                 extern void plat_thread_sample(int ms);  // (platform/android.c: every thread's CPU time, ~4 s)
                 plat_thread_sample(4000);
+                extern void vk_memory_report(void);  // (exec.c: where the GPU memory - the system's RAM here - goes)
+                vk_memory_report();
             }
             g_gpuprof_req_at = --g_gpuprof_req_left > 0 ? (long)total_frames + 45 : 0;
         }
