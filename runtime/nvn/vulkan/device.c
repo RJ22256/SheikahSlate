@@ -128,7 +128,8 @@ static const struct { const char *name; uint32_t below; uint8_t optional; } COMP
 // (the fatal messages below: this check stops the app before the start screen, where Settings > Files > Choose driver
 // is - the app icon's long-press shortcut reaches it, DriverPickActivity.java)
 #define DRIVER_HINT "Another driver may have it - on Adreno GPUs, a Turnip driver: long-press the app icon, then Choose " \
-                    "driver. "
+                    "driver. On Mali GPUs (the Galaxy Tab S10 Ultra's Immortalis-G720) only the system's driver runs: " \
+                    "install the tablet's latest software update. "
 // (ahead of them: a chosen driver that couldn't be used, so the system's ran - android_driver.c)
 static const char *rejected_note(void) {
     static char s[256];
@@ -1641,6 +1642,76 @@ static void quick_exit_handler(void) {
 }
 
 #ifdef __ANDROID__
+// ---- Sheikah Slate: the guest heap import on a driver that lists VK_EXT_external_memory_host but never ran this game
+// (Arm's Mali driver on the Galaxy Tab S10 Ultra's Immortalis-G720 among them; neither Turnip nor Qualcomm's driver has
+// the extension, so the phone this was made on never took this path). The import is made once the game sets its heap
+// up (exec.c gmem_import), long after the shaders are translated for it; a driver that refuses it there left shader
+// global memory reading zeros for the whole run - no text, no lights. So a slice of the heap's own range is imported
+// and freed again here, before the renderer picks its path (exec.c vk_exec_init: gcopy_mode), and a refusal - here, or
+// of the full heap in an earlier run of this driver (exec.c: cache/vk_host_import_failed) - takes the CPU copies, as a
+// driver without the extension does. LARECOMP_VK_HOST_IMPORT=1: the import whatever the probe says; =0: never.
+#define HOST_IMPORT_FAILED "cache/vk_host_import_failed"
+static void host_import_probe(void) {
+    if (!g_vk.host_import || getenv("LARECOMP_VK_HOST_IMPORT")) return;
+    const char *why = NULL;
+    char seen[320] = "", self[320];
+    snprintf(self, sizeof self, "%s|%u", g_vk.props.deviceName, g_vk.props.driverVersion);
+    FILE *f = fopen(HOST_IMPORT_FAILED, "r");
+    if (f) {
+        if (!fgets(seen, sizeof seen, f)) seen[0] = 0;
+        fclose(f);
+        seen[strcspn(seen, "\r\n")] = 0;
+    }
+    VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+    uint64_t align = hp.minImportedHostPointerAlignment ? hp.minImportedHostPointerAlignment : 4096;
+    uint64_t size = ((64ull << 20) + align - 1) & ~(align - 1);
+    PFN_vkGetMemoryHostPointerPropertiesEXT props =
+        (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryHostPointerPropertiesEXT");
+    VkMemoryHostPointerPropertiesEXT mp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    if (seen[0] && !strcmp(seen, self)) why = "the whole heap's import failed in an earlier run with this driver";
+    else if (!props) why = "no vkGetMemoryHostPointerPropertiesEXT";
+    else if ((HEAP_BASE & (align - 1)) || align > 0x10000)  // (exec.c gmem_import: sizes in 64 KB steps)
+        why = "the heap's address or size isn't aligned for it";
+    else if (props(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, (void *)(uintptr_t)HEAP_BASE, &mp) !=
+                 VK_SUCCESS || !mp.memoryTypeBits)
+        why = "no memory type takes the heap's pages";
+    else {
+        VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+                                                .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                                .pHostPointer = (void *)(uintptr_t)HEAP_BASE};
+        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp, .allocationSize = size,
+                                   .memoryTypeIndex = (uint32_t)__builtin_ctz(mp.memoryTypeBits)};
+        VkDeviceMemory mem = VK_NULL_HANDLE;
+        VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
+        if (r != VK_SUCCESS) why = "the driver refused a test import";
+        else vkFreeMemory(g_vk.dev, mem, NULL);
+    }
+    if (why) {
+        g_vk.host_import = false;
+        LOG("[vk] guest heap import off: %s - shader global memory through CPU copies\n", why);
+    } else {
+        LOG("[vk] guest heap import: a %llu MB test import worked (alignment %llu)\n", (unsigned long long)(size >> 20),
+            (unsigned long long)align);
+    }
+}
+
+// What the bug reports need first: the device profile (SlateDisplay.java), the GPU, and the paths it takes
+static void slate_profile_log(void) {
+    const char *profile = getenv("LARECOMP_DEVICE_PROFILE"), *dpi = getenv("LARECOMP_SCREEN_DPI");
+    bool mali = g_vk.props.vendorID == 0x13B5 || strstr(g_vk.props.deviceName, "Mali") || strstr(g_vk.props.deviceName, "Immortalis");
+    VkPhysicalDeviceFeatures ft;
+    vkGetPhysicalDeviceFeatures(g_vk.phys, &ft);
+    LOG("[slate] profile %s, %s ppi, GPU %s (vendor %#x%s): heap %s, BC textures %s\n", profile ? profile : "unknown",
+        dpi ? dpi : "?", g_vk.props.deviceName, g_vk.props.vendorID, mali ? ", Arm" : "",
+        g_vk.map_placed ? "placed in GPU memory" : g_vk.host_import ? "imported" : "through CPU copies",
+        ft.textureCompressionBC ? "native" : "decoded on the CPU");
+    if (profile && !strcmp(profile, "tab-s10-ultra") && !mali)
+        LOG("[slate] Galaxy Tab S10 Ultra without an Arm GPU name (%s): reports welcome\n", g_vk.props.deviceName);
+}
+
 // Driver compatibility's Automatic (settings.h gpu_heap / inplace_reads / turnip_lrz, from LASRecompAndroid): the
 // fastest paths on the Adreno 8xx GPUs they were made on, the compatible ones elsewhere (an Adreno 750 drew LAS's text
 // and colors wrong with them). name: Vulkan's "Adreno (TM) 830v1" or the kernel's "Adreno830v2".
@@ -1670,6 +1741,8 @@ void ui_window_init(void) {
     {   // Driver compatibility (the start screen's Settings > Prelaunch): applied before the driver loads
         extern void android_log_file(bool on);
         android_log_file(g_settings.log_file);
+        extern void android_set_display_refresh(int how);  // (Video > Display refresh rate: platform/android.c)
+        android_set_display_refresh(g_settings.display_refresh);
         // Turnip reads TU_DEBUG once, when it starts: low-resolution Z off (it can drop draws on some Adreno GPUs).
         // Automatic needs the GPU before Vulkan names it: the kernel's (the GPU driver reads it from the app too), else
         // the last start's; unknown: on.
@@ -1707,7 +1780,7 @@ void ui_window_init(void) {
                                             getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST"));
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
-    window = SDL_CreateWindow("BOTWRecompAndroid", win_w, win_h, wflags);
+    window = SDL_CreateWindow("Sheikah Slate", win_w, win_h, wflags);
 #ifdef __ANDROID__
     // opened with the screen locked / off: no surface to make the window on yet - it comes once the activity shows.
     // SDL_PumpEvents sleeps while the app is paused, so the 5 s count only time in the foreground: a window that fails
@@ -1716,7 +1789,7 @@ void ui_window_init(void) {
         if (tries == 0) LOG("[vk] waiting for the Android window (%s)\n", SDL_GetError());
         SDL_PumpEvents();
         SDL_Delay(50);
-        window = SDL_CreateWindow("BOTWRecompAndroid", win_w, win_h, wflags);
+        window = SDL_CreateWindow("Sheikah Slate", win_w, win_h, wflags);
     }
 #endif
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
@@ -1748,6 +1821,8 @@ void ui_window_init(void) {
     pick_device();
     create_device();
 #ifdef __ANDROID__
+    host_import_probe();  // (before vk_exec_init picks the global memory path)
+    slate_profile_log();
     if (strcmp(g_settings.gpu_model, g_vk.props.deviceName)) {  // (for turnip_lrz's Automatic at the next start)
         snprintf(g_settings.gpu_model, sizeof g_settings.gpu_model, "%s", g_vk.props.deviceName);
         settings_save();

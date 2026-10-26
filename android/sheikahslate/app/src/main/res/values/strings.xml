@@ -11,5 +11,5 @@
     <string name="driver_install">Install a driver</string>
     <string name="driver_system">Use the system driver</string>
     <string name="driver_close">Close</string>
-    <string name="driver_error_intro">The graphics driver couldn\'t run the game. A Turnip driver for your GPU (.zip) usually solves it: tap Install a driver.\n\nDetails:</string>
+    <string name="driver_error_intro">The graphics driver couldn\'t run the game. On the Galaxy Tab S10 Ultra (a Mali GPU) only the system driver works: with a custom driver installed, tap Use the system driver; otherwise install the tablet\'s latest software update. On Adreno GPUs, a Turnip driver for your GPU (.zip) usually solves it: tap Install a driver.\n\nDetails:</string>
 </resources>

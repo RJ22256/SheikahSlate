@@ -18,8 +18,12 @@
 #include <string.h>
 #include <vector>
 
+#include <jni.h>
+#include <stdlib.h>
+
 #include "i18n.h"
 #include "imgui.h"
+#include "touch_units.h"
 
 extern "C" {
 #include "settings.h"
@@ -56,8 +60,52 @@ static atomic_bool editing;
 static float edit_pos[K_N][2];  // (editing) the layout being edited
 static _Atomic uint64_t last_draw_ms;
 
-static void default_pos(int k, float *x, float *y) {  // in pixels
-    float w = disp_w, h = disp_h, u = h / 100.0f, gap = 13.0f * u, fx = w - 20 * u, fy = h - 27 * u, sw = 15 * u;
+static float size_scale(void) { return g_settings.touch_scale > 0.2f ? g_settings.touch_scale : 1.0f; }
+
+// ---- Sheikah Slate: the unit in millimetres on a big screen, and the camera notch kept clear (ui/touch_units.h)
+static float screen_dpi(void) {  // (the activity's LARECOMP_SCREEN_DPI: SlateDisplay.physicalDpi; 0 unknown)
+    static float dpi = -1;
+    if (dpi < 0) {
+        const char *e = getenv("LARECOMP_SCREEN_DPI");
+        dpi = e ? (float)atof(e) : 0;
+        fprintf(stderr, "[touch] unit: %s\n", dpi > 0 ? "millimetres on big screens" : "1% of the screen height");
+    }
+    return dpi;
+}
+static float touch_u(void) { return touch_unit_px(disp_h, screen_dpi()); }
+
+// The camera notch's rectangles (window pixels), from the activity whenever they change: on the Tab S10 Ultra one at
+// the top edge's middle in landscape - at the bottom with the tablet turned around - where the menu button (top) or
+// Minus / Plus (bottom) would sit. Their default places move out of it.
+static pthread_mutex_t cut_lock = PTHREAD_MUTEX_INITIALIZER;
+static int cut_rects[4 * 4], cut_n;
+
+extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeCutouts(JNIEnv *env, jclass, jintArray a) {
+    jsize len = a ? env->GetArrayLength(a) : 0;
+    int n = (int)(len / 4) > 4 ? 4 : (int)(len / 4);
+    jint buf[16] = {0};
+    if (n > 0) env->GetIntArrayRegion(a, 0, n * 4, buf);
+    pthread_mutex_lock(&cut_lock);
+    for (int i = 0; i < n * 4; i++) cut_rects[i] = buf[i];
+    cut_n = n;
+    pthread_mutex_unlock(&cut_lock);
+    for (int i = 0; i < n; i++)
+        fprintf(stderr, "[touch] camera cutout %d: %d,%d - %d,%d\n", i, buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2], buf[i * 4 + 3]);
+}
+
+static float clear_of_cutouts(float x, float y) {  // (a default place: e covers the largest control, 7.5 units)
+    int r[16], n;
+    pthread_mutex_lock(&cut_lock);
+    n = cut_n;
+    memcpy(r, cut_rects, sizeof r);
+    pthread_mutex_unlock(&cut_lock);
+    if (!n) return y;
+    float u = touch_u();
+    return touch_avoid_cutouts(x, y, 8.0f * u * size_scale(), 1.5f * u, disp_h, r, n);
+}
+
+static void default_pos_raw(int k, float *x, float *y) {  // in pixels
+    float w = disp_w, h = disp_h, u = touch_u(), gap = 13.0f * u, fx = w - 20 * u, fy = h - 27 * u, sw = 15 * u;
     float dx = 15 * u, dy = h - 58 * u, dg = 7.5f * u;  // the d-pad: above the left stick
     switch (k) {
     case K_A: *x = fx + gap, *y = fy; break;  // face buttons: a diamond, Switch layout (A east)
@@ -82,17 +130,21 @@ static void default_pos(int k, float *x, float *y) {  // in pixels
     }
 }
 
+static void default_pos(int k, float *x, float *y) {
+    default_pos_raw(k, x, y);
+    *y = clear_of_cutouts(*x, *y);
+}
+
 static void pos_of(int k, float *x, float *y) {
     const float *p = editing ? edit_pos[k] : g_settings.touch_pos[k];
     if (p[0] >= 0 && p[1] >= 0) *x = p[0] * disp_w, *y = p[1] * disp_h;
     else default_pos(k, x, y);
 }
 
-static float size_scale(void) { return g_settings.touch_scale > 0.2f ? g_settings.touch_scale : 1.0f; }
-static float stick_radius(void) { return disp_h * 0.13f * size_scale(); }
+static float stick_radius(void) { return 13.0f * touch_u() * size_scale(); }  // (upstream: 13% of the height)
 
 static int layout(Ctl *c) {  // in pixels of the window (landscape)
-    float u = disp_h / 100.0f, z = size_scale();
+    float u = touch_u(), z = size_scale();
     float br = 7.5f * u * z, sw = 15 * u * z, sh = 7 * u * z, sr = 4.5f * u * z, dr = 3.8f * u * z;
     static const struct { int k, bit; const char *label; int shape; } T[] = {
         {K_A, TB_A, "A", 0}, {K_B, TB_B, "B", 0}, {K_X, TB_X, "X", 0}, {K_Y, TB_Y, "Y", 0},
@@ -117,7 +169,7 @@ static int layout(Ctl *c) {  // in pixels of the window (landscape)
 }
 
 static bool in_ctl(const Ctl *c, float x, float y) {
-    float u = disp_h / 100.0f;
+    float u = touch_u();
     if (c->rect) return fabsf(x - c->x) <= c->w / 2 + u && fabsf(y - c->y) <= c->h / 2 + u;
     float dx = x - c->x, dy = y - c->y, r = c->r * 1.25f;  // (a bit larger than drawn: thumbs)
     return dx * dx + dy * dy <= r * r;
@@ -364,7 +416,7 @@ extern "C" void touch_controls_draw(ImVec2 display, ImFont *font) {
     Ctl c[32];
     int n = layout(c);
     uint64_t held = g_touch_buttons;
-    float u = disp_h / 100.0f;
+    float u = touch_u();
     float op = g_settings.touch_opacity > 0.05f ? g_settings.touch_opacity : 1.0f;
     float alpha = (used || editing ? 1.0f : 0.6f) * op;
     // Alpha values and idle fading are unchanged from the original touch controls.

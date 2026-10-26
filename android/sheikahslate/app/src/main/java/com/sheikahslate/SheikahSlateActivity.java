@@ -1,4 +1,4 @@
-// BOTWRecompAndroid on Android: SDL's activity runs the runtime (libmain.so, runtime/main.c). Before the native code starts
+// Sheikah Slate on Android: SDL's activity runs the runtime (libmain.so, runtime/main.c). Before the native code starts
 // this sets up what the desktop finds next to its executable (runtime/platform/android.c, runtime/paths.c):
 // - the shipped resources (assets/res: the start screen's font, the icon) copied to <internal files>/res;
 // - the Vulkan driver: the first driver in <external files>/drivers (a .so, or an adrenotools .zip: Turnip), copied to
@@ -13,10 +13,13 @@
 //   found in it; exefs/ is copied to its version's extracted/ - <external files>/extracted for 1.0.0, v160/ and v182/
 //   inside it for the others, runtime/paths.h - and romfs.bin built there straight from romfs/) and the Vulkan driver
 //   (a .zip copied to the drivers folder).
-// The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.botwrecomp.android/files.
+// - the Galaxy Tab S10 Ultra / large-screen setup (SlateDisplay): the device profile and the screen's physical density
+//   (LARECOMP_DEVICE_PROFILE, LARECOMP_SCREEN_DPI), the window under the camera notch, the display refresh rate.
+// The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.sheikahslate.tab/files.
 // While in front it reports the battery and thermal state once a second for the performance overlay
-// (runtime/ui/perf_overlay.mm): apps can't read those in /sys.
-package com.botwrecompandroid;
+// (runtime/ui/perf_overlay.mm): apps can't read those in /sys. And the camera notch's place, when it changed (the
+// tablet turned around): the on-screen controls keep clear of it (runtime/ui/touch_controls.mm).
+package com.sheikahslate;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -53,19 +56,23 @@ import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-public class BOTWRecompAndroidActivity extends SDLActivity {
-    private static final String TAG = "BOTWRecompAndroid";
+public class SheikahSlateActivity extends SDLActivity {
+    private static final String TAG = "SheikahSlate";
 
     private final Handler stats = new Handler(Looper.getMainLooper());
     private final Runnable report = new Runnable() {
         @Override
         public void run() {
             reportDeviceStats();
+            reportCutouts();
             stats.postDelayed(this, 1000);
         }
     };
 
     private static native void nativeDeviceStats(float battTempC, float battPct, float watts, int thermal, float headroom);
+    // the camera notch's rectangles in window pixels, 4 ints each (runtime/ui/touch_controls.mm)
+    private static native void nativeCutouts(int[] rects);
+    private int[] lastCutouts;
     // the start screen (runtime/ui/launcher.mm)
     private static native int nativeGameVersion(byte[] head);
     private static native void nativeImportLooking();  // (the picked folder is being searched: busy, and said so)
@@ -80,7 +87,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
 
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47,
             REQ_DRIVER_RECOVER = 0x4c48;
-    private static BOTWRecompAndroidActivity self;
+    private static SheikahSlateActivity self;
     private WatchMapServer watchMap;
 
     @Override
@@ -97,6 +104,13 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             copyIfChanged(new File(games, "botwgame.so"), new File(res, "botwgame.so"));
             copyIfChanged(new File(games, "botwgame.so.id"), new File(res, "botwgame.so.id"));
             setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir);
+            // (SlateDisplay: what the runtime sizes the on-screen controls by, and logs for bug reports)
+            String profile = SlateDisplay.profile(this);
+            float dpi = SlateDisplay.physicalDpi(this);
+            setenv("LARECOMP_DEVICE_PROFILE", profile);
+            if (dpi > 0) setenv("LARECOMP_SCREEN_DPI", Float.toString(dpi));
+            Log.i(TAG, "device " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + ": profile " + profile +
+                       ", " + (dpi > 0 ? dpi + " ppi" : "density unknown"));
             File gen = new File(getFilesDir(), "gen");
             unpackGen(gen);
             setenv("LARECOMP_GEN_DIR", gen.getAbsolutePath());
@@ -105,7 +119,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "");
             // testing: the runtime's LARECOMP_* switches from the launch intent, separated by commas (adb shell drops
             // the quotes around spaces), e.g. LARECOMP_VK_DRIVER= is the system driver:
-            // adb shell am start -n com.botwrecomp.android/com.botwrecompandroid.BOTWRecompAndroidActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
+            // adb shell am start -n com.sheikahslate.tab/com.sheikahslate.SheikahSlateActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
             String env = getIntent() != null ? getIntent().getStringExtra("env") : null;
             // Opened again from the recent apps, Android hands back that test launch's intent: keep only which game
             // version it ran (a scripted input left in it ignored the touch screen - the menu looked frozen)
@@ -139,6 +153,10 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         // SDL's own immersive full screen (no status / navigation bar, the camera cutout used): SDL's onCreate asks
         // for the windowed style, and keeps the bars hidden once its full screen mode is on
         setWindowStyle(true);
+        // (the camera notch: drawn under it as on Android 15+, the controls keep clear of it; the refresh rate:
+        // the highest until the runtime applies the player's choice, runtime/nvn/vulkan/device.c)
+        SlateDisplay.applyWindow(this);
+        SlateDisplay.applyRefresh(this, SlateDisplay.REFRESH_HIGHEST);
         watchMap = new WatchMapServer(this);
         if (getIntent() != null && WatchMapServer.ACTION.equals(getIntent().getAction()))
             stats.post(() -> watchMap.showSettings());
@@ -180,6 +198,25 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         } catch (Throwable t) {  // (also before libmain is loaded: UnsatisfiedLinkError)
             Log.w(TAG, "device stats: " + t);
         }
+    }
+
+    // The camera notch's place, when it changed (and once at first): the runtime's on-screen controls keep clear of it
+    private void reportCutouts() {
+        try {
+            int[] c = SlateDisplay.cutouts(this);
+            if (c == null || Arrays.equals(c, lastCutouts)) return;
+            nativeCutouts(c);
+            lastCutouts = c;  // (only once the runtime has it: before libmain is loaded, UnsatisfiedLinkError)
+        } catch (Throwable t) {
+            Log.w(TAG, "cutouts: " + t);
+        }
+    }
+
+    // Video > Display refresh rate (runtime/nvn/vulkan/device.c, on SDL's thread): 0 the highest at this resolution,
+    // 1 60 Hz, 2 the system's choice
+    public static void setDisplayRefresh(int how) {
+        SheikahSlateActivity a = self;
+        if (a != null) a.runOnUiThread(() -> SlateDisplay.applyRefresh(a, how));
     }
 
     // ---- the game code's builder: assets/gen, unpacked only when its bundled content changes (runtime/gamebuild.c)
@@ -264,7 +301,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     // The app icon's long-press shortcut (res/xml/shortcuts.xml): the system driver, settings out of reach or not - a
     // custom driver that draws garbage (Turnip_v26.3.0-R6 on an Adreno 830: stripes, the menus unreadable) or crashes.
     // Before the driver loads when it starts the app; a running one (a single instance) drops it and starts again.
-    static final String SYSTEM_DRIVER = "com.botwrecompandroid.action.SYSTEM_DRIVER";
+    static final String SYSTEM_DRIVER = "com.sheikahslate.action.SYSTEM_DRIVER";
     // (android/run_ver.sh: the game version a test launch ran, and its own start without the launcher)
     static final List<String> KEEP_FROM_RECENTS = Arrays.asList("LARECOMP_DATA_ROOT", "LARECOMP_GAME_LIB",
             "LARECOMP_SAVE_SEED", "LARECOMP_NO_LAUNCHER");
@@ -327,7 +364,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 try {
                     getContentResolver().takePersistableUriPermission(tree,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                    getSharedPreferences("botwrecomp", MODE_PRIVATE).edit().putString("logTree", tree.toString()).apply();
+                    getSharedPreferences("sheikahslate", MODE_PRIVATE).edit().putString("logTree", tree.toString()).apply();
                 } catch (Exception e) {
                     Log.e(TAG, "log folder permission", e);
                 }
@@ -339,9 +376,9 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     }
 
     // ---- the log file (Settings > Prelaunch > Driver compatibility, runtime/platform/android.c; LASRecompAndroid's)
-    // goes to a folder the player picks (Android keeps Android/data/ out of reach of file managers): botwrecomp-log.txt,
-    // the run before's kept as botwrecomp-log-previous.txt, both openable on the phone and sendable with a bug report
-    private static final String LOG_NAME = "botwrecomp-log.txt", LOG_PREVIOUS = "botwrecomp-log-previous.txt";
+    // goes to a folder the player picks (Android keeps Android/data/ out of reach of file managers): sheikahslate-log.txt,
+    // the run before's kept as sheikahslate-log-previous.txt, both openable on the phone and sendable with a bug report
+    private static final String LOG_NAME = "sheikahslate-log.txt", LOG_PREVIOUS = "sheikahslate-log-previous.txt";
 
     public static void pickLogFolder() {
         self.runOnUiThread(() -> {
@@ -355,7 +392,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     }
 
     private static Uri logTree() {  // the picked folder while the app may still write there (and it's still there)
-        String s = self.getSharedPreferences("botwrecomp", MODE_PRIVATE).getString("logTree", null);
+        String s = self.getSharedPreferences("sheikahslate", MODE_PRIVATE).getString("logTree", null);
         if (s == null) return null;
         Uri tree = Uri.parse(s);
         boolean allowed = false;
@@ -371,11 +408,11 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         }
     }
 
-    // The folder's name for the settings page ("Download/BOTWRecomp"); "" with none
+    // The folder's name for the settings page ("Download/SheikahSlate"); "" with none
     public static String logFolderName() {
         Uri tree = logTree();
         if (tree == null) return "";
-        String id = DocumentsContract.getTreeDocumentId(tree);  // e.g. "primary:Download/BOTWRecomp"
+        String id = DocumentsContract.getTreeDocumentId(tree);  // e.g. "primary:Download/SheikahSlate"
         int colon = id.indexOf(':');
         String path = colon >= 0 ? id.substring(colon + 1) : id;
         return path.isEmpty() ? "/" : path;
@@ -683,7 +720,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static String dlgText;
 
     public static boolean driverErrorDialog(String text) {
-        BOTWRecompAndroidActivity a = self;
+        SheikahSlateActivity a = self;
         if (a == null) return false;
         synchronized (dlgLock) { dlgDone = false; dlgText = text; }
         a.runOnUiThread(() -> a.showDriverError(null));

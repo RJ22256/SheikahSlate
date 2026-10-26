@@ -83,10 +83,10 @@ O SDK/NDK Android e o Gradle são o caminho de compilação do aplicativo.
   sobreposição das seeds, agora para mods).
 - O launcher confere o build id do BOTW v1.0.0 e acha o romfs pela pasta `Pack/` (no PC e no Android).
 - Renome: `botwrecompandroid` (executável, pacote Android `com.botwrecompandroid`, `BOTWRecompAndroidActivity`, pasta
-  `android/botwrecompandroid`), `botwgame` (a biblioteca do código do jogo), `botwgen` (o helper do gerador),
+  `android/sheikahslate`), `botwgame` (a biblioteca do código do jogo), `botwgen` (o helper do gerador),
   `botwrecompandroid.ini`, bundle id `com.mamcjr.botwrecompandroid`. **As variáveis de ambiente continuam `LARECOMP_*`** e os
   identificadores internos também: o motor é o do LAS, e assim fica mais fácil trazer melhorias de lá.
-- Verificação: o app Android (`android/botwrecompandroid`, `gradlew assembleDebug`) compila e linka com `--no-undefined`.
+- Verificação: o app Android (`android/sheikahslate`, `gradlew assembleDebug`) compila e linka com `--no-undefined`.
   Os arquivos só do macOS (`renderer.m`, `metal.m`) foram editados do mesmo jeito, mas não compilados aqui.
 - O build desktop citado no plano original foi descontinuado; o alvo atual é Android.
 

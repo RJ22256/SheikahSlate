@@ -1,8 +1,8 @@
-// BOTWRecompAndroid Android probe (docs/las/ANDROID-PORT.md, Fase 0). Runs once per launch, in this order: the guest window
+// Sheikah Slate Android probe (docs/las/ANDROID-PORT.md, Fase 0). Runs once per launch, in this order: the guest window
 // placement (before any driver maps memory), the system Vulkan driver, then every custom driver found in
 // <external files>/drivers/ (a .so, or an adrenotools .zip). The report is shown, written to
 // <external files>/report-<time>.txt (and report-latest.txt) section by section, and logged under the tag LASProbe.
-package com.botwrecompandroid.probe;
+package com.sheikahslate.probe;
 
 import android.app.Activity;
 import android.graphics.Typeface;

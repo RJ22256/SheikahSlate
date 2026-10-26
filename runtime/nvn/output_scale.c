@@ -69,7 +69,11 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     if (forced < 0) forced = getenv("LARECOMP_SCALE") ? atof(getenv("LARECOMP_SCALE")) : 0;
     if (wide_test < 0) wide_test = getenv("LARECOMP_WIDE_TEST") ? atof(getenv("LARECOMP_WIDE_TEST")) : 0;
     double shape = wide_test > 0 ? wide_test : (dw / dh) / (16.0 / 9.0);
-    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005;
+    // Only wider than 16:9. The widescreen hooks (hle/widescreen.c) widen the game's cameras, never narrow them: on a
+    // taller screen - the Galaxy Tab S10 Ultra's 16:10, shape 0.90 - the final image took the screen's shape while the
+    // main camera stayed 16:9, and the world came out stretched 11% tall. There the image keeps 16:9, fitted to the
+    // width, with thin bars above and below (on the Tab, 92 px each: the camera notch sits in the top one).
+    bool reshape = reshape_allowed && shape > 1.005;
     if (!reshape) shape = 1.0;
     // the final image: the window's resolution, in units of the Switch's 1080 lines
     double h = fmax(reshape ? dh / 1080.0 : fit, 0.1);

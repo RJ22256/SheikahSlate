@@ -17,14 +17,14 @@
 static const char *settings_file(void) {
     const char *e = getenv("LARECOMP_SETTINGS");
     if (e && *e) return e;
-    static int moved;  // (the project's former name: the player's settings carry over, once)
+    static int moved;  // (the upstream project's names: settings copied over from it carry over, once)
     if (!moved) {
         moved = 1;
-        FILE *f = fopen("botwrecompandroid.ini", "rb");
+        FILE *f = fopen("sheikahslate.ini", "rb");
         if (f) fclose(f);
-        else rename("botwrecomp.ini", "botwrecompandroid.ini");
+        else if (rename("botwrecompandroid.ini", "sheikahslate.ini") != 0) rename("botwrecomp.ini", "sheikahslate.ini");
     }
-    return "botwrecompandroid.ini";
+    return "sheikahslate.ini";
 }
 
 Settings g_settings = {
@@ -158,6 +158,7 @@ void settings_reset_defaults(void) {
     g_settings.touch_controls = d->touch_controls;
     g_settings.overlay_style = d->overlay_style;
     g_settings.fps_mode = d->fps_mode;
+    g_settings.display_refresh = d->display_refresh;
     g_settings.shader_int32 = d->shader_int32;
 #endif
 }
@@ -198,6 +199,7 @@ void settings_load(void) {
 #ifdef __ANDROID__
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
         else if (!strcmp(key, "frame_rate")) g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : 0;
+        else if (!strcmp(key, "display_refresh")) g_settings.display_refresh = !strcmp(val, "60") ? 1 : !strcmp(val, "system") ? 2 : 0;
         else if (!strcmp(key, "shader_int32")) g_settings.shader_int32 = atoi(val) != 0;
         else if (!strcmp(key, "gpu_heap")) g_settings.gpu_heap = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
         else if (!strcmp(key, "inplace_reads")) g_settings.inplace_reads = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
@@ -253,7 +255,7 @@ void settings_load(void) {
 void settings_save(void) {
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
-    fprintf(f, "# BOTWRecompAndroid settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
+    fprintf(f, "# Sheikah Slate settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     fprintf(f, "volume = %.2f\n", g_settings.volume);
@@ -268,6 +270,7 @@ void settings_save(void) {
 #ifdef __ANDROID__
     fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
     fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : "auto");
+    fprintf(f, "display_refresh = %s\n", g_settings.display_refresh == 1 ? "60" : g_settings.display_refresh == 2 ? "system" : "max");
     fprintf(f, "shader_int32 = %d\n", g_settings.shader_int32);
     static const char *const tri[] = {"auto", "0", "1"};  // (-1 / 0 / 1)
 #define TRI(v) tri[(v) < 0 ? 0 : (v) ? 2 : 1]

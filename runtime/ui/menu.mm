@@ -505,6 +505,9 @@ extern "C" void renderer_get_scene_scale(float *sx, float *sy);  // (vulkan/text
 extern "C" void renderer_get_scale(float *sx, float *sy);        // (the final image's)
 extern "C" int input_pad_family(void);  // runtime/hle/input.c
 extern "C" double output_scale_dynamic_factor(void);
+#ifdef __ANDROID__
+extern "C" void android_set_display_refresh(int how);  // (platform/android.c: Video > Display refresh rate)
+#endif
 
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
@@ -515,7 +518,8 @@ static void tab_display(void) {
                "Unlocked: the view fills the screen, so wider screens show more of Hyrule, and the HUD moves out to its "
                "edges (menus stay in the middle). Game version 1.8.2 (1.0.0 and 1.6.0 keep 16:9 with bars); a change applies "
                "when the game starts again (Quit -> Return to start, then Play). Original 16:9: the game's own framing, "
-               "with bars.");
+               "with bars. A screen taller than 16:9 (the Galaxy Tab S10 Ultra's 16:10) keeps 16:9 with thin bars "
+               "above and below either way, so nothing is stretched.");
 #ifndef __ANDROID__  // (Android: always the whole screen)
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
@@ -556,6 +560,16 @@ static void tab_display(void) {
                          : "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in 30. "
                            "30 fps: always 30 - where a frame takes longer, the game runs slightly slower instead of "
                            "dropping to 20.");
+    }
+    {   // (Sheikah Slate: SlateDisplay.java applyRefresh, through platform/android.c; applies at once)
+        static const char *hz[] = {"Highest", "60 Hz", "System"};
+        if (opt_choice("Display refresh rate", &g_settings.display_refresh, hz, 3, 0,
+                       "Highest: the screen's top rate at this resolution - 120 Hz on the Galaxy Tab S10 Ultra. The game "
+                       "still runs at its frame rate, but each frame reaches the screen sooner and more evenly (a late "
+                       "frame shows for 25 ms instead of 50). 60 Hz: uses a little less battery. System: One UI decides "
+                       "(Settings > Display > Motion smoothness, Game Booster).")) {
+            android_set_display_refresh(g_settings.display_refresh);
+        }
     }
 #endif
 
@@ -669,8 +683,8 @@ static void tab_quit(float scale, bool in_game) {
         ask = 0;
     const char *lost = in_game ? tr("\n\nProgress since your last save is lost.") : "";
     char d1[320], d2[320];
-    snprintf(d1, sizeof d1, tr("Leaves the game and goes back to the BOTWRecompAndroid start screen.%s"), lost);
-    snprintf(d2, sizeof d2, tr("Closes BOTWRecompAndroid.%s"), lost);
+    snprintf(d1, sizeof d1, tr("Leaves the game and goes back to the Sheikah Slate start screen.%s"), lost);
+    snprintf(d2, sizeof d2, tr("Closes Sheikah Slate.%s"), lost);
 #ifdef __ANDROID__
     const char *quit_app = "Close app", *quit_app_yes = "Close app";
     const char *quit_start = "Return to start", *quit_start_yes = "Return to start";
@@ -1118,6 +1132,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             if (sheikah_button("Restore", ImVec2(260 * scale, 58 * scale), 1, scale)) {
                 settings_reset_defaults();
                 settings_save();
+#ifdef __ANDROID__
+                android_set_display_refresh(g_settings.display_refresh);  // (the display mode follows at once)
+#endif
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();

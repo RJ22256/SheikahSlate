@@ -9,9 +9,9 @@ cd "$(dirname "$0")/.."
 R=$PWD
 SRC=${1:?usage: android/push_game.sh <folder with exefs/ and romfs/>}
 # (GAME_DEST / GAMELIB_OUT: another game version in its own data root, e.g. 1.6.0 in files/v160 - android/run_v160.sh)
-D=${GAME_DEST:-/sdcard/Android/data/com.botwrecomp.android/files/extracted}
+D=${GAME_DEST:-/sdcard/Android/data/com.sheikahslate.tab/files/extracted}
 LIB=${GAMELIB_OUT:-android/out}
-DEV_TMP=/data/local/tmp/botwrecompandroid
+DEV_TMP=/data/local/tmp/sheikahslate
 
 SDK=${ANDROID_HOME:-${LOCALAPPDATA:-$HOME}/Android/Sdk}
 SDK=${SDK//\\//}

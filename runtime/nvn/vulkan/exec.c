@@ -3468,6 +3468,17 @@ static VkDescriptorBufferInfo gmem_info(void) {
     if (!off && want > gmem_size && !gmem_import(want)) {
         LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
         off = 1;
+#ifdef __ANDROID__
+        // (the shaders are translated for the import already: from the next start on, this driver takes the CPU
+        // copies from the beginning - device.c host_import_probe reads this)
+        mkdir("cache", 0755);
+        FILE *f = fopen("cache/vk_host_import_failed", "w");
+        if (f) {
+            fprintf(f, "%s|%u\n", g_vk.props.deviceName, g_vk.props.driverVersion);
+            fclose(f);
+            LOG("[vk] restart the app: the next start uses CPU copies for shader global memory on this driver\n");
+        }
+#endif
     }
 #ifdef __ANDROID__
     if (gmem_buf) {  // (a storage buffer's range is limited: 2 GB on Adreno; the heap may be larger)

@@ -54,7 +54,7 @@ static bool copy_to(const char *from, const char *to) {
 }
 
 // A 1.6.0 / 1.8.2 library in that version's extracted/ (put there over adb: android/push_game.sh) newer than the one in
-// internal storage, or another size, is copied in with its id - as BOTWRecompAndroidActivity does 1.0.0's. Once per
+// internal storage, or another size, is copied in with its id - as SheikahSlateActivity does 1.0.0's. Once per
 // process: a copy that fails isn't tried again every frame.
 static void sync_from_game_dir(const char *game_dir, const char *lib) {
     char src[1100], dir[1100];

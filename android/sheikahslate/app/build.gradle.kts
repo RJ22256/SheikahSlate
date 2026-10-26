@@ -7,22 +7,22 @@ plugins {
 
 val repo: File = rootDir.resolve("../..").canonicalFile
 val deps: File = repo.resolve("android/deps/out")  // android/deps/build_deps.sh
-val gen = layout.buildDirectory.dir("generated/botwrecompandroid")
-// The release key: outside the repository, in ~/.botwrecompandroid/keystore.properties (storeFile, storePassword, keyAlias,
+val gen = layout.buildDirectory.dir("generated/sheikahslate")
+// The release key: outside the repository, in ~/.sheikahslate/keystore.properties (storeFile, storePassword, keyAlias,
 // keyPassword); without it, release builds are signed with the debug key
-val releaseKey: File = File(System.getProperty("user.home"), ".botwrecompandroid/keystore.properties")
+val releaseKey: File = File(System.getProperty("user.home"), ".sheikahslate/keystore.properties")
 
 android {
-    namespace = "com.botwrecompandroid"
+    namespace = "com.sheikahslate"
     compileSdk = 36
     ndkVersion = "30.0.16248370"
 
     defaultConfig {
-        applicationId = "com.botwrecomp.android"
+        applicationId = "com.sheikahslate.tab"
         minSdk = 30
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.1.9-beta"
+        versionCode = 1
+        versionName = "0.1.9-slate.1"  // (upstream BOTWRecompAndroid 0.1.9-beta, Galaxy Tab S10 Ultra port 1)
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -87,10 +87,10 @@ android {
 
 // What the native build and the APK need: the SMAA shader as a C string (smaa_hlsl.inc),
 // the prebuilt libraries, and the shipped resources (the start screen's font, the icon).
-val prepareBotwRecompAndroid by tasks.registering {
+val prepareSheikahSlate by tasks.registering {
     val smaa = repo.resolve("third_party/smaa/SMAA.hlsl")
     val font = repo.resolve("third_party/fonts/Baloo2/Baloo2-SemiBold.ttf")
-    val icon = repo.resolve("assets/artwork/triforce-icon-v2.png")
+    val icon = repo.resolve("assets/artwork/sheikah-slate-icon-v1.png")  // (Sheikah Slate: an original icon, tools/make_icon.py)
     val background = repo.resolve("assets/artwork/great-plateau-background-v2.png")
     val touchSkin = repo.resolve("assets/artwork/sheikah-touch-atlas-v1.png")
     val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so", "libswscale.so")
@@ -121,7 +121,7 @@ val prepareBotwRecompAndroid by tasks.registering {
         icon.copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher.png"), overwrite = true)
         // the game code's builder (docs/las/ANDROID-PORT.md, Fase 6; android/deps/build_gen_deps.sh): its programs and
         // libraries as native libraries (Android runs binaries only from nativeLibraryDir), the rest as assets/gen
-        // (runtime/gamebuild.c; unpacked by BOTWRecompAndroidActivity)
+        // (runtime/gamebuild.c; unpacked by SheikahSlateActivity)
         val g = deps.resolve("gen")
         if (g.resolve("zig/libzig.so").exists()) {
             val jni = out.resolve("jniLibs/arm64-v8a")
@@ -161,7 +161,7 @@ val prepareBotwRecompAndroid by tasks.registering {
         }
     }
 }
-tasks.named("preBuild") { dependsOn(prepareBotwRecompAndroid) }
+tasks.named("preBuild") { dependsOn(prepareSheikahSlate) }
 tasks.matching { it.name.startsWith("configureCMake") || it.name.startsWith("buildCMake") }.configureEach {
-    dependsOn(prepareBotwRecompAndroid)
+    dependsOn(prepareSheikahSlate)
 }

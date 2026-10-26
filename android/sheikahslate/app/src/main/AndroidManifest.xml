@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- After SDL3's android-project template (3.4.16), with BOTWRecompAndroid's activity. -->
+<!-- After SDL3's android-project template (3.4.16), with Sheikah Slate's activity. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="true" />
@@ -12,13 +12,22 @@
     <!-- Loopback HTTP bridge to the Zepp app on this phone (enabled by the player). -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- appCategory="game": on a large screen (smallest width 600 dp or more: the Galaxy Tab S10 Ultra) Android 16
+         ignores screenOrientation, setRequestedOrientation and resizeableActivity for an app targeting API 36 - except
+         for games. Without it the tablet turned upright shows the game in portrait. (It is also the category Android's
+         game features read; One UI's Game Launcher may need the app added by hand when it isn't from a store.) -->
     <application
-        android:label="BOTWRecompAndroid"
+        android:label="Sheikah Slate"
         android:icon="@mipmap/ic_launcher"
+        android:appCategory="game"
         android:allowBackup="false"
         android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
         android:enableOnBackInvokedCallback="false"
         android:hardwareAccelerated="true">
+
+        <!-- (API 36 only, the same landscape lock for a build that loses its game category: the opt-out that API 37
+             removes) -->
+        <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true" />
 
         <!-- SDL hints (SDL_ENV.*): landscape only (SDL would allow any orientation for a resizable window) -->
         <meta-data android:name="SDL_ENV.SDL_ORIENTATIONS" android:value="LandscapeLeft LandscapeRight" />
@@ -27,7 +36,7 @@
         <profileable android:shell="true" />
 
         <activity
-            android:name=".BOTWRecompAndroidActivity"
+            android:name=".SheikahSlateActivity"
             android:alwaysRetainTaskState="true"
             android:launchMode="singleInstance"
             android:screenOrientation="sensorLandscape"

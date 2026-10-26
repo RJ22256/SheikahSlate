@@ -1,6 +1,6 @@
 // The menu's Mods page (Android; LASRecompAndroid's): the game mods in mods/ (runtime/mods.c), each on or off, its own
 // note (its .txt: the authors, the credits) as the description, and Import a mod folder
-// (BOTWRecompAndroidActivity.importMod: the Android folder picker; the folder is copied into this game version's
+// (SheikahSlateActivity.importMod: the Android folder picker; the folder is copied into this game version's
 // mods/). On or off applies when the game starts again.
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
@@ -24,7 +24,7 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::string g_msg;  // the last import's outcome (set from the activity's thread)
 static bool g_busy;
 
-extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeModImportDone(JNIEnv *env, jclass,
+extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeModImportDone(JNIEnv *env, jclass,
                                                                                                           jstring message) {
     const char *text = env->GetStringUTFChars(message, NULL);
     pthread_mutex_lock(&g_lock);

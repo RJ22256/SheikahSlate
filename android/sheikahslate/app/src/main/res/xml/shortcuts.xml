@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Long-press the app icon: back to the system's Vulkan driver without opening the app first (a custom driver that
-     draws garbage, or never draws, leaves Settings out of reach). BOTWRecompAndroidActivity.SYSTEM_DRIVER. And a driver
+     draws garbage, or never draws, leaves Settings out of reach). SheikahSlateActivity.SYSTEM_DRIVER. And a driver
      package chosen before the game starts (a system driver too old for the game stops the app before the start
      screen): DriverPickActivity. -->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
@@ -11,9 +11,9 @@
         android:shortcutShortLabel="@string/shortcut_pick_driver"
         android:shortcutLongLabel="@string/shortcut_pick_driver_long">
         <intent
-            android:action="com.botwrecompandroid.action.PICK_DRIVER"
-            android:targetPackage="com.botwrecomp.android"
-            android:targetClass="com.botwrecompandroid.DriverPickActivity" />
+            android:action="com.sheikahslate.action.PICK_DRIVER"
+            android:targetPackage="com.sheikahslate.tab"
+            android:targetClass="com.sheikahslate.DriverPickActivity" />
     </shortcut>
     <shortcut
         android:shortcutId="watch_map"
@@ -22,9 +22,9 @@
         android:shortcutShortLabel="@string/shortcut_watch_map"
         android:shortcutLongLabel="@string/shortcut_watch_map_long">
         <intent
-            android:action="com.botwrecompandroid.action.WATCH_MAP"
-            android:targetPackage="com.botwrecomp.android"
-            android:targetClass="com.botwrecompandroid.BOTWRecompAndroidActivity" />
+            android:action="com.sheikahslate.action.WATCH_MAP"
+            android:targetPackage="com.sheikahslate.tab"
+            android:targetClass="com.sheikahslate.SheikahSlateActivity" />
     </shortcut>
     <shortcut
         android:shortcutId="system_driver"
@@ -33,8 +33,8 @@
         android:shortcutShortLabel="@string/shortcut_system_driver"
         android:shortcutLongLabel="@string/shortcut_system_driver_long">
         <intent
-            android:action="com.botwrecompandroid.action.SYSTEM_DRIVER"
-            android:targetPackage="com.botwrecomp.android"
-            android:targetClass="com.botwrecompandroid.BOTWRecompAndroidActivity" />
+            android:action="com.sheikahslate.action.SYSTEM_DRIVER"
+            android:targetPackage="com.sheikahslate.tab"
+            android:targetClass="com.sheikahslate.SheikahSlateActivity" />
     </shortcut>
 </shortcuts>

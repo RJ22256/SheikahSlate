@@ -1,7 +1,7 @@
 // Android host layer (runtime/platform.h), arm64. Based on linux.c; what differs:
 // - the guest window goes wherever the app process has room (android/common/guest_window.h) instead of a fixed
 //   address: an app process is forked from the zygote, with its libraries already mapped, and can't re-exec itself;
-// - stdout / stderr go to logcat (tag BOTWRecompAndroid);
+// - stdout / stderr go to logcat (tag SheikahSlate);
 // - no execinfo: backtraces through the unwinder; no re-exec.
 #define _GNU_SOURCE
 #include <SDL3/SDL.h>
@@ -34,8 +34,8 @@
 uint64_t g_guest_lo;  // the window's start (rt.h GUEST_LO), set by plat_reserve_guest before main()
 
 // ---- the log in a file as well (Settings > Prelaunch > Driver compatibility, to send with a report; from
-// LASRecompAndroid): botwrecomp-log.txt in the folder the player picked (BOTWRecompAndroidActivity.openLog, the run
-// before's kept beside it), else <data root>/botwrecomp.log (Android lets only adb read there). The first lines (before
+// LASRecompAndroid): sheikahslate-log.txt in the folder the player picked (SheikahSlateActivity.openLog, the run
+// before's kept beside it), else <data root>/sheikahslate.log (Android lets only adb read there). The first lines (before
 // the setting is read, or a later switch on) wait in a buffer, so the file starts with the driver's and the GPU's lines.
 static pthread_mutex_t g_logf_lock = PTHREAD_MUTEX_INITIALIZER;
 static FILE *g_logf;
@@ -65,7 +65,7 @@ static void log_file_line(const char *line) {
     pthread_mutex_unlock(&g_logf_lock);
 }
 
-static int picked_folder_log(bool first) {  // BOTWRecompAndroidActivity.openLog: a descriptor, -1 without a usable folder
+static int picked_folder_log(bool first) {  // SheikahSlateActivity.openLog: a descriptor, -1 without a usable folder
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject act = (jobject)SDL_GetAndroidActivity();
     if (!env || !act) return -1;
@@ -95,8 +95,8 @@ static void log_file_begin(FILE *f, const char *root_file) {
 
 void android_log_file(bool on) {
     char root[1100], root_prev[1100];
-    snprintf(root, sizeof root, "%s/botwrecomp.log", rt_data_root());
-    snprintf(root_prev, sizeof root_prev, "%s/botwrecomp-previous.log", rt_data_root());
+    snprintf(root, sizeof root, "%s/sheikahslate.log", rt_data_root());
+    snprintf(root_prev, sizeof root_prev, "%s/sheikahslate-previous.log", rt_data_root());
     pthread_mutex_lock(&g_logf_lock);
     if (!on) {
         if (g_logf) fclose(g_logf);
@@ -123,7 +123,7 @@ void android_log_file(bool on) {
 }
 
 static void log_line(const char *line) {
-    __android_log_write(ANDROID_LOG_INFO, "BOTWRecompAndroid", line);
+    __android_log_write(ANDROID_LOG_INFO, "SheikahSlate", line);
     log_file_line(line);
 }
 
@@ -336,7 +336,7 @@ void plat_init(void) { log_to_logcat(); }
 bool plat_exe_path(char *buf, size_t size) {
     const char *files = SDL_GetAndroidInternalStoragePath();
     if (!files) return false;
-    return (size_t)snprintf(buf, size, "%s/res/botwrecompandroid", files) < size;
+    return (size_t)snprintf(buf, size, "%s/res/sheikahslate", files) < size;
 }
 
 void plat_exec(char *const argv[]) { (void)argv; }  // (an app process can't replace itself: the caller reports it)
@@ -361,7 +361,7 @@ const char *plat_symbol(uint64_t pc, uint64_t *offset) {
     return di.dli_sname;
 }
 
-// A graphics driver the game can't run on: BOTWRecompAndroidActivity.driverErrorDialog offers to install another one
+// A graphics driver the game can't run on: SheikahSlateActivity.driverErrorDialog offers to install another one
 // (or go back to the system's) and starts the app again - the Settings rows that choose the driver are out of reach
 // when it fails before the start screen (LAS Recomp for Android 1c05238, from LASRecomp-Android-Plus, MIT). False: no
 // dialog shown.
@@ -381,14 +381,29 @@ static bool driver_error_dialog(const char *text) {
     return shown;
 }
 
+// Video > Display refresh rate (settings.h display_refresh): SheikahSlateActivity.setDisplayRefresh asks the window for
+// that display mode (SlateDisplay.applyRefresh, on the UI thread). At start (vulkan/device.c ui_window_init) and on
+// each change in the menu.
+void android_set_display_refresh(int how) {
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return;
+    jclass c = (*env)->GetObjectClass(env, act);
+    jmethodID m = (*env)->GetStaticMethodID(env, c, "setDisplayRefresh", "(I)V");
+    if (m) (*env)->CallStaticVoidMethod(env, c, m, (jint)how);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env, c);
+    (*env)->DeleteLocalRef(env, act);
+}
+
 void plat_fatal_notice(void) {
     fflush(stderr);
     char message[1400];
-    snprintf(message, sizeof message, "BOTWRecompAndroid stopped because of an error.\n\n%s\n\n"
+    snprintf(message, sizeof message, "Sheikah Slate stopped because of an error.\n\n%s\n\n"
              "Please include a screenshot of this message and your app/driver version in your bug report.\n"
-             "More details: logcat, tag BOTWRecompAndroid.", fatal_message[0] ? fatal_message : "The runtime encountered a fatal error.");
+             "More details: logcat, tag SheikahSlate.", fatal_message[0] ? fatal_message : "The runtime encountered a fatal error.");
     if (strcasestr(fatal_message, "vulkan") && driver_error_dialog(message)) return;  // (the driver's own errors)
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "BOTWRecompAndroid", message, NULL);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Sheikah Slate", message, NULL);
 }
 
 const char *rt_host_fn_name(uint64_t pc, uint64_t *offset);  // runtime/dispatch.c
@@ -505,12 +520,12 @@ void plat_terminate(void) { _exit(0); }
 #include <jni.h>
 #include <stdatomic.h>
 
-// What the activity reports once a second (BOTWRecompAndroidActivity.reportDeviceStats: public Android APIs; apps can't read
+// What the activity reports once a second (SheikahSlateActivity.reportDeviceStats: public Android APIs; apps can't read
 // the battery or most thermal sensors in /sys).
 static pthread_mutex_t g_ds_lock = PTHREAD_MUTEX_INITIALIZER;
 static PlatDeviceStats g_ds = {.batt_temp_c = -1, .batt_pct = -1, .thermal = -1, .headroom = -1};
 
-JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeDeviceStats(JNIEnv *env, jclass cls, jfloat batt_temp_c,
+JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeDeviceStats(JNIEnv *env, jclass cls, jfloat batt_temp_c,
                                                                             jfloat batt_pct, jfloat watts, jint thermal,
                                                                             jfloat headroom) {
     (void)env, (void)cls;

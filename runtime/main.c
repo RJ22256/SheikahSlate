@@ -1,4 +1,4 @@
-// BOTWRecompAndroid entry: load modules, set up the kernel, run nn::init::Start on the main thread.
+// Sheikah Slate entry: load modules, set up the kernel, run nn::init::Start on the main thread.
 #include <SDL3/SDL.h>
 #ifdef __ANDROID__
 #include <SDL3/SDL_main.h>  // (main() becomes SDL_main, which SDLActivity runs)

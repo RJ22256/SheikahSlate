@@ -1,4 +1,4 @@
-# Contributing to BOTWRecompAndroid
+# Contributing to Sheikah Slate
 
 Thanks for wanting to help! Bug reports, testing on different hardware and code contributions are all welcome.
 
@@ -21,12 +21,15 @@ fine.
 
 ## Reporting bugs
 
-Open a [GitHub issue](https://github.com/mamcjr/BOTWRecompAndroid/issues). Please include the Android device, OS version, GPU and driver, what you did, what happened, and logcat output (tag `BOTWRecompAndroid`).
+Open an issue on this fork's repository. Please include the Android device, One UI / Android version, GPU and driver,
+what you did, what happened, and logcat output (tag `SheikahSlate`; the `[slate]` and `[vk-cap]` lines first). Problems
+that also happen on the upstream app belong upstream: [BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid/issues).
 
 ## Building
 
-Android is the only application target. The plan and phase notes are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (Portuguese).
-Build the APK with `cd android/botwrecompandroid && ./gradlew assembleDebug` (Windows: `gradlew.bat assembleDebug`).
+Android is the only application target, tuned for the Samsung Galaxy Tab S10 Ultra ([docs/TAB-S10-ULTRA.md](docs/TAB-S10-ULTRA.md)).
+Upstream's plan and phase notes are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (Portuguese).
+Build the APK with `cd android/sheikahslate && ./gradlew assembleDebug` (Windows: `gradlew.bat assembleDebug`).
 Check your dump with `cd tools && python botw_dump.py`. Build its game library with
 `android/build_gamelib.sh Dump/01007EF00011E000/exefs`.
 
@@ -45,6 +48,8 @@ Check your dump with `cd tools && python botw_dump.py`. Build its game library w
 ## Testing your change
 
 - Build the Android APK. For rendering changes, report the device, Vulkan driver and scene used for testing.
+- The tablet logic that runs on a desktop has a test: `clang -Iruntime -o build/test_tablet_layout
+  tools/test_tablet_layout.c -lm && build/test_tablet_layout`.
 - Test in game, and look at the result: a fix isn't verified until you've seen it work.
 - Many debug hooks are documented where they're defined - grep for `getenv("LARECOMP_` (the engine's prefix, kept
   from LAS Recomp). Give test runs a scratch save folder (`LARECOMP_SAVE_DIR`) so your own saves stay untouched.

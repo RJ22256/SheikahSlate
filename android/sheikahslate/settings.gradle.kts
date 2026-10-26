@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BOTWRecompAndroid"
+rootProject.name = "SheikahSlate"
 include(":app")

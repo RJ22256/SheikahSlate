@@ -1,9 +1,9 @@
 // The app icon's long-press "Choose driver" shortcut (res/xml/shortcuts.xml): a Vulkan driver package picked before the
 // game starts. On a phone whose own driver is too old for the game, the app stops before the start screen
 // (runtime/nvn/vulkan/device.c), so Settings > Files > Choose driver is out of reach (issues #2, #5, #6, #9). The
-// package goes where that button puts it (BOTWRecompAndroidActivity.installDriver), then the app starts again in a new
+// package goes where that button puts it (SheikahSlateActivity.installDriver), then the app starts again in a new
 // process, as restartApp does: the driver is loaded once, at start.
-package com.botwrecompandroid;
+package com.sheikahslate;
 
 import android.app.Activity;
 import android.content.Intent;
@@ -25,7 +25,7 @@ public class DriverPickActivity extends Activity {
         try {
             startActivityForResult(i, REQ_DRIVER);
         } catch (Exception e) {
-            Log.e("BOTWRecompAndroid", "driver picker: " + e);
+            Log.e("SheikahSlate", "driver picker: " + e);
             finish();
         }
     }
@@ -38,14 +38,14 @@ public class DriverPickActivity extends Activity {
             return;
         }
         new Thread(() -> {
-            String name = BOTWRecompAndroidActivity.installDriver(this, f);
+            String name = SheikahSlateActivity.installDriver(this, f);
             runOnUiThread(() -> {
                 if (name.isEmpty()) {  // (not a .zip or .so: nothing changed)
                     Toast.makeText(this, R.string.driver_not_a_package, Toast.LENGTH_LONG).show();
                     finish();
                     return;
                 }
-                Log.i("BOTWRecompAndroid", "shortcut: driver " + name);
+                Log.i("SheikahSlate", "shortcut: driver " + name);
                 Intent i = getPackageManager().getLaunchIntentForPackage(getPackageName());
                 if (i != null) {
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);

@@ -1,92 +1,43 @@
-# BOTWRecompAndroid
+# Sheikah Slate
 
 [English](README.md) | **Português**
 
-Uma recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versões **1.0.0, 1.6.0 e
-1.8.2**) para Android. **Não é emulação**: o código ARM64 do jogo vira C compilado para o seu celular, e os gráficos
-(NVN) são traduzidos para Vulkan.
+*Breath of the Wild, recompilado, na prancheta em suas mãos.*
 
-O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, de peiikai (uma recompilação de
-*Link's Awakening*), e do seu porte para Android, o **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)**.
+Sheikah Slate é um porte do [BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) (0.1.9-beta) feito
+especificamente para o **Samsung Galaxy Tab S10 Ultra** (SM-X920 / SM-X926B / SM-X920N / SM-X926N). Como o original, é
+uma recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versões 1.0.0, 1.6.0 e 1.8.2):
+não é emulação. O código ARM64 do jogo vira C compilado para o aparelho, e os gráficos NVN são traduzidos para Vulkan.
+
+Ele é instalado como um app próprio (`com.sheikahslate.tab`) e pode ficar ao lado do original.
 
 > [!WARNING]
-> **Beta.** Testado num celular só (POCO F7 Ultra, Adreno 830, driver Mesa Turnip). Espere bugs. O plano e o estado
-> de cada fase estão em [docs/BOTW-PORT.md](docs/BOTW-PORT.md).
-
-## Plataforma suportada
-
-Android é o único alvo do aplicativo. Os ports e pacotes desktop foram descontinuados em 2026-10-22.
-Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvimento com o Android SDK/NDK.
-
-## Estado
-
-- **Jogável** da tela de título até o mundo, com saves, no POCO F7 Ultra: 1.0.0 e 1.6.0 a 30 fps, 1.8.2 a 30 ou até
-  60 (cerca de 40-47 fps no mundo aberto com um driver Turnip).
-- **1.8.2** tem português do Brasil, widescreen (Vídeo > Proporção da tela "Livre": a visão alarga, o HUD vai para as
-  bordas da tela) e o ritmo de quadros do SavageWindRecomp.
-- **Vídeo:** resolução interna, upscaling AMD FSR 1 / Snapdragon GSR 1, resolução de saída, SMAA.
-- **App:** configuração dos arquivos do jogo pelo celular (cada versão na sua pasta, trocadas na página Arquivos do
-  Jogo), controles de toque, controles físicos, mods, menus em inglês e português, escolha do driver Vulkan (Turnip
-  pelo adrenotools) e opções de compatibilidade do driver.
-- **Lacunas conhecidas:** configurar o jogo pelo celular compila o código do jogo nele, e isso ainda não foi medido nem
-  testado com o BOTW (espere uma demora longa e o celular quente); GPUs que não são Adreno 8xx usam caminhos mais
-  lentos e seguros; as miniaturas dos saves feitos no app ficam pretas; o áudio ainda usa um mixer simplificado.
-
-> [!IMPORTANT]
-> Como o LAS Recomp, este projeto é feito quase todo com IA (Claude, da Anthropic, pelo Claude Code), dirigido,
-> testado e revisado por um humano.
+> **Não testado no aparelho a que se destina.** As mudanças foram escritas e conferidas a partir do código (compilação e
+> testes unitários num PC), não num Tab S10 Ultra. O original foi testado num celular com GPU Adreno; a Immortalis-G720
+> do Tab é uma GPU Mali e segue os caminhos mais lentos e compatíveis do motor. Espere bugs e, por favor, relate o que
+> encontrar: [docs/TAB-S10-ULTRA.md](docs/TAB-S10-ULTRA.md) tem uma lista de testes (em inglês).
 
 > [!NOTE]
-> **Nenhum arquivo do jogo vem incluído.** Você precisa do seu próprio dump, obtido legalmente, de *Breath of the
-> Wild* 1.0.0, 1.6.0 ou 1.8.2 (`exefs` e `romfs`, extraídos). Não serão dadas instruções de como obtê-lo.
+> **Nenhum arquivo do jogo está incluído.** Você precisa do seu próprio dump obtido legalmente de *Breath of the Wild*
+> 1.0.0, 1.6.0 ou 1.8.2 (`exefs` e `romfs`, extraídos). Instruções de como obtê-lo não serão fornecidas.
 
-## Instalando (beta)
+## O que muda em relação ao original
 
-1. Baixe o APK em [Releases](https://github.com/mamcjr/BOTWRecompAndroid/releases) e instale (Android 11+, arm64,
-   Vulkan; cerca de 30 GB livres por versão do jogo).
-2. Abra, vá em **Configurar arquivos do jogo** e escolha a pasta com o seu `exefs` e `romfs`. A versão é reconhecida
-   pelos arquivos. O app copia o que precisa e compila o código do jogo no celular.
-3. Em celulares com Adreno, um driver Mesa Turnip (Configurações > Arquivos > Driver Vulkan) roda o jogo bem mais
-   rápido que o driver do sistema. Se o app parar ao abrir com "Vulkan driver is too old", toque e segure o ícone do
-   app e escolha **Escolher driver** para selecionar um antes de o jogo começar.
+- **Orientação:** o app se declara um jogo (`appCategory="game"`), então a trava em paisagem continua valendo no
+  Android 16 (One UI 8+), que ignora `sensorLandscape` em telas grandes para apps com API 36.
+- **Tela 16:10:** com "Livre" na 1.8.2, o original deixava o mundo esticado ~11% na vertical; agora a imagem fica em
+  16:9, ocupando a largura, com faixas de 92 px em cima e embaixo (o notch da câmera fica numa delas).
+- **Notch da câmera:** a janela vai por baixo dele em qualquer versão do Android, e os controles na tela saem de baixo
+  dele, também com o tablet virado.
+- **Controles na tela:** em telas grandes, medidos em milímetros (botões de ~14 mm, perto das bordas); celulares sem
+  mudança.
+- **Taxa de atualização:** Vídeo > Taxa de atualização da tela: Máxima (120 Hz), 60 Hz ou Sistema.
+- **Memória da GPU Mali:** a importação do heap do jogo é testada ao iniciar; se o driver recusar, o app usa as cópias
+  pela CPU desde o começo, em vez de shaders lendo zeros.
+- **Nome e ícone:** Sheikah Slate, com um ícone original.
 
-## Testando no Android (desenvolvedores)
+Detalhes: [docs/TAB-S10-ULTRA.md](docs/TAB-S10-ULTRA.md). Como compilar e os créditos completos: [README.md](README.md).
+O README original: [docs/upstream/README.pt-BR.md](docs/upstream/README.pt-BR.md).
 
-Com o Android SDK / NDK, um celular no adb e o seu dump em `Dump/`:
-
-```bash
-cd android/botwrecompandroid && ./gradlew assembleDebug    # o app
-android/build_gamelib.sh Dump/01007EF00011E000/exefs  # o código do jogo (cerca de uma hora)
-android/push_game.sh Dump/01007EF00011E000           # arquivos e código do jogo para o celular
-android/run_boot.sh 120                               # abre o jogo, log em android/out/boot.log
-```
-
-## Créditos
-
-- [peiikai](https://github.com/peiikai), pelo [LAS Recomp](https://github.com/peiikai/LASRecomp), o recompilador e o
-  runtime de onde este projeto parte (MIT, ver [LICENSE](LICENSE)). O README original fica em [docs/las/](docs/las/).
-- [LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid), o porte dele para Android: o app, a compilação do
-  código do jogo no celular, os controles de toque, os mods, a compatibilidade do driver e os menus em português.
-- [Revivedx](https://github.com/Revivedx), pelo [SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp) (MIT),
-  a referência para a 1.8.2: ritmo de quadros, resolução interna, as correções do kernel do SDK 20, setjmp.
-- [Nycolazs](https://github.com/Nycolazs), pelo LASRecomp-Android-Plus (MIT): compatibilidade de drivers Vulkan.
-- A decompilação [zeldaret/botw](https://github.com/zeldaret/botw) e o [open-ead/sead](https://github.com/open-ead/sead),
-  pelo que se sabe do código do jogo.
-- O launcher do Dusklight, o estilo da tela inicial.
-- Upscaling e anti-aliasing: [AMD FidelityFX FSR 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR) (MIT),
-  [Qualcomm Snapdragon GSR](https://github.com/SnapdragonStudios/snapdragon-gsr) (BSD-3-Clause),
-  [SMAA](https://github.com/iryoku/smaa) (MIT).
-- Bibliotecas: [SDL](https://libsdl.org) (zlib), [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
-  [libadrenotools](https://github.com/bylaws/libadrenotools) (BSD-2-Clause), [volk](https://github.com/zeux/volk) (MIT),
-  [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (MIT),
-  [shaderc](https://github.com/google/shaderc) (Apache 2.0), [FFmpeg](https://ffmpeg.org) (LGPL),
-  [LZ4](https://github.com/lz4/lz4) (BSD-2-Clause), [Capstone](https://www.capstone-engine.org) (BSD-3-Clause),
-  [Unicorn](https://www.unicorn-engine.org) (GPLv2, compilado do código-fonte por `android/deps/build_unicorn.sh`),
-  [Python](https://www.python.org) (PSF) e [Zig](https://ziglang.org) (MIT) para a compilação no celular.
-- O driver Turnip do [Mesa](https://www.mesa3d.org) (MIT), que os jogadores carregam por conta própria.
-- Fontes: [Baloo 2](https://github.com/EkType/Baloo2) (OFL), DejaVu Sans (licença Bitstream Vera). O robô do Android
-  é reproduzido ou modificado a partir de trabalho criado e compartilhado pelo Google (CC BY 3.0).
-- Feito com o [Claude Code](https://claude.com/claude-code) (Anthropic).
-
-*The Legend of Zelda* e *Breath of the Wild* são marcas da Nintendo. Este projeto não é afiliado nem endossado pela
-Nintendo.
+*The Legend of Zelda*, *Breath of the Wild* e *Sheikah* são marcas da Nintendo. *Galaxy* e *Galaxy Tab* são marcas da
+Samsung. Este projeto não tem afiliação nem endosso da Nintendo ou da Samsung.

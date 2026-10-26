@@ -3,12 +3,12 @@ plugins {
 }
 
 android {
-    namespace = "com.botwrecompandroid.probe"
+    namespace = "com.sheikahslate.probe"
     compileSdk = 36
     ndkVersion = "30.0.16248370"
 
     defaultConfig {
-        applicationId = "com.botwrecompandroid.probe"
+        applicationId = "com.sheikahslate.probe"
         minSdk = 31  // (Build.SOC_MODEL)
         targetSdk = 36
         versionCode = 1

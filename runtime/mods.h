@@ -2,7 +2,7 @@
 // each with a romfs/ tree laid out as emulators take them
 // (Eden, Ryujinx: <mod>/romfs/<the game's own paths>). Their files replace the game's when the game starts
 // (services/fs.c) - a fan translation, retextures... Every mod found is on unless turned off in the menu's Mods page
-// (ui/mods_tab.mm; botwrecompandroid.ini mods_off). Files the game doesn't have are left out (replacements only).
+// (ui/mods_tab.mm; sheikahslate.ini mods_off). Files the game doesn't have are left out (replacements only).
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -15,7 +15,7 @@ typedef struct {
 
 // The mods in mods/ (sorted by name), up to max
 int mods_list(ModInfo *out, int max);
-// Turns one on or off (botwrecompandroid.ini: settings_save after)
+// Turns one on or off (sheikahslate.ini: settings_save after)
 void mods_set(const char *name, bool on);
 // The game opens its RomFS: the files of the mods that are on, looked up by mods_romfs_override from then on
 void mods_scan(void);
