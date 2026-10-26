@@ -241,8 +241,11 @@ void plat_write_tracking_enable(uint64_t lo, uint64_t hi) {
 }
 
 // (signal handler) a write to a page made read-only here: true when handled
+static _Atomic uint64_t wt_faults;  // (the game's threads trapping on tracked pages: plat_wt_faults, the fps line)
+uint64_t plat_wt_faults(void) { return atomic_load_explicit(&wt_faults, memory_order_relaxed); }
 static bool wt_fault(uint64_t a) {
     if (!wt_state || a < wt_lo || a >= wt_hi) return false;
+    atomic_fetch_add_explicit(&wt_faults, 1, memory_order_relaxed);
     uint64_t p = (a - wt_lo) >> 12, np = (wt_hi - wt_lo) >> 12;
     bool ours = false;
     wt_lock();
@@ -903,4 +906,202 @@ void plat_adpf_stats(PlatAdpfStats *out) {
     out->game_cpu = s_game_cpu;
     out->render_cpu = s_render_cpu;
     pthread_mutex_unlock(&adpf_lock);
+}
+
+// ---- thread sampling (Sheikah Slate: Video > Capture a performance profile, from the first GPU frame captured)
+// Where this process's CPU time goes, per thread: each thread's own CPU-time clock drives a 1 ms SIGPROF timer
+// (Linux's per-thread CPU clocks: it only runs while that thread runs, so sleeping threads aren't woken), whose
+// handler keeps the interrupted PC. ~4 s later a helper thread stops the timers and logs, per busy thread, its CPU
+// time (a share of one core), how its samples split between the game's code (botwgame.so), this runtime
+// (libmain.so: the HLE, the renderer), libc, the GPU driver and the rest, and its hottest places (a dynamic symbol
+// when one is near, else module + offset - libmain.so's symbolized from the CI build's libmain-symbols.txt).
+// Binder, ART and other system threads are measured but not sampled. LARECOMP_NO_THREAD_SAMPLING=1: off.
+#define TS_MAX 64
+#define TS_RING 32768
+static struct { int tid; timer_t timer; bool sampled; char name[20]; uint64_t cpu0, cpu1; } ts_thr[TS_MAX];
+static int ts_n;
+static _Atomic uint32_t ts_head;
+static uint64_t ts_pc[TS_RING];
+static uint8_t ts_who[TS_RING];
+static volatile sig_atomic_t ts_on;
+static _Atomic int ts_busy;
+static struct sigaction ts_prev;
+
+static void ts_handler(int sig, siginfo_t *si, void *ctx) {
+    if (!ts_on || !ctx) {  // (between captures: whoever had SIGPROF before - a late signal must not reach SIG_DFL, which kills)
+        if ((ts_prev.sa_flags & SA_SIGINFO) && ts_prev.sa_sigaction) ts_prev.sa_sigaction(sig, si, ctx);
+        else if (!(ts_prev.sa_flags & SA_SIGINFO) && ts_prev.sa_handler != SIG_DFL && ts_prev.sa_handler != SIG_IGN && ts_prev.sa_handler)
+            ts_prev.sa_handler(sig);
+        return;
+    }
+    ucontext_t *uc = ctx;
+#if defined(__aarch64__)
+    uint64_t pc = uc->uc_mcontext.pc;
+#elif defined(__x86_64__)
+    uint64_t pc = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+#else
+    uint64_t pc = 0;
+#endif
+    uint32_t i = atomic_fetch_add_explicit(&ts_head, 1, memory_order_relaxed);
+    if (i < TS_RING) ts_pc[i] = pc, ts_who[i] = (uint8_t)si->si_value.sival_int;
+}
+
+static clockid_t ts_clock(int tid) { return (clockid_t)((~(unsigned)tid << 3) | 6); }  // (MAKE_THREAD_CPUCLOCK(tid, SCHED))
+static uint64_t ts_cpu_ns(int tid) {
+    struct timespec t;
+    if (clock_gettime(ts_clock(tid), &t)) return 0;
+    return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+
+static bool ts_system_thread(const char *n) {
+    static const char *const sys[] = {"Binder", "binder", "HwBinder", "Jit", "Heap", "Finalizer", "Reference", "Signal",
+                                      "Profile", "ADB", "perfetto", "hwui", "RenderThread", "queued-work", "FileObserver",
+                                      "OkHttp"};
+    for (size_t i = 0; i < sizeof sys / sizeof *sys; i++) if (!strncmp(n, sys[i], strlen(sys[i]))) return true;
+    return false;
+}
+
+typedef struct { char key[96]; uint32_t n; } TsHot;
+static int ts_hot_cmp(const void *a, const void *b) { return (int)((const TsHot *)b)->n - (int)((const TsHot *)a)->n; }
+
+static void *ts_report(void *arg) {
+    uint64_t ms = (uint64_t)(uintptr_t)arg, wall0 = plat_now_ns();
+    struct timespec d = {.tv_sec = (time_t)(ms / 1000), .tv_nsec = (long)(ms % 1000) * 1000000L};
+    while (nanosleep(&d, &d) && errno == EINTR) {}
+    ts_on = 0;
+    for (int i = 0; i < ts_n; i++) {
+        if (ts_thr[i].sampled) timer_delete(ts_thr[i].timer);
+        ts_thr[i].cpu1 = ts_cpu_ns(ts_thr[i].tid);
+    }
+    double wall = (plat_now_ns() - wall0) / 1e9 + 0.0001;
+    // (the handler stays installed: a signal still queued finds it, off - ts_handler)
+    uint32_t total = atomic_load(&ts_head);
+    if (total > TS_RING) total = TS_RING;
+    int order[TS_MAX];
+    for (int i = 0; i < ts_n; i++) order[i] = i;
+    for (int i = 0; i < ts_n; i++)  // (busiest first)
+        for (int j = i + 1; j < ts_n; j++)
+            if (ts_thr[order[j]].cpu1 - ts_thr[order[j]].cpu0 > ts_thr[order[i]].cpu1 - ts_thr[order[i]].cpu0) { int t = order[i]; order[i] = order[j]; order[j] = t; }
+    LOG("[threadprof] %.1f s, %u samples (1 per ms of a thread's CPU time); presenting thread %d, render thread %d, "
+        "write-tracking faults so far %llu\n", wall, total, s_presenting_tid, s_render_tid, (unsigned long long)plat_wt_faults());
+    static TsHot hot[512];
+    for (int r = 0; r < ts_n && r < 14; r++) {
+        int i = order[r];
+        double pct = (ts_thr[i].cpu1 - ts_thr[i].cpu0) / 1e9 / wall * 100;
+        if (pct < 2) break;
+        char tag[32] = "";
+        if (ts_thr[i].tid == s_presenting_tid) strcpy(tag, " (presents frames)");
+        else if (ts_thr[i].tid == s_render_tid) strcpy(tag, " (renderer)");
+        int nh = 0;
+        uint32_t mod[6] = {0}, n = 0;  // game, runtime, libc, driver, other, unknown
+        for (uint32_t k = 0; k < total; k++) {
+            if (ts_who[k] != i) continue;
+            n++;
+            Dl_info di;
+            const char *base = "?";
+            char key[96];
+            int m = 5;
+            if (dladdr((void *)(uintptr_t)ts_pc[k], &di) && di.dli_fname) {
+                base = strrchr(di.dli_fname, '/') ? strrchr(di.dli_fname, '/') + 1 : di.dli_fname;
+                m = strstr(base, "botwgame") ? 0 : !strcmp(base, "libmain.so") ? 1 : !strncmp(base, "libc.", 5) ? 2
+                  : (strstr(base, "mali") || strstr(base, "GLES") || strstr(base, "vulkan") || strstr(base, "gpu")) ? 3 : 4;
+                uint64_t off = ts_pc[k] - (uint64_t)(uintptr_t)di.dli_fbase;
+                if (di.dli_sname && di.dli_saddr && ts_pc[k] - (uint64_t)(uintptr_t)di.dli_saddr < 0x4000)
+                    snprintf(key, sizeof key, "%s!%s", base, di.dli_sname);
+                else
+                    snprintf(key, sizeof key, "%s+%#llx", base, (unsigned long long)(off & ~0x3Full));
+            } else {
+                snprintf(key, sizeof key, "%#llx", (unsigned long long)(ts_pc[k] & ~0xFFFull));
+            }
+            mod[m]++;
+            int h = 0;
+            while (h < nh && strcmp(hot[h].key, key)) h++;
+            if (h == nh && nh < 512) { snprintf(hot[nh].key, sizeof hot[nh].key, "%s", key); hot[nh++].n = 0; }
+            if (h < nh) hot[h].n++;
+        }
+        if (!ts_thr[i].sampled || !n) {
+            LOG("[threadprof] %s tid %d%s: %.0f%% of a core (not sampled)\n", ts_thr[i].name, ts_thr[i].tid, tag, pct);
+            continue;
+        }
+        LOG("[threadprof] %s tid %d%s: %.0f%% of a core, %u samples: game code %.0f%%, runtime %.0f%%, libc %.0f%%, GPU driver %.0f%%, "
+            "other %.0f%%, unknown %.0f%%\n", ts_thr[i].name, ts_thr[i].tid, tag, pct, n, mod[0] * 100.0 / n, mod[1] * 100.0 / n,
+            mod[2] * 100.0 / n, mod[3] * 100.0 / n, mod[4] * 100.0 / n, mod[5] * 100.0 / n);
+        qsort(hot, (size_t)nh, sizeof *hot, ts_hot_cmp);
+        char line[1400];
+        int o = 0;
+        for (int h = 0; h < nh && h < 24 && hot[h].n * 200 >= n; h++)  // (each at least 0.5%)
+            o += snprintf(line + o, sizeof line - (size_t)o, "%s %s %.1f%%", h ? "," : "", hot[h].key, hot[h].n * 100.0 / n);
+        if (o) LOG("[threadprof]   hottest:%s\n", line);
+    }
+    {   // (the clusters' clocks at the end: whether the big cores ran fast)
+        PlatDeviceStats st;
+        plat_device_stats(&st);
+        char c[160] = "";
+        int o = 0;
+        for (int k = 0; k < st.ncluster && k < 8; k++) o += snprintf(c + o, sizeof c - (size_t)o, "%s%u", k ? " / " : "", st.cluster_mhz[k]);
+        LOG("[threadprof] CPU clusters now %s MHz, SoC %.0f C\n", c, st.soc_temp_c);
+    }
+    atomic_store(&ts_busy, 0);
+    return NULL;
+}
+
+void plat_thread_sample(int ms) {
+    if (getenv("LARECOMP_NO_THREAD_SAMPLING") || atomic_exchange(&ts_busy, 1)) return;
+    ts_n = 0;
+    atomic_store(&ts_head, 0);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = ts_handler;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    static bool installed;  // (once: ts_prev stays the handler from before, never this one)
+    if (!installed) {
+        if (sigaction(SIGPROF, &sa, &ts_prev)) { atomic_store(&ts_busy, 0); return; }
+        installed = true;
+    }
+    ts_on = 1;
+    DIR *dir = opendir("/proc/self/task");
+    for (struct dirent *e; dir && (e = readdir(dir)) && ts_n < TS_MAX;) {
+        int tid = atoi(e->d_name);
+        if (tid <= 0) continue;
+        int i = ts_n++;
+        ts_thr[i].tid = tid;
+        ts_thr[i].sampled = false;
+        snprintf(ts_thr[i].name, sizeof ts_thr[i].name, "?");
+        char path[64];
+        snprintf(path, sizeof path, "/proc/self/task/%d/comm", tid);
+        FILE *f = fopen(path, "re");
+        if (f) {
+            if (fgets(ts_thr[i].name, sizeof ts_thr[i].name, f)) ts_thr[i].name[strcspn(ts_thr[i].name, "\n")] = 0;
+            fclose(f);
+        }
+        ts_thr[i].cpu0 = ts_cpu_ns(tid);
+        if (ts_system_thread(ts_thr[i].name) && tid != s_presenting_tid && tid != s_render_tid) continue;
+        struct sigevent sev;
+        memset(&sev, 0, sizeof sev);
+        sev.sigev_notify = SIGEV_THREAD_ID;
+        sev.sigev_signo = SIGPROF;
+        sev.sigev_value.sival_int = i;
+#ifdef sigev_notify_thread_id
+        sev.sigev_notify_thread_id = tid;
+#else
+        sev._sigev_un._tid = tid;
+#endif
+        if (timer_create(ts_clock(tid), &sev, &ts_thr[i].timer)) continue;
+        struct itimerspec its = {.it_interval = {0, 1000000}, .it_value = {0, 1000000}};
+        if (timer_settime(ts_thr[i].timer, 0, &its, NULL)) { timer_delete(ts_thr[i].timer); continue; }
+        ts_thr[i].sampled = true;
+    }
+    if (dir) closedir(dir);
+    LOG("[threadprof] sampling %d threads for %d ms\n", ts_n, ms);
+    pthread_t th;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&th, &at, ts_report, (void *)(uintptr_t)(ms > 0 ? ms : 4000))) {
+        ts_on = 0;
+        for (int i = 0; i < ts_n; i++) if (ts_thr[i].sampled) timer_delete(ts_thr[i].timer);
+        atomic_store(&ts_busy, 0);
+    }
+    pthread_attr_destroy(&at);
 }

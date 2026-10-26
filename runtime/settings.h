@@ -44,6 +44,9 @@ typedef struct {
                           // vk_shader_int32): -1 Automatic - on for Arm (Mali) GPUs, whose compilers got the 64-bit
                           // address math of the game's text and lighting shaders wrong on the Galaxy Tab S10 Ultra
                           // (letters missing or taken from elsewhere in the font) - 1 on, 0 off. ini: shader_math
+    int pass_overlap;     // Video > Overlap render passes (vulkan/exec.c begin_pass): a pass after a pass starts with a
+                          // barrier that holds back only its pixel work, so its geometry work overlaps the pass before
+                          // on a tiler. -1 Automatic - on for Arm (Mali) GPUs - 1 on, 0 off (a full barrier, upstream's)
     // Driver compatibility (the start screen's Settings > Prelaunch, ui/launcher.mm; from LASRecompAndroid), for GPUs
     // where a Turnip path draws wrong: read when the game starts (gpu_heap, inplace_reads) or when the app starts
     // (turnip_lrz, log_file). -1 Automatic: on for the Adreno 8xx GPUs these paths were made on, off elsewhere

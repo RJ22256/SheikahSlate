@@ -1400,7 +1400,11 @@ void backend_present(NvnTexture *t) {
                 4 - g_gpuprof_req_left);
             g_gpuprof_frame = true;
             extern void vk_cpuprof_start(void);  // (exec.c: the CPU's side too, from the first frame captured)
-            if (g_gpuprof_req_left == 3) vk_cpuprof_start();
+            if (g_gpuprof_req_left == 3) {
+                vk_cpuprof_start();
+                extern void plat_thread_sample(int ms);  // (platform/android.c: every thread's CPU time, ~4 s)
+                plat_thread_sample(4000);
+            }
             g_gpuprof_req_at = --g_gpuprof_req_left > 0 ? (long)total_frames + 45 : 0;
         }
         const char *e = getenv("LARECOMP_GPUPROF_AT");

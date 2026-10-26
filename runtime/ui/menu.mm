@@ -664,6 +664,16 @@ static void tab_display(void) {
                        "translated from now on: restart the app for all of them."))
             g_settings.shader_int32 = si == 0 ? -1 : si == 1 ? 1 : 0;
     }
+    {   // (settings.h pass_overlap: -1 Automatic, 1 on, 0 off - vulkan/exec.c begin_pass)
+        static const char *po[] = {"Automatic", "On", "Off"};
+        int pi = g_settings.pass_overlap < 0 ? 0 : g_settings.pass_overlap ? 1 : 2;
+        if (opt_choice("Overlap render passes", &pi, po, 3, 0,
+                       "Lets the GPU start a render pass's geometry while the pass before it is still drawing pixels, "
+                       "instead of waiting for all of it - the game draws ~300 passes a frame, many of them small. "
+                       "Automatic: on for Mali GPUs, like the Galaxy Tab S10 Ultra's; off elsewhere. If something "
+                       "flickers or draws in the wrong place, set it to Off. Applies at once."))
+            g_settings.pass_overlap = pi == 0 ? -1 : pi == 1 ? 1 : 0;
+    }
     if (opt_button("Capture a performance profile",
                    "Writes where the time goes into the log file, starting about 10 seconds from now: the GPU's for each "
                    "part of three frames, and the CPU's (the renderer's) for about 6 seconds. Close this menu and keep "

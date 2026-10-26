@@ -244,6 +244,42 @@ round of CPU work (the copies).
   With Internal resolution at Match display the scene is ~1.9x the Switch's pixels; Internal resolution **1x** and
   Output resolution **1080p** roughly halve the GPU's work, and SGSR still fills the screen.
 
+## Update 6 (0.1.9-slate.6): fewer copies, overlapping passes, where the game's own time goes
+
+The Update 5 log, in the world at Internal resolution 1x / Output 1080p: **21-25 fps** (Update 3: 12-15), no pass ends
+left (`breaks 0`, ~400 on-tile reads a frame). Per frame: the GPU ~27 ms busy, the render thread ~18 ms - and the
+render thread idle ~32 ms of each ~43 ms frame, waiting for the game's own thread to hand over the next one. The game's
+logic is the limit now; this update trims the renderer's and the GPU's share and measures the game's.
+
+### 19. Constant buffers copied once a frame (`exec.c` guest_copy)
+
+The copies of guest memory draws bind (constant buffers, some vertex data) were shared within a submission only; a
+frame is ~8 submissions on the Tab (passes split by time, dispatches), so the scene's and the camera's constants were
+copied again in each. Now within the frame: a copy a later submission reuses keeps its ring chunk alive for that one
+(`ring_keep`); copies are dropped at each present, by in-list writes, and where the GPU's results or render targets
+are written back into guest memory (`gcopy_retire`, `wb_apply`: ranges queued from any thread, applied by the render
+thread). The fps line: `upload X MB (copies Y MB, shared Z MB)` - shared: what a later submission took from an earlier
+one's copy. `LARECOMP_GCOPY_PER_SUBMISSION=1`: as before.
+
+### 20. Video > Overlap render passes (`exec.c` begin_pass / light_barrier)
+
+Every pass began with a full barrier: all earlier work done before any of the pass's - its vertex shading and binning
+included. A tiler runs a pass's geometry while the pass before still shades pixels; the full barrier made each of the
+~300 passes a frame wait for the GPU to drain (80 small 64x64 passes ~2.9 ms, 30 8x8 ones ~1 ms). When only a pass came
+before (no copy, dispatch or submission since), the barrier now holds back the new pass's pixel work only (attachment
+loads, depth tests, fragment shaders, colour writes). A draw whose vertex shader reads a target drawn since the last full
+barrier, or global memory stored to since, or stores itself, gets the full barrier (its pass restarted if it began
+light). Automatic: on for Arm GPUs; Off: upstream's full barrier. The fps line: `light barriers N (restarts N)`.
+
+### 21. The capture samples every thread (`platform/android.c` plat_thread_sample)
+
+Video > Capture a performance profile now also samples the process's threads for ~4 s by their own CPU time (a 1 ms
+SIGPROF timer on each thread's CPU clock, only while it runs): `[threadprof]` lines give each busy thread's share of a
+core, how its time splits between the game's code (botwgame.so), the runtime (libmain.so), libc, the GPU driver and
+the rest, and its hottest places - libmain.so offsets readable with the CI's `libmain-symbols-<commit>` artifact.
+`tools/test_thread_sampling.py` (CI) runs it against busy and sleeping threads on Linux. The fps line also counts
+`write faults` - the game's threads trapping on pages the copy mode tracks (a signal and an mprotect each).
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep

@@ -86,6 +86,12 @@ static uint64_t last_submit_ns;  // (begin_pass: LARECOMP_VK_CHUNK_US)
 #endif
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool in_pass;
+// (Sheikah Slate: Video > Overlap render passes, begin_pass) nothing but a pass's end recorded since the last pass;
+// passes begun, the last one begun with the full barrier, the last one a draw stored to global memory in; the next
+// pass must begin with the full barrier; the current one began with the light one
+static bool pass_only_since, force_full_barrier, cur_pass_light;
+static uint32_t pass_serial, full_serial, gstore_serial;
+static uint64_t stat_light_barriers, stat_vs_restarts;
 static uint32_t pass_written;  // (the attachments this pass's draws wrote so far: draw_writes)
 static uint32_t pass_dup_null;  // (color slots left unbound: their image is bound in another slot - begin_pass)
 
@@ -594,6 +600,7 @@ static void upload_begin_barrier(VkCommandBuffer cb) {
     vk_full_barrier(cb);
 }
 VkCommandBuffer vk_cmd(void) {
+    if (!in_pass) pass_only_since = false;  // (a copy, a dispatch, a new command buffer...: the next pass's barrier is full)
     Sub *s = sub();
     if (!s->main_begun) {
         begin_cb(s, &s->main, &s->main_begun);
@@ -916,6 +923,13 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
     return (VkSpan){chunks[pick].buf, 0, chunks[pick].ptr};
 }
 
+// A span of chunk `buf` used by the submission being recorded too (guest_copy): not recycled before that one is done
+static void ring_keep(VkBuffer buf) {
+    uint64_t pending = vk_pending_seq();
+    for (int i = 0; i < nchunks; i++)
+        if (chunks[i].buf == buf) { if (chunks[i].seq < pending) chunks[i].seq = pending; return; }
+}
+
 // GPU -> CPU copies: the ring is write-combined (often device-local over the BAR), where CPU reads crawl (a
 // 1280x720 screenshot took 7 s). Readbacks use one host-cached buffer instead. Every user waits for the GPU and
 // reads the data before the next readback (render thread), so a single grow-only buffer suffices.
@@ -985,31 +999,78 @@ static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t al
     return s;
 }
 
-// Guest memory copied once per submission: draws binding the same range share the copy.
+// Guest memory copied once per frame: draws binding the same range share the copy - also across the frame's
+// submissions (Sheikah Slate: the Tab S10 Ultra's frames are ~8 submissions - passes split by time, dispatches -
+// and the constant buffers every draw binds, the scene's and the camera's, were copied again in each). A copy used
+// by a later submission keeps its ring chunk alive for that one (ring_keep). Dropped at each present, by
+// guest_copy_flush, by in-list writes (guest_copy_invalidate) and where the GPU's results are copied back into guest
+// memory (gcopy_retire, on any thread: gcopy_written queues the ranges, the render thread applies them).
+// LARECOMP_GCOPY_PER_SUBMISSION=1: per submission, as before.
 #define GCOPY_TAB 4096
-static struct { uint64_t addr, size, seq; VkSpan span; } gcopy[GCOPY_TAB];
+static struct { uint64_t addr, size, key, use_seq; VkSpan span; } gcopy[GCOPY_TAB];
 static uint16_t gcopy_active[GCOPY_TAB];
 static int gcopy_nactive;
-static uint64_t gcopy_active_seq;
+static uint64_t gcopy_active_key;
 static uint64_t gcopy_gen;  // bumped to drop every shared copy (guest memory written mid-list)
+static uint64_t stat_gcopy_reused;  // (bytes a later submission took from an earlier one's copy: the fps line)
 static void guest_copy_flush(void) { gcopy_gen++; gcopy_nactive = 0; }
+static uint64_t guest_copy_key(void) {
+    static int per_sub = -1;
+    if (per_sub < 0) per_sub = getenv("LARECOMP_GCOPY_PER_SUBMISSION") != NULL;
+    // (the frame - fc_epoch, counted at each present - or the submission; with the drops)
+    return ((per_sub ? vk_pending_seq() : (uint64_t)fc_epoch) << 24) + gcopy_gen;
+}
 static void guest_copy_invalidate(uint64_t lo, uint64_t hi) {
-    uint64_t seq = vk_pending_seq() + (gcopy_gen << 40);
-    if (gcopy_active_seq != seq) return;
+    uint64_t key = guest_copy_key();
+    if (gcopy_active_key != key) return;
     for (int i = 0; i < gcopy_nactive; i++) {
         uint16_t s = gcopy_active[i];
-        if (gcopy[s].seq == seq && gcopy[s].addr < hi && lo < gcopy[s].addr + gcopy[s].size) gcopy[s].seq = 0;
+        if (gcopy[s].key == key && gcopy[s].addr < hi && lo < gcopy[s].addr + gcopy[s].size) gcopy[s].key = 0;
     }
 }
+// (gcopy_retire, any thread) the GPU's results copied into guest memory: copies of it taken this frame are stale
+static pthread_mutex_t gcq_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { uint64_t lo, hi; } gcq[8];
+static int gcq_n;
+static bool gcq_over;
+static _Atomic int gcq_pending;
+static void gcopy_written(uint64_t lo, uint64_t hi) {
+    pthread_mutex_lock(&gcq_lock);
+    if (gcq_n < 8) gcq[gcq_n].lo = lo, gcq[gcq_n++].hi = hi;
+    else gcq_over = true;
+    atomic_store_explicit(&gcq_pending, 1, memory_order_release);
+    pthread_mutex_unlock(&gcq_lock);
+}
+static void ring_keep(VkBuffer buf);
 static VkSpan guest_copy(uint64_t addr, uint64_t size) {
-    uint64_t seq = vk_pending_seq() + (gcopy_gen << 40), h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
-    if (gcopy_active_seq != seq) { gcopy_active_seq = seq; gcopy_nactive = 0; }
+    if (atomic_load_explicit(&gcq_pending, memory_order_acquire)) {  // (the GPU's results written back meanwhile)
+        uint64_t r[8][2];
+        int n;
+        bool over;
+        pthread_mutex_lock(&gcq_lock);
+        n = gcq_n, over = gcq_over;
+        for (int i = 0; i < n; i++) r[i][0] = gcq[i].lo, r[i][1] = gcq[i].hi;
+        gcq_n = 0, gcq_over = false;
+        atomic_store_explicit(&gcq_pending, 0, memory_order_relaxed);
+        pthread_mutex_unlock(&gcq_lock);
+        if (over) guest_copy_flush();
+        else for (int i = 0; i < n; i++) guest_copy_invalidate(r[i][0], r[i][1]);
+    }
+    uint64_t key = guest_copy_key(), pending = vk_pending_seq(), h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
+    if (gcopy_active_key != key) { gcopy_active_key = key; gcopy_nactive = 0; }
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (GCOPY_TAB - 1);
-    if (gcopy[slot].seq == seq && gcopy[slot].addr == addr && gcopy[slot].size == size) return gcopy[slot].span;
-    if (gcopy[slot].seq != seq && gcopy_nactive < GCOPY_TAB) gcopy_active[gcopy_nactive++] = (uint16_t)slot;
+    if (gcopy[slot].key == key && gcopy[slot].addr == addr && gcopy[slot].size == size) {
+        if (gcopy[slot].use_seq != pending) {  // (an earlier submission's copy: its chunk lives until this one is done)
+            ring_keep(gcopy[slot].span.buf);
+            gcopy[slot].use_seq = pending;
+            stat_gcopy_reused += size;
+        }
+        return gcopy[slot].span;
+    }
+    if (gcopy[slot].key != key && gcopy_nactive < GCOPY_TAB) gcopy_active[gcopy_nactive++] = (uint16_t)slot;
     VkSpan s = vk_transient_copy((const void *)(uintptr_t)addr, size, 256);
     stat_cb_copied += size;
-    gcopy[slot].addr = addr; gcopy[slot].size = size; gcopy[slot].seq = seq; gcopy[slot].span = s;
+    gcopy[slot].addr = addr; gcopy[slot].size = size; gcopy[slot].key = key; gcopy[slot].use_seq = pending; gcopy[slot].span = s;
     return s;
 }
 
@@ -1212,15 +1273,27 @@ const char *renderer_stats(void) {
         LOG("\n");
     }
     snprintf(stats_text, sizeof stats_text,
-             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu, breaks %llu, tile %llu), upload %.1fMB, binds %llu pipe %llu sets",
+             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu, breaks %llu, tile %llu), upload %.1fMB (copies %.1fMB, shared %.1fMB), light barriers %llu (restarts %llu), binds %llu pipe %llu sets",
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (unsigned long long)stat_inplace_breaks,
-             (unsigned long long)stat_tile_reads, (double)stat_upload_bytes / 1048576.0,
+             (unsigned long long)stat_tile_reads, (double)stat_upload_bytes / 1048576.0, stat_cb_copied / 1048576.0,
+             stat_gcopy_reused / 1048576.0, (unsigned long long)stat_light_barriers, (unsigned long long)stat_vs_restarts,
              (unsigned long long)stat_pipe_binds, (unsigned long long)stat_set_binds);
     stat_feedback_copies = stat_feedback_reads = stat_inplace_breaks = stat_upload_bytes = stat_build_wait_ns = stat_pipe_binds = stat_set_binds = 0;
     stat_tile_reads = 0;
+    stat_gcopy_reused = 0;
+    stat_light_barriers = stat_vs_restarts = 0;
+    if (!getenv("LARECOMP_LOG_CBUF_BYTES")) stat_cb_copied = 0;  // (else the [cbuf] line's, below)
 #ifdef __ANDROID__
+    {   // (page write tracking: the game's threads trapping on tracked pages - a signal and an mprotect each)
+        extern uint64_t plat_wt_faults(void);
+        static uint64_t last;
+        uint64_t now = plat_wt_faults();
+        size_t l = strlen(stats_text);
+        snprintf(stats_text + l, sizeof stats_text - l, ", write faults %llu", (unsigned long long)(now - last));
+        last = now;
+    }
     if (stat_ga_flushes) {  // (non-coherent arena memory: its flushes, ga_flush_dirty)
         size_t l = strlen(stats_text);
         snprintf(stats_text + l, sizeof stats_text - l, ", arena flushes %llu (%.1fMB)", (unsigned long long)stat_ga_flushes,
@@ -1519,6 +1592,7 @@ static void wb_apply(uint64_t done) {
             for (uint32_t y = 0; y < e->hb; y++)
                 memcpy((uint8_t *)(uintptr_t)(e->addr + y * e->pitch), wb_ptr + (size_t)i * WB_SLOT + (size_t)y * e->wb * e->bpb, (size_t)e->wb * e->bpb);
         else tegra_swizzle(wb_ptr + (size_t)i * WB_SLOT, (uint8_t *)(uintptr_t)e->addr, e->wb, e->hb, 1, e->bpb, e->bh, 0);
+        gcopy_written(e->addr, e->addr + (e->pitch ? (uint64_t)e->hb * e->pitch : WB_MAX));  // (copies of it: stale; block-linear ones are at most WB_MAX)
         {   // LARECOMP_LOG_WB_NAN=1: the auto exposure's small targets - inf / NaN in them, and a black frame (the
             // 2x2 luminance of the previous image near 0) with the 12x1 parameters and the 1x1 average at that point
             static int on = -1;
@@ -1602,6 +1676,7 @@ static void vk_end_pass_at(int line) {
     if (prof && line < 4096) prof_end_line[line]++;
     vk_end_rendering(vk_cmd());
     in_pass = false;
+    pass_only_since = true;  // (until something else is recorded: vk_cmd)
     {   extern TexBackend *g_dump_sampled;
         if (g_dump_sampled) { TexBackend *db = g_dump_sampled; g_dump_sampled = NULL; dump_layers_raw(db); }
     }
@@ -1665,6 +1740,34 @@ static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v :
 static volatile uint64_t g_scene_frame;
 uint64_t vk_scene_frame(void) { return g_scene_frame; }
 
+// (Sheikah Slate) Video > Overlap render passes (settings.h pass_overlap; LARECOMP_PASS_OVERLAP=0 / 1 overrides)
+static bool pass_overlap_on(void) {
+    static int env = -2;
+    if (env == -2) { const char *e = getenv("LARECOMP_PASS_OVERLAP"); env = e ? atoi(e) != 0 : -1; }
+    int v = env >= 0 ? env : g_settings.pass_overlap;
+#ifdef __ANDROID__
+    extern bool vk_gpu_is_arm(void);
+    return v < 0 ? vk_gpu_is_arm() : v != 0;
+#else
+    return v > 0;
+#endif
+}
+
+// The barrier at a pass's start when only a pass came before it: everything before finishes before this pass's pixel
+// work (attachment loads, depth tests, fragment shaders, colour writes) - not before its vertex work. A tiler runs
+// the next pass's vertex shading and binning while the one before still shades pixels; vk_full_barrier made each of
+// the ~300 passes a frame wait for the whole GPU to drain (the Galaxy Tab S10 Ultra: 80 small 64x64 passes ~2.9 ms,
+// 30 8x8 ones ~1 ms of a ~28 ms frame). Vertex shaders that read what such a pass wrote get the full barrier (draw_).
+static void light_barrier(VkCommandBuffer cb) {
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &di);
+}
+
 static void begin_pass(void) {
     if (in_pass && !st.rt_dirty) return;
     pipeline_dirty = true;
@@ -1702,11 +1805,21 @@ static void begin_pass(void) {
 #endif
     if (dl_on == 2) renderer_flush();  // (LARECOMP_VK_DEVLOST_TRACE=2: each pass its own submission)
     st.rt_dirty = false;
+    // (light: only a pass's end since the last pass - no copy, dispatch or submission - and no vertex shader of this
+    // pass needs the pass before's results, draw_; read before this function's own vk_cmd)
+    bool light = pass_only_since && !force_full_barrier && pass_overlap_on();
     VkCommandBuffer cb = vk_cmd();
     static int no_barrier = -1;  // (LARECOMP_VK_NO_PASS_BARRIER=1: none - unsafe, a measurement of what it costs)
     if (no_barrier < 0) no_barrier = getenv("LARECOMP_VK_NO_PASS_BARRIER") != NULL;
     extern int vk_ab(const char *what);
-    if (!no_barrier && vk_ab("nobarrier") != 1) vk_full_barrier(cb);  // passes, copies and dispatches see each other's results
+    if (!no_barrier && vk_ab("nobarrier") != 1) {  // passes, copies and dispatches see each other's results
+        if (light) light_barrier(cb), stat_light_barriers++;
+        else vk_full_barrier(cb);
+    }
+    pass_serial++;
+    if (!light) full_serial = pass_serial;
+    cur_pass_light = light;
+    force_full_barrier = false;
     {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
         dl_note("pass %d color %ux%u fmt %#x depth %p", st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
@@ -1748,6 +1861,7 @@ static void begin_pass(void) {
         renderer_mark_gpu_owned(t);
         VkImageView v = vk_view(t, &st.rt.cview[i], st.rt.has_cview[i], true, TEXTYPE_2D);
         TexBackend *b = t->backend;
+        if (b) b->rt_serial = pass_serial;  // (written by this pass: vertex-shader reads after it, draw_)
         if (!v) continue;
         ca[i].imageView = v;
         ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1803,6 +1917,7 @@ static void begin_pass(void) {
         renderer_mark_gpu_owned(st.rt.depth);
         VkImageView v = vk_view(st.rt.depth, &st.rt.dview, st.rt.has_dview, true, TEXTYPE_2D);
         TexBackend *b = st.rt.depth->backend;
+        if (b) b->rt_serial = pass_serial;
         if (v && renderer_format_is_depth(st.rt.depth->format)) {
             VkRenderingAttachmentInfo a = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = v,
                                            .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
@@ -3955,6 +4070,7 @@ static void gcopy_retire(uint64_t done) {
             ga_invalidate(gc_back[i].src, gc_back[i].len);  // (non-coherent arena memory: the GPU's bytes, not the cache's)
             if (!gc_back[i].shadow) {
                 memcpy((void *)(uintptr_t)gc_back[i].addr, gc_back[i].src, gc_back[i].len);
+                gcopy_written(gc_back[i].addr, gc_back[i].addr + gc_back[i].len);  // (this frame's copies of it: stale)
                 continue;
             }
             // (the arena: 256 bytes at a time, what the GPU changed since the last upload - the shadow - and the CPU
@@ -3962,6 +4078,7 @@ static void gcopy_retire(uint64_t done) {
             // back undid the CPU's writes made since, for good - wrong shadows while moving)
             uint8_t *g = (uint8_t *)(uintptr_t)gc_back[i].addr, *sh = gc_back[i].shadow;
             const uint8_t *src = gc_back[i].src;
+            uint64_t wlo = ~0ull, whi = 0;  // (the blocks written back: this frame's copies of them are stale)
             for (uint64_t b = 0; b < gc_back[i].len; b += 256) {
                 uint64_t n = gc_back[i].len - b < 256 ? gc_back[i].len - b : 256;
                 // (a block the CPU's newer data was uploaded into after this submission: the shadow is that data
@@ -3971,7 +4088,10 @@ static void gcopy_retire(uint64_t done) {
                 if (!memcmp(src + b, sh + b, n) || memcmp(g + b, sh + b, n)) continue;  // (GPU unchanged / CPU wrote)
                 memcpy(g + b, src + b, n);
                 memcpy(sh + b, src + b, n);
+                if (b < wlo) wlo = b;
+                whi = b + n;
             }
+            if (whi > wlo) gcopy_written(gc_back[i].addr + wlo, gc_back[i].addr + whi);
         } else gc_back[k++] = gc_back[i];
     }
     gc_nback = k;
@@ -5448,7 +5568,25 @@ static void draw_(CmdRec *r, bool indexed) {
             else snapshots_invalidate(st.rt.color[i]);
         }
     }
+    if (pass_overlap_on()) {
+        // (light pass barriers: a vertex shader reading a target drawn since the last full barrier, or global memory
+        // stored to since, or storing itself - the pass it runs in begins with the full barrier, restarted if needed)
+        bool vs_hazard = pr->vi->uses_gmem_store || (pr->vi->uses_gmem && gstore_serial && gstore_serial >= full_serial);
+        bool open = in_pass && !st.rt_dirty;  // (this draw joins the open pass)
+        for (int i = 0; i < pr->vi->ntex && !vs_hazard; i++) {
+            if (pr->vi->tex[i].is_image) { vs_hazard = true; break; }  // (storage images: not tracked per target)
+            NvnTexEntry *e = shader_texture_entry(0, &pr->vi->tex[i]);
+            TexBackend *tb = e && e->tex ? (TexBackend *)e->tex->backend : NULL;
+            // (a target of the open pass itself: no barrier helps there - as before)
+            if (tb && tb->rt_serial && tb->rt_serial >= full_serial && !(open && tb->rt_serial == pass_serial)) vs_hazard = true;
+        }
+        if (vs_hazard) {
+            if (!open) force_full_barrier = true;
+            else if (cur_pass_light) st.rt_dirty = true, force_full_barrier = true, stat_vs_restarts++;
+        }
+    }
     begin_pass();
+    if (pr->fi->uses_gmem_store || pr->vi->uses_gmem_store) gstore_serial = pass_serial;
     cur_ntl = 0;
     for (int j = 0; j < ntileread; j++) {  // (on-tile reads: the colour slot each reads, bound in its own format)
         NvnTexture *t = tileread_tex[j];

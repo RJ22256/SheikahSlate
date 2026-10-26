@@ -129,6 +129,7 @@ typedef struct TexBackend {
     int reg;  // slot in textures.c's live list + 1 (a reboot destroys them all)
     VkFormat drawn_fmt;  // the format of the view its last pass drew through (exec.c begin_pass: the frame check)
     uint32_t drawn_epoch;  // (the frame check: the present it was last drawn into before - exec.c fc_epoch)
+    uint32_t rt_serial;    // the last pass (exec.c pass_serial) it was a target of: vertex-shader reads after light barriers
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)
