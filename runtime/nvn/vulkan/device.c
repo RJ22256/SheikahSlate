@@ -538,6 +538,12 @@ static void create_device(void) {
     g_vk.exec_stats = getenv("LARECOMP_SHADER_STATS") &&
                       has_ext(ep, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME) && executable_have.pipelineExecutableInfo;
     if (g_vk.exec_stats) ext[n_ext++] = VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
+    // (Sheikah Slate) VK_EXT_shader_tile_image - Arm's Mali driver has it: a fragment shader reads its own pixel of a
+    // colour target the pass is drawing, from tile memory, in rasterization order. The decals' reads of the G-buffer
+    // they draw into (exec.c tile reads), without ending the pass - which on a tiler stores and reloads every target.
+    // (Before the map extensions below: they are taken off the end again when unusable.) LARECOMP_NO_TILE_IMAGE=1: not.
+    g_vk.tile_image = has_ext(ep, ne, VK_EXT_SHADER_TILE_IMAGE_EXTENSION_NAME) && !getenv("LARECOMP_NO_TILE_IMAGE");
+    if (g_vk.tile_image) ext[n_ext++] = VK_EXT_SHADER_TILE_IMAGE_EXTENSION_NAME;
     // the guest heap as GPU memory mapped at its own address (exec.c vk_heap_place; Turnip has it)
     g_vk.map_placed = has_ext(ep, ne, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
     if (g_vk.map_placed) {
@@ -790,6 +796,21 @@ static void create_device(void) {
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pex = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR, .pipelineExecutableInfo = VK_TRUE};
     if (g_vk.exec_stats) { pex.pNext = f.pNext; f.pNext = &pex; }
+    VkPhysicalDeviceShaderTileImageFeaturesEXT tile = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TILE_IMAGE_FEATURES_EXT};
+    if (g_vk.tile_image) {  // (colour reads: mandatory with the extension; with dynamic rendering only - its use)
+        VkPhysicalDeviceShaderTileImageFeaturesEXT tq = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TILE_IMAGE_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &tq};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        if (tq.shaderTileImageColorReadAccess && g_vk.dyn_render) {
+            tile.shaderTileImageColorReadAccess = VK_TRUE;
+            tile.pNext = f.pNext;
+            f.pNext = &tile;
+        } else {
+            g_vk.tile_image = false;  // (the extension stays enabled, unused)
+        }
+        LOG("[vk] shader tile image: colour reads %s\n", g_vk.tile_image ? "on (decals read the G-buffer on the tile)"
+                                                                         : "unavailable here");
+    }
 #endif
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
@@ -1378,6 +1399,8 @@ void backend_present(NvnTexture *t) {
             LOG("[gpuprof] frame %llu (capture %d of 3, from the menu)\n", (unsigned long long)total_frames,
                 4 - g_gpuprof_req_left);
             g_gpuprof_frame = true;
+            extern void vk_cpuprof_start(void);  // (exec.c: the CPU's side too, from the first frame captured)
+            if (g_gpuprof_req_left == 3) vk_cpuprof_start();
             g_gpuprof_req_at = --g_gpuprof_req_left > 0 ? (long)total_frames + 45 : 0;
         }
         const char *e = getenv("LARECOMP_GPUPROF_AT");

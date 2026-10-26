@@ -174,7 +174,7 @@ thumbnails) stays cached, and is invalidated after each GPU copy before the CPU 
 A texture the page tracking saw the CPU write is hashed in full instead of by a sample of its bytes: a few new glyphs
 drawn into a font's glyph cache could miss every sampled byte, leaving blanks until the next periodic full hash.
 
-### 14. Video > Capture a GPU profile
+### 14. Video > Capture a GPU profile (Update 5: Capture a performance profile, #18)
 
 The engine's per-pass GPU timer (`LARECOMP_GPUPROF_AT`, adb only) from the menu: three frames, about 10 seconds after
 pressing it, into the log as `[gpuprof]` rows - where this GPU's time goes, for the next optimizations.
@@ -208,6 +208,41 @@ pipelines and views, uploads, targets drawn or read through a view of another fo
 targets, and whether the presented image was drawn this frame and through which format) - plus each kind of format
 mismatch once. In a menu, the flash frames stand out by frame number. `[frame-check]` in the log; at most 120 lines
 a run; `LARECOMP_FRAME_CHECK=0` turns it off.
+
+## Update 5 (0.1.9-slate.5): decals on the tile, a CPU profile from the menu
+
+### 17. On-tile reads for decals (`exec.c` tile_read_ok / tile_glsl / tile_fs; `device.c` VK_EXT_shader_tile_image)
+
+BOTW's decals and some effects sample the G-buffer targets they draw into. With Driver compatibility > Draw-target reads
+in place: **On**, the renderer ended the pass before each such draw so its texture reads saw memory: in the Update 3
+log that was ~43 pass ends a frame (`breaks` ~1075 every 2 s), the G-buffer pass split into up to 46 passes, each
+storing and reloading six targets and depth. The Tab's driver has `VK_EXT_shader_tile_image`: a fragment shader reads
+its own pixel of a colour target straight from tile memory, in rasterization order (every earlier draw's write
+included), so those draws no longer end the pass. Such a draw gets a variant of its fragment shader: each `texture` /
+`textureLod` / `texelFetch` of that slot becomes a helper that samples as before and, when the lookup lands on the
+fragment's own pixel (within a quarter texel of its centre, level 0), returns the tile's value instead. Only 2D float
+colour targets read in their own format, level 0 / layer 0, unswizzled, bound in their own format; anything else keeps
+the pass end. A variant that doesn't compile falls back to the plain shader (logged as `[vk] tile reads: ...`). The fps
+line's feedback part reads `(read N, breaks N, tile N)`. Off: copies as before; Automatic stays off on Mali.
+`LARECOMP_NO_TILE_READS=1` / `LARECOMP_NO_TILE_IMAGE=1` (adb) turn it off. `tools/test_tile_glsl.py` (CI) rewrites a
+shader shaped like the translator's (with its real prelude) and compiles the variants for Vulkan 1.3 with glslang -
+glslang takes a tile image and an output on the same location only with the tile image declared first.
+
+### 18. Video > Capture a performance profile
+
+The GPU capture (#14) now also turns on the renderer's CPU profile (`LARECOMP_VK_PROF`'s categories: draw setup, keys,
+descriptor sets, texture checks and uploads, vertex copies, submissions, waits; `[hitch]` lines for frames over 50 ms)
+for the three fps lines after the first captured frame (~6 s), then off again - where the CPU's time goes, for the next
+round of CPU work (the copies).
+
+### Checked, not changed
+
+- The `sampled format 91 (nvn 0x2a)` line (RGBA16 UNORM without linear filtering in Vulkan's table): Mali GPUs filter
+  16-bit normalized formats (OpenGL ES's EXT_texture_norm16 requires it); converting it to half floats would lose
+  precision on data textures, so it stays.
+- The scene's size steps (2220x1249 down to 1184x666 and back): BOTW's own dynamic resolution (no `[dynres]` lines).
+  With Internal resolution at Match display the scene is ~1.9x the Switch's pixels; Internal resolution **1x** and
+  Output resolution **1080p** roughly halve the GPU's work, and SGSR still fills the screen.
 
 ## Test checklist (on the tablet)
 

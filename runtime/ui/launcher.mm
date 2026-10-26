@@ -1242,9 +1242,9 @@ static void prelaunch_tab(float sc) {
         changed |= tri("inplace", &g_settings.inplace_reads);
         ImGui::TextDisabled("%s", tr("On: decals and effects read the image they draw on as it is, the fastest way. Off: a copy "
                                   "of it each time, slower (fewer fps) but by the Vulkan rules. Automatic: on for Adreno 8xx "
-                                  "GPUs, off for the others. On Mali GPUs (the Galaxy Tab S10 Ultra) On is an experiment: if "
-                                  "the ground's decals, roads or shadows look wrong, set it back. Applies when the game "
-                                  "starts."));
+                                  "GPUs, off for the others. On Mali GPUs (the Galaxy Tab S10 Ultra) On reads them from the "
+                                  "GPU's on-chip tile memory, which keeps the scene in one pass: if the ground's decals, "
+                                  "roads or shadows look wrong, set it to Off. Applies when the game starts."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Turnip low-resolution Z (LRZ)"));
         changed |= tri("lrz", &g_settings.turnip_lrz);

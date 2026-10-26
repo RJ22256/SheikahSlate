@@ -23,6 +23,7 @@ bool vk_shader_int32(void);  // (device.c: Video > 32-bit shader math, Automatic
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_feedback_reads;  // (attachments sampled as they are: only read, resolve_feedback)
 static uint64_t stat_inplace_breaks;  // (passes ended so a draw reads a target the pass wrote: resolve_feedback)
+static uint64_t stat_tile_reads;  // (texture slots draws read on the tile instead: tile_read_ok)
 static uint64_t stat_upload_bytes;
 static uint64_t stat_cb_bytes[2], stat_cb_n[2], stat_cb_copied;  // (LARECOMP_LOG_CBUF_BYTES: game constant buffers bound,
                                                                  // fixed [0] / dynamically indexed [1], and bytes copied)
@@ -1197,6 +1198,12 @@ void vk_prof_frame(uint64_t frame, uint64_t present_ns) {
     last_t = now; l_exec = cum_exec; l_wait = cum_wait; l_draws = cum_draws; l_subs = cum_submits;
 }
 
+// The menu's Capture a performance profile (device.c, with the GPU capture): the render thread's time by category
+// (LARECOMP_VK_PROF's, adb only before) in the next three fps lines, ~6 s - where this CPU's time goes
+static _Atomic int cpuprof_pending;
+static int cpuprof_left;
+void vk_cpuprof_start(void) { atomic_store(&cpuprof_pending, 1); }
+
 const char *renderer_stats(void) {
     static int dumps;
     if (dumps++ < 3) {
@@ -1205,12 +1212,14 @@ const char *renderer_stats(void) {
         LOG("\n");
     }
     snprintf(stats_text, sizeof stats_text,
-             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu, breaks %llu), upload %.1fMB, binds %llu pipe %llu sets",
+             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu, breaks %llu, tile %llu), upload %.1fMB, binds %llu pipe %llu sets",
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
-             atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (unsigned long long)stat_inplace_breaks, (double)stat_upload_bytes / 1048576.0,
+             atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (unsigned long long)stat_inplace_breaks,
+             (unsigned long long)stat_tile_reads, (double)stat_upload_bytes / 1048576.0,
              (unsigned long long)stat_pipe_binds, (unsigned long long)stat_set_binds);
     stat_feedback_copies = stat_feedback_reads = stat_inplace_breaks = stat_upload_bytes = stat_build_wait_ns = stat_pipe_binds = stat_set_binds = 0;
+    stat_tile_reads = 0;
 #ifdef __ANDROID__
     if (stat_ga_flushes) {  // (non-coherent arena memory: its flushes, ga_flush_dirty)
         size_t l = strlen(stats_text);
@@ -1288,8 +1297,24 @@ const char *renderer_stats(void) {
         prof_views_created = 0;
         prof_tex_checks = prof_tex_samples = prof_tex_full = prof_tex_full_bytes = prof_tex_dyn = 0;
         prof_exec = prof_draw = prof_sets = prof_vtx = prof_submit = prof_pre = prof_key = prof_dyn = prof_tex = prof_up = prof_gpu = 0;
+        if (cpuprof_left > 0 && --cpuprof_left == 0) {  // (the menu's capture: done - back off)
+            prof = 0;
+            prof_up_ns = ~0ull;
+            LOG("[cpuprof] off after the next fps line (the third)\n");
+        }
     }
     stat_draws = stat_skipped = stat_passes = stat_dispatches = stat_flushes = stat_wait_ns = 0;
+    if (atomic_exchange(&cpuprof_pending, 0) && !prof) {  // (the menu's capture: on from this interval, whole ones)
+        if (!prof_qp) {
+            VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = SUBS * 2};
+            if (vkCreateQueryPool(g_vk.dev, &qi, NULL, &prof_qp) != VK_SUCCESS) prof_qp = VK_NULL_HANDLE;
+        }
+        memset(prof_end_line, 0, sizeof prof_end_line);
+        prof_up_ns = 0;
+        prof = 1;
+        cpuprof_left = 3;
+        LOG("[cpuprof] on: the next three fps lines end with the render thread's time by category\n");
+    }
     return stats_text;
 }
 
@@ -2099,6 +2124,7 @@ typedef struct {
     VkDescriptorSetLayout set_layout[2];
     VkPipelineLayout layout;
     bool vs_uses_vid;
+    uint64_t tile_ok, tile_tried;  // (fragment texture slots whose lookups tile_glsl can take / looked at: tile_read_ok)
     _Atomic int state;  // 0 building, 1 ready, 2 failed
 } Prog;
 
@@ -2561,6 +2587,7 @@ typedef struct {
     uint8_t prim_restart;  // (no extended dynamic state 2 only: primitive restart is pipeline state then)
     uint32_t write_mask[8];
     PipeFx fx;
+    uint8_t ntile, tile_slot[4], tile_loc[4];  // (on-tile reads: fragment texture slot -> colour attachment, tile_fs)
 } PipeKey;
 
 typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
@@ -2586,12 +2613,19 @@ static VkPrimitiveTopology topo_class_base(uint8_t c) {
     return c == 0 ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : c == 1 ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
+static VkShaderModule tile_fs(Prog *p, int n, const uint8_t *slot, const uint8_t *loc);
+
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
     PipeKey *k = &pp->k;
+    VkShaderModule fsm = k->prog->fs;
+    if (k->ntile) {  // (its fragment shader with on-tile reads; the plain one if that variant failed)
+        VkShaderModule v = tile_fs(k->prog, k->ntile, k->tile_slot, k->tile_loc);
+        if (v) fsm = v;
+    }
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = k->prog->vs, .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = k->prog->fs, .pName = "main"}};
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fsm, .pName = "main"}};
     VkVertexInputAttributeDescription va[32];
     VkVertexInputBindingDescription vb[17];
     VkVertexInputBindingDivisorDescriptionEXT vd[17];
@@ -2710,6 +2744,221 @@ static void build_pipeline(void *arg) {
     }
     atomic_store(&pp->state, r == VK_SUCCESS ? 1 : 2);
 }
+
+// ================================================================== on-tile reads (Sheikah Slate)
+// A tiler keeps a pass's targets in on-chip tile memory and writes them out when the pass ends. BOTW's decals sample
+// the G-buffer targets they draw into; the in-place path ends the pass before such a draw so its texture reads see
+// memory (Driver compatibility > Draw-target reads in place: On), and on the Galaxy Tab S10 Ultra that split the
+// G-buffer pass into up to 46 passes a frame (~1100 a frame's every 2 s) - each one storing and reloading six 1600x900
+// targets and depth. With VK_EXT_shader_tile_image (Arm's Mali driver has it) the fragment shader reads its own
+// pixel of a colour target from the tile, in rasterization order - every earlier draw's write included - so the pass
+// stays whole. Such a draw's fragment shader gets a variant (tile_glsl): its lookups of that texture slot become
+// helpers that sample as before and, when the lookup lands on the fragment's own pixel (within a quarter texel of
+// its centre, level 0), take the tile's value instead. Lookups elsewhere read memory as the plain in-place path would
+// without its pass end (Turnip's; an undefined feedback read in Vulkan's terms). Only 2D float colour targets read
+// with their own format, level 0 / layer 0, no swizzle; anything else keeps the pass end. LARECOMP_NO_TILE_READS=1:
+// off (LARECOMP_NO_TILE_IMAGE=1, device.c: not even enabled).
+
+// The next identifier in src at *i, NUL-terminated into id (64 bytes); false at anything else
+static bool glsl_ident(const char *src, size_t *i, char *id) {
+    size_t a = *i, n = 0;
+    if (!(src[a] == '_' || (src[a] >= 'a' && src[a] <= 'z') || (src[a] >= 'A' && src[a] <= 'Z'))) return false;
+    while ((src[a] == '_' || (src[a] >= 'a' && src[a] <= 'z') || (src[a] >= 'A' && src[a] <= 'Z') || (src[a] >= '0' && src[a] <= '9'))) {
+        if (n < 63) id[n++] = src[a];
+        a++;
+    }
+    id[n] = 0;
+    *i = a;
+    return true;
+}
+
+// The source with slot[j]'s texture / textureLod / texelFetch calls renamed to tl<j>_tex / _lod / _fetch (the first
+// argument dropped); out NULL: only counted. Returns the number of calls renamed.
+static int tile_rename(const char *src, int n, const uint8_t *slot, char **out) {
+    size_t len = strlen(src), cap = len + 1024, o = 0;
+    char *d = out ? malloc(cap) : NULL;
+    int count = 0;
+    for (size_t i = 0; i < len;) {
+        bool boundary = i == 0 || !(src[i - 1] == '_' || (src[i - 1] >= 'a' && src[i - 1] <= 'z') || (src[i - 1] >= 'A' && src[i - 1] <= 'Z') ||
+                                    (src[i - 1] >= '0' && src[i - 1] <= '9'));
+        size_t a = i;
+        char id[64], arg[64];
+        int kind = -1, j = -1;
+        if (boundary && glsl_ident(src, &a, id)) {
+            kind = !strcmp(id, "texture") ? 0 : !strcmp(id, "textureLod") ? 1 : !strcmp(id, "texelFetch") ? 2 : -1;
+            size_t b = a;
+            if (kind >= 0) {
+                while (src[b] == ' ') b++;
+                if (src[b] == '(') {
+                    b++;
+                    while (src[b] == ' ') b++;
+                    if (glsl_ident(src, &b, arg) && arg[0] == 't' && arg[1] >= '0' && arg[1] <= '9') {
+                        int sl = atoi(arg + 1);
+                        for (int k = 0; k < n; k++) if (slot[k] == sl) j = k;
+                        while (src[b] == ' ') b++;
+                        if (j >= 0 && src[b] == ',') {
+                            count++;
+                            if (d) {
+                                char rn[32];
+                                int rl = snprintf(rn, sizeof rn, "tl%d_%s(", j, kind == 0 ? "tex" : kind == 1 ? "lod" : "fetch");
+                                if (o + (size_t)rl + 1 >= cap) { cap = cap * 2 + (size_t)rl; d = realloc(d, cap); }
+                                memcpy(d + o, rn, (size_t)rl);
+                                o += (size_t)rl;
+                            }
+                            i = b + 1;  // (past the comma and the spaces after it)
+                            while (src[i] == ' ') i++;
+                            continue;
+                        }
+                    }
+                }
+            }
+            if (d) {  // (the identifier as it is)
+                if (o + (a - i) + 1 >= cap) { cap = cap * 2 + (a - i); d = realloc(d, cap); }
+                memcpy(d + o, src + i, a - i);
+                o += a - i;
+            }
+            i = a;
+            continue;
+        }
+        if (d) {
+            if (o + 2 >= cap) { cap *= 2; d = realloc(d, cap); }
+            d[o++] = src[i];
+        }
+        i++;
+    }
+    if (d) { d[o] = 0; *out = d; }
+    return count;
+}
+
+// The fragment shader with on-tile reads: slot[j] read from colour attachment loc[j] at the fragment's own pixel
+static char *tile_glsl(const char *src, int n, const uint8_t *slot, const uint8_t *loc) {
+    char *r = NULL;
+    if (tile_rename(src, n, slot, &r) <= 0) { free(r); return NULL; }
+    // (the extension after #version; the tile images ahead of the first declaration - glslang takes a tile image and a
+    // fragment output sharing a location only in that order; the helpers just before main, after the samplers)
+    char *ver = strstr(r, "#version"), *nl = ver ? strchr(ver, '\n') : NULL, *mainp = strstr(r, "\nvoid main() {");
+    char *decl = nl ? strstr(nl, "\nlayout(") : NULL;
+    if (!nl || !mainp || !decl || mainp < decl) { free(r); return NULL; }
+    size_t cap = strlen(r) + 4096, o = 0;
+    char *d = malloc(cap);
+#define TL_PUT(...) do { o += (size_t)snprintf(d + o, cap - o, __VA_ARGS__); } while (0)
+    TL_PUT("%.*s", (int)(nl + 1 - r), r);
+    TL_PUT("#extension GL_EXT_shader_tile_image : require\n");
+    TL_PUT("%.*s", (int)(decl + 1 - (nl + 1)), nl + 1);
+    uint8_t declared = 0;
+    for (int j = 0; j < n; j++) {
+        int l = loc[j] & 7;
+        if (!((declared >> l) & 1)) TL_PUT("layout(location = %d) tileImageEXT highp attachmentEXT tl_img%d;\n", l, l);
+        declared |= (uint8_t)(1u << l);
+    }
+    TL_PUT("%.*s", (int)(mainp - (decl + 1)), decl + 1);
+    TL_PUT("\n");
+    for (int j = 0; j < n; j++) {
+        int l = loc[j] & 7, s_ = slot[j];
+        TL_PUT("bool tl%d_own(vec2 uv) { vec2 d = abs(uv * vec2(textureSize(t%d, 0)) - gl_FragCoord.xy); "
+               "return d.x < 0.25f && d.y < 0.25f; }\n", j, s_);
+        TL_PUT("vec4 tl%d_tex(vec2 uv) { vec4 s = texture(t%d, uv); return tl%d_own(uv) ? colorAttachmentReadEXT(tl_img%d) : s; }\n",
+               j, s_, j, l);
+        TL_PUT("vec4 tl%d_tex(vec2 uv, float b) { vec4 s = texture(t%d, uv, b); "
+               "return tl%d_own(uv) ? colorAttachmentReadEXT(tl_img%d) : s; }\n", j, s_, j, l);
+        TL_PUT("vec4 tl%d_lod(vec2 uv, float lv) { vec4 s = textureLod(t%d, uv, lv); "
+               "return lv < 0.5f && tl%d_own(uv) ? colorAttachmentReadEXT(tl_img%d) : s; }\n", j, s_, j, l);
+        TL_PUT("vec4 tl%d_fetch(ivec2 p, int lv) { vec4 s = texelFetch(t%d, p, lv); "
+               "return lv == 0 && p == ivec2(gl_FragCoord.xy) ? colorAttachmentReadEXT(tl_img%d) : s; }\n", j, s_, l);
+    }
+#undef TL_PUT
+    size_t rest = strlen(mainp);
+    if (o + rest + 1 > cap) { cap = o + rest + 1; d = realloc(d, cap); }
+    memcpy(d + o, mainp, rest + 1);
+    free(r);
+    return d;
+}
+
+// Fragment modules with on-tile reads, per program and slot -> attachment map (made on the pipeline workers)
+typedef struct { Prog *prog; uint8_t n, slot[4], loc[4]; VkShaderModule fs; } TileFs;
+static TileFs tile_fs_tab[512];
+static int tile_fs_n;
+static pthread_mutex_t tile_fs_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static VkShaderModule tile_fs_find(Prog *p, int n, const uint8_t *slot, const uint8_t *loc, bool *found) {
+    for (int i = 0; i < tile_fs_n; i++) {
+        TileFs *e = &tile_fs_tab[i];
+        if (e->prog == p && e->n == n && !memcmp(e->slot, slot, (size_t)n) && !memcmp(e->loc, loc, (size_t)n)) { *found = true; return e->fs; }
+    }
+    *found = false;
+    return VK_NULL_HANDLE;
+}
+
+static VkShaderModule tile_fs(Prog *p, int n, const uint8_t *slot, const uint8_t *loc) {
+    bool found;
+    pthread_mutex_lock(&tile_fs_lock);
+    VkShaderModule m = tile_fs_find(p, n, slot, loc, &found);
+    pthread_mutex_unlock(&tile_fs_lock);
+    if (found) return m;
+    char *src = p->fi && p->fi->msl ? tile_glsl(p->fi->msl, n, slot, loc) : NULL;
+    if (src) {
+        size_t nw = 0;
+        uint32_t *spv = vk_glsl_to_spirv(src, STAGE_FRAGMENT, "fs-tile", &nw);
+        if (spv) m = vk_module(spv, nw);
+        free(spv);
+        free(src);
+    }
+    {   static int nlog;
+        if (nlog++ < 12)
+            LOG("[vk] tile reads: fs %llx slot %u -> target %u%s: %s\n", (unsigned long long)p->code[1], slot[0], loc[0],
+                n > 1 ? " (and more)" : "", m ? "variant made" : "variant failed, the plain shader instead");
+    }
+    pthread_mutex_lock(&tile_fs_lock);
+    VkShaderModule other = tile_fs_find(p, n, slot, loc, &found);
+    if (found) {  // (made by another worker meanwhile)
+        if (m) vkDestroyShaderModule(g_vk.dev, m, NULL);
+        m = other;
+    } else if (tile_fs_n < (int)(sizeof tile_fs_tab / sizeof *tile_fs_tab)) {
+        tile_fs_tab[tile_fs_n++] = (TileFs){p, (uint8_t)n, {0}, {0}, m};
+        memcpy(tile_fs_tab[tile_fs_n - 1].slot, slot, (size_t)n);
+        memcpy(tile_fs_tab[tile_fs_n - 1].loc, loc, (size_t)n);
+    }
+    pthread_mutex_unlock(&tile_fs_lock);
+    return m;
+}
+
+// Fragment texture slot i of this draw, a target of its pass: read on the tile? (the sampled side; the attachment
+// side - which colour slot, in its own format - is settled after begin_pass, draw_)
+static bool tile_read_ok(Prog *pr, int i, const NvnTexEntry *e) {
+    static int off = -1;
+    if (off < 0) off = getenv("LARECOMP_NO_TILE_READS") != NULL;
+    if (off || !g_vk.tile_image || i >= 64) return false;
+    const ShaderTexture *st_ = &pr->fi->tex[i];
+    if (st_->type != TEXTYPE_2D || st_->shadow || st_->is_image || st_->is_array) return false;
+    NvnTexture *t = e->tex;
+    TexBackend *b = t ? t->backend : NULL;
+    if (!b || !b->image || b->samples != 1 || b->aspect != VK_IMAGE_ASPECT_COLOR_BIT || b->base_type != VK_IMAGE_VIEW_TYPE_2D ||
+        b->layers != 1 || rt_kind(t->format) != 0 || vk_format_alpha_one(t->format))
+        return false;
+    if (e->has_view) {
+        const NvnTextureView *v = &e->view;
+        if ((v->setmask & 4) && vk_format(v->format) != b->format) return false;  // (read in another format)
+        if ((v->setmask & 1) && v->base_level) return false;
+        if ((v->setmask & 2) && v->min_layer) return false;
+    }
+    const uint8_t *sw = e->has_view && (e->view.setmask & 8) ? e->view.swizzle : t->swizzle;
+    for (int c = 0; c < 4; c++) {
+        uint8_t v = sw[c] <= 5 ? sw[c] : (uint8_t)(2 + c);
+        if (v && v != 2 + c) return false;  // (a swizzle: the tile's value would come back unswizzled)
+    }
+    uint64_t bit = 1ull << i;
+    if (!(pr->tile_tried & bit)) {  // (the shader's lookups of that slot: some the rewrite takes)
+        uint8_t sl = (uint8_t)i;
+        if (pr->fi->msl && tile_rename(pr->fi->msl, 1, &sl, NULL) > 0) pr->tile_ok |= bit;
+        pr->tile_tried |= bit;
+    }
+    return (pr->tile_ok & bit) != 0;
+}
+
+// This draw's on-tile reads: resolve_feedback's requests; after begin_pass, the colour slots they read (draw_)
+static uint8_t tileread_slot[4], cur_tl_slot[4], cur_tl_loc[4];
+static NvnTexture *tileread_tex[4];
+static int ntileread, cur_ntl;
 
 // ================================================================== feedback snapshots (renderer.m resolve_feedback)
 static NvnTexture *feedback_tex[4];
@@ -3067,6 +3316,7 @@ static uint32_t draw_writes(const Prog *pr) {
 static void resolve_feedback(Prog *pr) {
     nfeedback = 0;
     ninplace = 0;
+    ntileread = 0;
     static int off = -1;
     if (off < 0) off = getenv("LARECOMP_NO_FEEDBACK") != NULL;
     if (off) return;
@@ -3123,6 +3373,14 @@ static void resolve_feedback(Prog *pr) {
                         g_settings.inplace_reads < 0 ? "automatic" : "settings");
                 }
                 extern int vk_ab(const char *what);
+                // (on-tile reads: a colour target read by the fragment shader at its own pixel, no pass end)
+                if (!g_inplace_copy && sg == 1 && bit && bit < 1u << 8 && ntileread < 4 && vk_ab("copy") != 1 &&
+                    tile_read_ok(pr, i, e)) {
+                    tileread_slot[ntileread] = (uint8_t)i;
+                    tileread_tex[ntileread++] = t;
+                    stat_tile_reads++;
+                    continue;
+                }
                 if (!g_inplace_copy && bit && bit < 1u << 8 && vk_ab("copy") != 1) {
                     int si = -1;
                     for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
@@ -4459,6 +4717,9 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    pthread_mutex_lock(&tile_fs_lock);  // (on-tile read variants: keyed by programs that go now)
+    tile_fs_n = 0;
+    pthread_mutex_unlock(&tile_fs_lock);
     memset(prog_tab, 0, sizeof prog_tab);
     memset(pipe_tab, 0, sizeof pipe_tab);
     g_cs_n = 0;
@@ -5186,6 +5447,27 @@ static void draw_(CmdRec *r, bool indexed) {
         }
     }
     begin_pass();
+    cur_ntl = 0;
+    for (int j = 0; j < ntileread; j++) {  // (on-tile reads: the colour slot each reads, bound in its own format)
+        NvnTexture *t = tileread_tex[j];
+        TexBackend *tb = t->backend;
+        int loc = -1;
+        for (int k = 0; k < st.rt.ncolor && loc < 0; k++) {
+            if (st.rt.color[k] != t || ((pass_dup_null >> k) & 1) || !tb || pass_color[k] != tb->format) continue;
+            if (st.rt.has_cview[k] && (((st.rt.cview[k].setmask & 1) && st.rt.cview[k].base_level) ||
+                                       ((st.rt.cview[k].setmask & 2) && st.rt.cview[k].min_layer)))
+                continue;
+            loc = k;
+        }
+        if (loc < 0) {  // (not bound so: as the in-place path, the pass ends - the read sees the target's memory)
+            cur_ntl = 0;
+            st.rt_dirty = true, stat_inplace_breaks++;
+            begin_pass();
+            break;
+        }
+        cur_tl_slot[cur_ntl] = tileread_slot[j];
+        cur_tl_loc[cur_ntl++] = (uint8_t)loc;
+    }
     VkCommandBuffer cb = vk_cmd();
 
     uint32_t mode = (uint32_t)r->x[0];
@@ -5274,6 +5556,7 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     bool hit = reuse && !pipeline_dirty && last_pipeline &&
                last_pipeline->k.prog == pr && last_pipeline->k.topo_class == cls && last_pipeline->k.prim_restart == pre_key &&
+               !cur_ntl && !last_pipeline->k.ntile &&
                (g_vk.eds || !memcmp(&last_pipeline->k.fx, &fx, sizeof fx));
     Pipe *pp = hit ? last_pipeline : NULL;
     if (!hit || verify) {
@@ -5323,6 +5606,10 @@ static void draw_(CmdRec *r, bool indexed) {
         k.topo_class = cls;
         k.poly_fill = st.poly[2] != 1;
         k.depth_clamp = st.depth_clamp;
+        k.ntile = (uint8_t)cur_ntl;  // (on-tile reads: tile_fs)
+        memcpy(k.tile_slot, cur_tl_slot, sizeof k.tile_slot);
+        memcpy(k.tile_loc, cur_tl_loc, sizeof k.tile_loc);
+        for (int j = cur_ntl; j < 4; j++) k.tile_slot[j] = k.tile_loc[j] = 0;
 #ifdef __ANDROID__
         // (consecutive draws mostly share their pipeline: a compare instead of the serial hash of the ~700-byte key)
         static PipeKey last_k;
