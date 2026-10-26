@@ -1171,6 +1171,8 @@ void vk_frame_end(const char *shot_path) {
     if (shot_path) {
         vk_wait_seq(seq);
         uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
+        extern void vk_readback_ready(uint64_t size);  // (exec.c: the CPU's cache, on a non-coherent type)
+        vk_readback_ready((uint64_t)w * h * 4);
         uint8_t *px = shot.ptr;
         bool bgr = g_vk.sc_format == VK_FORMAT_B8G8R8A8_UNORM || g_vk.sc_format == VK_FORMAT_B8G8R8A8_SRGB;
         for (uint64_t i = 0; bgr && i < (uint64_t)w * h; i++) { uint8_t t = px[i * 4]; px[i * 4] = px[i * 4 + 2]; px[i * 4 + 2] = t; }
@@ -1199,6 +1201,8 @@ uint64_t renderer_present_count(void);
 void renderer_save_texture_tex(TexBackend *b, const char *path);
 
 static uint64_t frames, total_frames, g_frame_counter;
+static long g_gpuprof_req_at;  // (vk_gpuprof_request: the next capture's frame, 0 none)
+static int g_gpuprof_req_left;
 #ifdef __ANDROID__
 // LARECOMP_VK_ASYNC (vulkan/async.c): the game's threads count the presents they queued, the render thread the ones
 // it ran - each side's "this frame" stays its own
@@ -1363,10 +1367,17 @@ void backend_present(NvnTexture *t) {
     static long debug_n = -1;
     if (debug_n < 0) { const char *e = getenv("LARECOMP_DEBUG_FRAMES"); debug_n = e && atol(e) > 1 ? atol(e) : 1; }
     g_debug_frame = debug_at && total_frames >= (uint64_t)debug_at && total_frames < (uint64_t)debug_at + (uint64_t)debug_n;
-    {   // LARECOMP_GPUPROF_AT=<frame>[,<frame>...]: GPU time per pass of those frames ("[gpuprof]" in the log)
+    {   // LARECOMP_GPUPROF_AT=<frame>[,<frame>...]: GPU time per pass of those frames ("[gpuprof]" in the log); also
+        // the menu's Capture a GPU profile (vk_gpuprof_request: three frames, a few seconds on)
         extern bool g_gpuprof_frame;
         extern void vk_gpuprof_report(void);
         if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
+        if (g_gpuprof_req_at && (long)total_frames >= g_gpuprof_req_at) {
+            LOG("[gpuprof] frame %llu (capture %d of 3, from the menu)\n", (unsigned long long)total_frames,
+                4 - g_gpuprof_req_left);
+            g_gpuprof_frame = true;
+            g_gpuprof_req_at = --g_gpuprof_req_left > 0 ? (long)total_frames + 45 : 0;
+        }
         const char *e = getenv("LARECOMP_GPUPROF_AT");
         for (const char *p = e; p && *p;) {
             long at = strtol(p, (char **)&p, 10);
@@ -1771,6 +1782,14 @@ static bool g_lrz_at_start = true;
 bool vk_lrz_at_start(void) { return g_lrz_at_start; }  // (the start screen: a change needs a restart)
 const char *vk_gpu_name(void) { return g_vk.props.deviceName; }
 #endif
+
+// The menu's Capture a GPU profile (ui/menu.mm): GPU time per pass of three frames, the first `delay` presented frames
+// from now (the menu closed by then, the game running), 45 apart - into the log, for tuning this GPU (g_gpuprof_req_*)
+void vk_gpuprof_request(int delay) {
+    g_gpuprof_req_at = (long)total_frames + (delay > 0 ? delay : 1);
+    g_gpuprof_req_left = 3;
+    LOG("[gpuprof] requested at frame %llu: frames from %ld\n", (unsigned long long)total_frames, g_gpuprof_req_at);
+}
 
 void ui_window_init(void) {
     if (window) return;

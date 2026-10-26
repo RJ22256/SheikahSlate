@@ -779,10 +779,12 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     // ~2.4 MB a frame in the overworld). The periodic full hash stays as a safety net. LARECOMP_VK_TEX_WATCH=0: off.
     static int watch = -1;
     if (watch < 0) { const char *e = getenv("LARECOMP_VK_TEX_WATCH"); watch = !e || atoi(e) != 0; }
+    bool written = false;  // (the tracking saw the CPU write it: hashed whole, not sampled - below)
     if (watch && !always_full) {
         extern int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now);
         uint32_t now = 0;
         int ch = vk_pages_changed(t->addr, total, b->wgen, &now);
+        written = ch > 0;
         if (ch >= 0) {
             b->wgen = now;
             if (!ch && b->uploaded && !restyle) {
@@ -792,7 +794,10 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
         }
     }
     if (b->uploaded && b->dynamic && !always_full && !restyle && !periodic && texture_unchanged(b, mem, total)) return;
-    if (!full && !restyle) {
+    // (a sample of the bytes, unless the page tracking says the CPU wrote there: a few new glyphs drawn into a font's
+    // glyph cache by the CPU missed every sampled byte, and the text showed blanks where they belonged until the next
+    // periodic full hash - on drivers with page tracking, the CPU-copy path: Mali, Qualcomm's own)
+    if (!full && !restyle && !written) {
         prof_tex_samples++;
         uint64_t sh = fnv_sample(mem, total);
         if (sh == b->sample_hash) return;

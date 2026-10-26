@@ -507,6 +507,7 @@ extern "C" int input_pad_family(void);  // runtime/hle/input.c
 extern "C" double output_scale_dynamic_factor(void);
 #ifdef __ANDROID__
 extern "C" void android_set_display_refresh(int how);  // (platform/android.c: Video > Display refresh rate)
+extern "C" void vk_gpuprof_request(int delay);          // (vulkan/device.c: Video > Capture a GPU profile)
 #endif
 
 static void tab_display(void) {
@@ -663,6 +664,11 @@ static void tab_display(void) {
                        "translated from now on: restart the app for all of them."))
             g_settings.shader_int32 = si == 0 ? -1 : si == 1 ? 1 : 0;
     }
+    if (opt_button("Capture a GPU profile",
+                   "Writes how long the GPU spends on each part of three frames into the log file, starting about 10 "
+                   "seconds from now: close this menu and keep playing where it's slow. Turn on Settings > Prelaunch > "
+                   "Driver compatibility > Save a log file first, then send the log - it shows where this GPU's time goes."))
+        vk_gpuprof_request(300);
 #endif
     opt_end();
 }

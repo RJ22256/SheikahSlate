@@ -515,3 +515,7 @@
  "Esta tela é mais alta que 16:9 (16:10): de qualquer jeito o jogo mostra a imagem inteira em 16:9 com faixas finas em cima e embaixo, sem nada esticado."},
 {"Automatic",
  "Automático"},
+{"Capture a GPU profile",
+ "Capturar um perfil da GPU"},
+{"Writes how long the GPU spends on each part of three frames into the log file, starting about 10 seconds from now: close this menu and keep playing where it's slow. Turn on Settings > Prelaunch > Driver compatibility > Save a log file first, then send the log - it shows where this GPU's time goes.",
+ "Grava no arquivo de log quanto tempo a GPU gasta em cada parte de três quadros, começando daqui a uns 10 segundos: feche este menu e continue jogando onde está lento. Ligue antes Configurações > Pré-lançamento > Compatibilidade do driver > Salvar um arquivo de log, depois envie o log - ele mostra para onde vai o tempo desta GPU."},

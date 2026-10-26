@@ -906,9 +906,10 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
 // GPU -> CPU copies: the ring is write-combined (often device-local over the BAR), where CPU reads crawl (a
 // 1280x720 screenshot took 7 s). Readbacks use one host-cached buffer instead. Every user waits for the GPU and
 // reads the data before the next readback (render thread), so a single grow-only buffer suffices.
+static VmaAllocation rb_mem;  // (vk_readback's buffer)
 VkSpan vk_readback(uint64_t size) {
     static VkBuffer buf;
-    static VmaAllocation mem;
+    VmaAllocation mem = rb_mem;
     static uint8_t *ptr;
     static uint64_t cap;
     if (size > cap) {
@@ -920,8 +921,15 @@ VkSpan vk_readback(uint64_t size) {
         VmaAllocationInfo info;
         VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &buf, &mem, &info));
         ptr = info.pMappedData;
+        rb_mem = mem;
     }
     return (VkSpan){buf, 0, ptr};
+}
+
+// After the GPU has written a readback (its fence waited for), before the CPU reads it: the buffer is host-cached, and
+// where that memory isn't coherent (Arm's Mali driver) the CPU's cache may still hold older bytes. A no-op elsewhere.
+void vk_readback_ready(uint64_t size) {
+    if (rb_mem) vmaInvalidateAllocation(g_vk.vma, rb_mem, 0, size ? size : VK_WHOLE_SIZE);
 }
 
 VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
@@ -1529,6 +1537,7 @@ static void dump_layers_raw(TexBackend *b) {  // every layer, level 0, as stored
         vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     }
     renderer_flush();
+    vk_readback_ready(one * nl);
     for (uint32_t l = 0; l < nl; l++) {
         char p[128];
         snprintf(p, sizeof p, "build/sampled_%ux%u_L%u.raw", b->width, b->height, l);
@@ -2815,6 +2824,7 @@ static void debug_save_depth(TexBackend *b, const char *path) {
                            .imageExtent = {b->width, b->height, 1}};
     vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
+    vk_readback_ready(n * 4);
     const float *d = out.ptr;
     float lo = 1e30f, hi = -1e30f;
     for (uint64_t i = 0; i < n; i++) { if (d[i] < lo) lo = d[i]; if (d[i] > hi) hi = d[i]; }
@@ -3710,10 +3720,16 @@ static bool gres_init(void) {
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = GA_SIZE,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    // (coherent memory, cached where the GPU has such a type: the CPU writes the ranges draws read and reads back what
+    // shaders stored, with no flush or invalidate anywhere. Arm's Mali driver - the Galaxy Tab S10 Ultra - lists its
+    // cached type as not coherent (0xb): there the arena's CPU writes reached the GPU only when the CPU's cache happened
+    // to evict them, and the game's text - whose vertices come through here - lost letters. Its coherent type is the one
+    // the transient ring already uses.)
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
                                   .flags = (getenv("LARECOMP_GA_UNCACHED") ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
                                                                            : VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT) |
-                                           VMA_ALLOCATION_CREATE_MAPPED_BIT};  // (cached: read back; LARECOMP_GA_UNCACHED=1, a test)
+                                           VMA_ALLOCATION_CREATE_MAPPED_BIT,  // (cached: read back; LARECOMP_GA_UNCACHED=1, a test)
+                                  .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
     VmaAllocationInfo inf;
     if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &ga_buf, &ga_mem, &inf) != VK_SUCCESS || !inf.pMappedData) {
         LOG("[vk] global memory arena: not available\n");
@@ -3721,7 +3737,10 @@ static bool gres_init(void) {
     }
     ga_ptr = inf.pMappedData;
     gres_state = 1;
-    LOG("[vk] global memory arena: %llu MB (what shaders store stays on the GPU)\n", (unsigned long long)(GA_SIZE >> 20));
+    VkMemoryPropertyFlags gf;
+    vmaGetMemoryTypeProperties(g_vk.vma, inf.memoryType, &gf);
+    LOG("[vk] global memory arena: %llu MB (what shaders store stays on the GPU), memory type %u (%#x: %scoherent)\n",
+        (unsigned long long)(GA_SIZE >> 20), inf.memoryType, (unsigned)gf, gf & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? "cached, " : "");
     return true;
 }
 
@@ -5800,6 +5819,7 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     vkCmdCopyImageToBuffer(cb, srcimg, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     wait_why = "texture -> buffer readback";
     renderer_flush();  // the CPU may read the result right after the fence
+    vk_readback_ready(total);
     memcpy((void *)(uintptr_t)dst, out.ptr, total);
     {   static int nlog;
         if (getenv("LARECOMP_LOG_READBACK") && nlog++ < 20) {
@@ -6292,6 +6312,7 @@ static void save_texture_raw(TexBackend *b, const char *path) {
                            .imageExtent = {b->width, b->height, 1}};
     vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
+    vk_readback_ready(size);
     char rp[300];
     snprintf(rp, sizeof rp, "%s.raw", path);
     FILE *f = fopen(rp, "wb");
@@ -6350,6 +6371,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
     VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
     vkCmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
+    vk_readback_ready((uint64_t)w * h * 4);
     vk_save_png(path, out.ptr, w, h);
     vk_rp_forget_view(tv);
     vkDestroyImageView(g_vk.dev, tv, NULL);

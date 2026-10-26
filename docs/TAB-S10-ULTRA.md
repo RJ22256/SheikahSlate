@@ -153,6 +153,32 @@ app and a look at the result on the tablet - a lossy conversion done blind could
 decoded textures on disk would take tens of GB (they decode 4-8x larger). Output resolution's default stays Screen:
 1080p (Video > Output resolution) is worth trying, but making it the default wants a measurement first.
 
+## Update 3 (0.1.9-slate.3): the text, from the tablet's log
+
+The first log from the Tab (driver r44p1, Vulkan 1.3.247) showed: no `VK_EXT_external_memory_host` (the game's memory
+reaches the GPU through CPU copies), and memory types `0:0x7 1:0xb` - **the cached type is not coherent**. On Adreno the
+cached type is also coherent, so upstream never needed a flush.
+
+### 12. The global memory arena in coherent memory (`exec.c` gres_init)
+
+In the CPU-copy path the ranges shaders read through global memory - the text's vertices among them - are copied into
+the arena each draw, and what compute shaders store is read back from it. It asked for cached memory, which on this
+driver is the non-coherent type 1, with no flush or invalidate anywhere: the CPU's writes reached the GPU only when its
+cache happened to evict them, so letters went missing at random ("adven urous"). The arena now requires host-coherent
+memory (type 0 here, the one the transient ring already used; unchanged where a cached coherent type exists). The log
+names the arena's memory type. The readback buffer (`vk_readback`: textures the game reads back, screenshots, save
+thumbnails) stays cached, and is invalidated after each GPU copy before the CPU reads it.
+
+### 13. CPU-written textures hashed whole (`textures.c` upload_texture)
+
+A texture the page tracking saw the CPU write is hashed in full instead of by a sample of its bytes: a few new glyphs
+drawn into a font's glyph cache could miss every sampled byte, leaving blanks until the next periodic full hash.
+
+### 14. Video > Capture a GPU profile
+
+The engine's per-pass GPU timer (`LARECOMP_GPUPROF_AT`, adb only) from the menu: three frames, about 10 seconds after
+pressing it, into the log as `[gpuprof]` rows - where this GPU's time goes, for the next optimizations.
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep
