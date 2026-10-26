@@ -2,9 +2,11 @@
 # dependencies (android/deps/*.sh: SDL3, shaderc, Vulkan headers, FFmpeg, and the on-device game code builder -
 # Python for Android, capstone, unicorn, lz4, zig), then the app. No game files are involved: players bring their own.
 #
-# Signing: with the repository secrets SLATE_KEYSTORE_B64 (a base64 .jks), SLATE_KEYSTORE_PASSWORD, SLATE_KEY_ALIAS and
-# SLATE_KEY_PASSWORD the release APK is signed with that key, so each build installs over the last. Without them it is
-# signed with the runner's throwaway debug key.
+# Signing: every build is signed with the same key, so each APK installs over the last (a different key would mean
+# uninstalling first, which deletes the app's data folder - the game files with it). By default that is the key kept
+# in this private repository, android/sheikahslate/signing/sheikahslate.jks. Before making the repository public or
+# sharing builds, move it to the repository secrets SLATE_KEYSTORE_B64 (the .jks in base64), SLATE_KEYSTORE_PASSWORD,
+# SLATE_KEY_ALIAS and SLATE_KEY_PASSWORD (those win when set) and delete the file.
 name: Build APK
 
 on:
@@ -94,10 +96,15 @@ jobs:
           KS_PASS: ${{ secrets.SLATE_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.SLATE_KEY_ALIAS }}
           KEY_PASS: ${{ secrets.SLATE_KEY_PASSWORD }}
+          REPO_KS_PASS: "58G3PZOpLlei6mblL7kMjxykXVa_nKio"  # (the password of android/sheikahslate/signing/sheikahslate.jks)
         run: |
-          if [ -z "$KS_B64" ]; then echo "no signing secrets: the debug key signs this build"; exit 0; fi
           mkdir -p ~/.sheikahslate
-          echo "$KS_B64" | base64 -d > ~/.sheikahslate/release.jks
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > ~/.sheikahslate/release.jks
+          else  # (the repository's own key)
+            cp android/sheikahslate/signing/sheikahslate.jks ~/.sheikahslate/release.jks
+            KS_PASS=$REPO_KS_PASS KEY_PASS=$REPO_KS_PASS KEY_ALIAS=sheikahslate
+          fi
           printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
             "$HOME/.sheikahslate/release.jks" "$KS_PASS" "$KEY_ALIAS" "$KEY_PASS" > ~/.sheikahslate/keystore.properties
           echo "release key: $KEY_ALIAS"
@@ -108,6 +115,7 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon assembleRelease
           ls -la app/build/outputs/apk/release/
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk | head -3
 
       - name: Name the APK
         id: apk
