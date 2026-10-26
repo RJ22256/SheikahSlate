@@ -2753,7 +2753,7 @@ static void build_pipeline(void *arg) {
 // targets and depth. With VK_EXT_shader_tile_image (Arm's Mali driver has it) the fragment shader reads its own
 // pixel of a colour target from the tile, in rasterization order - every earlier draw's write included - so the pass
 // stays whole. Such a draw's fragment shader gets a variant (tile_glsl): its lookups of that texture slot become
-// helpers that sample as before and, when the lookup lands on the fragment's own pixel (within a quarter texel of
+// helpers that sample as before and, when the lookup lands on the fragment's own pixel (within half a texel of
 // its centre, level 0), take the tile's value instead. Lookups elsewhere read memory as the plain in-place path would
 // without its pass end (Turnip's; an undefined feedback read in Vulkan's terms). Only 2D float colour targets read
 // with their own format, level 0 / layer 0, no swizzle; anything else keeps the pass end. LARECOMP_NO_TILE_READS=1:
@@ -2855,8 +2855,10 @@ static char *tile_glsl(const char *src, int n, const uint8_t *slot, const uint8_
     TL_PUT("\n");
     for (int j = 0; j < n; j++) {
         int l = loc[j] & 7, s_ = slot[j];
+        // (own pixel: within half a texel of the fragment's centre - scaled targets' sizes are rounded per axis, which
+        // puts an own-pixel lookup up to ~0.25 texel off at the far edge)
         TL_PUT("bool tl%d_own(vec2 uv) { vec2 d = abs(uv * vec2(textureSize(t%d, 0)) - gl_FragCoord.xy); "
-               "return d.x < 0.25f && d.y < 0.25f; }\n", j, s_);
+               "return d.x < 0.5f && d.y < 0.5f; }\n", j, s_);
         TL_PUT("vec4 tl%d_tex(vec2 uv) { vec4 s = texture(t%d, uv); return tl%d_own(uv) ? colorAttachmentReadEXT(tl_img%d) : s; }\n",
                j, s_, j, l);
         TL_PUT("vec4 tl%d_tex(vec2 uv, float b) { vec4 s = texture(t%d, uv, b); "

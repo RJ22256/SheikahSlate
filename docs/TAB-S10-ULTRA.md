@@ -220,7 +220,7 @@ storing and reloading six targets and depth. The Tab's driver has `VK_EXT_shader
 its own pixel of a colour target straight from tile memory, in rasterization order (every earlier draw's write
 included), so those draws no longer end the pass. Such a draw gets a variant of its fragment shader: each `texture` /
 `textureLod` / `texelFetch` of that slot becomes a helper that samples as before and, when the lookup lands on the
-fragment's own pixel (within a quarter texel of its centre, level 0), returns the tile's value instead. Only 2D float
+fragment's own pixel (within half a texel of its centre, level 0), returns the tile's value instead. Only 2D float
 colour targets read in their own format, level 0 / layer 0, unswizzled, bound in their own format; anything else keeps
 the pass end. A variant that doesn't compile falls back to the plain shader (logged as `[vk] tile reads: ...`). The fps
 line's feedback part reads `(read N, breaks N, tile N)`. Off: copies as before; Automatic stays off on Mali.
