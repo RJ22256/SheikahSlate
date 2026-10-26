@@ -1227,7 +1227,8 @@ static void prelaunch_tab(float sc) {
                                   "ones on the others."));
         ImGui::Text(tr("This GPU: %s"), vk_gpu_desc());
         if (!vk_driver_is_turnip())
-            ImGui::TextDisabled("%s", tr("These options are for Turnip: the driver in use takes the safer paths anyway."));
+            ImGui::TextDisabled("%s", tr("Game memory on the GPU and LRZ are for Turnip: the driver in use takes the safer paths "
+                                         "anyway. Draw-target reads in place can be tried on this GPU."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Game memory on the GPU (Turnip)"));
         changed |= tri("heap", &g_settings.gpu_heap);
@@ -1237,11 +1238,13 @@ static void prelaunch_tab(float sc) {
                                   "for Adreno 8xx GPUs, off for the others - on another Adreno, try On first. Applies when "
                                   "the game starts."));
         ImGui::Spacing();
-        ImGui::Text("%s", tr("Draw-target reads in place (Turnip)"));
+        ImGui::Text("%s", tr("Draw-target reads in place"));
         changed |= tri("inplace", &g_settings.inplace_reads);
         ImGui::TextDisabled("%s", tr("On: decals and effects read the image they draw on as it is, the fastest way. Off: a copy "
                                   "of it each time, slower (fewer fps) but by the Vulkan rules. Automatic: on for Adreno 8xx "
-                                  "GPUs, off for the others. Applies when the game starts."));
+                                  "GPUs, off for the others. On Mali GPUs (the Galaxy Tab S10 Ultra) On is an experiment: if "
+                                  "the ground's decals, roads or shadows look wrong, set it back. Applies when the game "
+                                  "starts."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Turnip low-resolution Z (LRZ)"));
         changed |= tri("lrz", &g_settings.turnip_lrz);

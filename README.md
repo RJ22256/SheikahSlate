@@ -31,6 +31,9 @@ It installs as its own app (`com.sheikahslate.tab`), so it can sit next to upstr
 | On-screen controls | Sized as % of screen height: on a 14.6" panel, 3 cm buttons 5 cm from the corners | Sized in millimetres on big screens (~14 mm buttons, near the edges); phones unchanged |
 | Refresh rate | Left to One UI | Video > Display refresh rate: Highest (120 Hz), 60 Hz or System |
 | Mali GPU memory path | The guest heap import, never exercised on Android; a refusal left shaders reading zeros for the whole run | Probed at start; a refusal (now or in an earlier run) takes the CPU-copy path from the beginning |
+| Game text on Mali | 64-bit shader address math (Turnip-tested): letters missing or wrong on the Tab | 32-bit shader math automatic on Arm GPUs (upstream's own advice for Mali) |
+| Texture streaming | BC textures decoded on one thread, the one recording the frame | Big levels decoded on 3 worker threads too (same output, tested) |
+| Decal in-place reads | Turnip only, even when set to On | On works on any GPU (experiment on Mali; Automatic stays off) |
 | Driver error text | "Install a Turnip driver" (Adreno only) | Says Mali runs the system driver only |
 | Name, icon | BOTWRecompAndroid, Triforce | Sheikah Slate, an original slate-and-mountains icon |
 

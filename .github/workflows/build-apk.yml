@@ -22,6 +22,9 @@ jobs:
   apk:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash  # (bash -eo pipefail: a failing build piped into tee still fails its step)
     env:
       NDK_VERSION: 30.0.16248370
       CMAKE_VERSION: 3.30.4
@@ -84,11 +87,27 @@ jobs:
           path: android/deps/out
           key: ${{ steps.deps-cache.outputs.cache-primary-key }}
 
-      - name: Desktop tests of the tablet logic
+      # The game code built on the tablet carries this id (android/gamelib_id.cmake: a hash of the generator and the
+      # headers it is compiled against); an app with another one makes the player build it again - an hour on the
+      # tablet. Changing it has to be deliberate: update android/gamelib_id.expected in the same commit.
+      - name: Game code id unchanged (no rebuild on the tablet)
+        run: |
+          printf 'include(${R}/android/gamelib_id.cmake)\nmessage("${GAMELIB_ID}")\n' > "$RUNNER_TEMP/gid.cmake"
+          ID=$(cmake -DR="$PWD" -P "$RUNNER_TEMP/gid.cmake" 2>&1 | tail -1)
+          WANT=$(head -1 android/gamelib_id.expected)
+          echo "game code id $ID (expected $WANT)"
+          if [ "$ID" != "$WANT" ]; then
+            echo "::error title=Game code id changed::$ID instead of $WANT - installing this build would make the tablet rebuild the game code"
+            exit 1
+          fi
+          echo "::notice title=Game code id::$ID - the game code already built on the tablet stays valid"
+
+      - name: Desktop tests (tablet layout, threaded BC decode)
         run: |
           mkdir -p build
           clang -O1 -Iruntime -o build/test_tablet_layout tools/test_tablet_layout.c -lm
           build/test_tablet_layout
+          python3 tools/test_bc_threads.py
 
       - name: Release signing key
         env:

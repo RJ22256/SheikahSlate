@@ -652,10 +652,17 @@ static void tab_display(void) {
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
                "blends only along them, so textures stay sharp. Most useful at a lower internal resolution.");
 #ifdef __ANDROID__
-    opt_toggle("32-bit shader math", &g_settings.shader_int32, false,
-               "Translates the game's shaders with 32-bit address math, the path used for drivers without 64-bit "
-               "integers (Adreno 6xx / 7xx and Mali stock drivers). Try it if lighting, grass or text are missing or wrong "
-               "on your GPU. Applies to shaders translated from now on: restart the app for all of them.");
+    {   // (settings.h shader_int32: -1 Automatic, 1 on, 0 off - vulkan/device.c vk_shader_int32)
+        static const char *sm[] = {"Automatic", "On", "Off"};
+        int si = g_settings.shader_int32 < 0 ? 0 : g_settings.shader_int32 ? 1 : 2;
+        if (opt_choice("32-bit shader math", &si, sm, 3, 0,
+                       "Translates the game's shaders with 32-bit address math, the path used for drivers without 64-bit "
+                       "integers (Adreno 6xx / 7xx and Mali stock drivers). Automatic: on for Mali GPUs, like the Galaxy "
+                       "Tab S10 Ultra's, where the 64-bit path drew the game's text with letters missing or wrong; off "
+                       "elsewhere. Try On if lighting, grass or text are missing or wrong on your GPU. Applies to shaders "
+                       "translated from now on: restart the app for all of them."))
+            g_settings.shader_int32 = si == 0 ? -1 : si == 1 ? 1 : 0;
+    }
 #endif
     opt_end();
 }

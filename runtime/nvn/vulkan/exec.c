@@ -18,6 +18,7 @@
 #include "../renderer.h"
 #include "../../settings.h"
 #include "../../paths.h"
+bool vk_shader_int32(void);  // (device.c: Video > 32-bit shader math, Automatic on Arm GPUs)
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_feedback_reads;  // (attachments sampled as they are: only read, resolve_feedback)
@@ -2193,7 +2194,7 @@ static void translate_program(void *arg) {
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
 #ifdef __ANDROID__
-    maxwell_no_int64 = !g_vk.shader_int64 || g_settings.shader_int32 || getenv("LARECOMP_VK_INT32") != NULL;
+    maxwell_no_int64 = !g_vk.shader_int64 || vk_shader_int32() || getenv("LARECOMP_VK_INT32") != NULL;
     maxwell_gmem_map_all = gcopy_mode || gwin_mode;
     maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
     if (getenv("LARECOMP_GMISS_STAGES"))  // (a test: which stages log misses - 1 vertex, 2 fragment, 32 compute)
@@ -3064,11 +3065,15 @@ static void resolve_feedback(Prog *pr) {
                 // fence every write they then read. Sampling a target the pass writes is a feedback loop Vulkan leaves
                 // undefined (without VK_EXT_attachment_feedback_loop_layout): on Turnip only, where it was checked
                 // frame by frame on the Adreno 830 - Automatic keeps it to the Adreno 8xx (settings.h inplace_reads,
-                // the start screen's Driver compatibility; LARECOMP_FEEDBACK_INPLACE=1 on any driver).
+                // the start screen's Driver compatibility; LARECOMP_FEEDBACK_INPLACE=1 on any driver). Sheikah Slate:
+                // On applies on any driver too, an experiment for tile-based Mali GPUs (the Tab S10 Ultra): the pass
+                // ends where a copy was made, so a draw reads what earlier passes stored to memory, which a tiler's
+                // texture reads see; Automatic stays off there.
                 if (g_inplace_copy < 0) {
                     extern bool vk_driver_is_turnip(void);
                     extern bool vk_turnip_path_on(int setting);
-                    bool inplace = getenv("LARECOMP_FEEDBACK_INPLACE") || (vk_driver_is_turnip() && vk_turnip_path_on(g_settings.inplace_reads));
+                    bool inplace = getenv("LARECOMP_FEEDBACK_INPLACE") ||
+                                   (vk_driver_is_turnip() ? vk_turnip_path_on(g_settings.inplace_reads) : g_settings.inplace_reads > 0);
                     g_inplace_copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL || !inplace;
                     LOG("[vk] targets a draw writes, sampled by it: %s (%s)\n", g_inplace_copy ? "copies" : "in place",
                         g_settings.inplace_reads < 0 ? "automatic" : "settings");
@@ -3354,8 +3359,17 @@ static bool gmem_import(uint64_t size) {
     VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
                                             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
                                             .pHostPointer = (void *)(uintptr_t)HEAP_BASE};
+    // (a host-coherent type: the CPU's writes - the game's vertices, its text - reach the GPU without a flush; the
+    // first type the driver lists may be cached and not coherent. None: no import, device.c host_import_probe)
+#ifdef __ANDROID__
+    extern int vk_coherent_type(uint32_t bits);
+    int type = vk_coherent_type(mp.memoryTypeBits);
+    if (type < 0) return false;
+#else
+    int type = __builtin_ctz(mp.memoryTypeBits);
+#endif
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp, .allocationSize = size,
-                               .memoryTypeIndex = (uint32_t)__builtin_ctz(mp.memoryTypeBits)};
+                               .memoryTypeIndex = (uint32_t)type};
     VkDeviceMemory mem;
     if (vkAllocateMemory(g_vk.dev, &ai, NULL, &mem) != VK_SUCCESS) return false;
     VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
@@ -4663,7 +4677,7 @@ static CsProg *compute_program(NvnProgram *np) {
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
 #ifdef __ANDROID__
-    maxwell_no_int64 = !g_vk.shader_int64 || g_settings.shader_int32 || getenv("LARECOMP_VK_INT32") != NULL;
+    maxwell_no_int64 = !g_vk.shader_int64 || vk_shader_int32() || getenv("LARECOMP_VK_INT32") != NULL;
     maxwell_gmem_map_all = gcopy_mode || gwin_mode;
     maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
     if (getenv("LARECOMP_GMISS_STAGES"))  // (a test: which stages log misses - 1 vertex, 2 fragment, 32 compute)

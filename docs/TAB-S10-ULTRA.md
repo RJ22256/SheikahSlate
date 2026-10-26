@@ -111,6 +111,48 @@ Game files already set up by upstream's 0.1.9-beta app can be moved over with ad
 carries over too - its id hashes the generator and the headers it is compiled against, none of which this port
 changes. (If the start screen asks to build it again anyway, let it.)
 
+## Update 2 (0.1.9-slate.2): text, decals, texture streaming
+
+Installs over 0.1.9-slate.1 (same id, same key, versionCode 2), keeping the game files, saves and settings. The game
+code built on the tablet stays valid: its id (`df5f066ed772a211`) is pinned in `android/gamelib_id.expected`, and the
+CI fails any build that would change it.
+
+### 9. The game's text on Mali (`device.c` vk_shader_int32, Video > 32-bit shader math)
+
+On the Tab the game's text came out with letters missing, others replaced by pieces of the font sheet ("ABCDE",
+"iiklm") or another language's. Its vertex shader finds each glyph's quad and place in the font through 64-bit address
+math, and the translated shaders take the 64-bit path wherever the driver lists 64-bit integers - a path tested only
+on Turnip. Upstream's own option already said, for Mali stock drivers, "try it if lighting, grass or text are missing
+or wrong". It is now Automatic / On / Off, Automatic being **on for Arm GPUs** (off elsewhere, as before). A settings
+file from before (`shader_int32 = 0`, upstream's default) loads as Automatic; it is saved as `shader_math`. The first
+start after the update translates the shaders again (some stutter while they compile).
+
+Also: the guest heap import now only uses a host-coherent memory type (the first type a driver lists may be cached
+and not coherent, so the CPU's writes - vertices, text - wouldn't reach the GPU without a flush); the start-up probe
+turns the import off when no coherent type takes the heap's pages.
+
+### 10. Decals read in place, as an experiment (Settings > Prelaunch > Driver compatibility)
+
+Upstream's biggest speed-up on its phone (31 -> 40 fps): the terrain decals read the G-buffer targets they draw on
+instead of a copy made before every one of them. It was locked to Turnip even when set to On. Now **On** applies to any
+driver; **Automatic stays off** outside Adreno 8xx. On a tile-based Mali GPU it should hold - the pass ends wherever a
+copy used to be made, so a draw reads what earlier passes stored - but it can't be checked from here: if the ground's
+decals, roads or shadows look wrong with it On, set it back. The by-the-rules version needs
+`VK_EXT_attachment_feedback_loop_layout`; the log's `[slate] driver features` line says whether this driver has it.
+
+### 11. Texture streaming on more cores (`runtime/nvn/vulkan/bc_threads.h`)
+
+This GPU has no BC textures, so each one is decoded on the CPU when it streams in - on the thread recording the frame,
+a 2048 x 2048 level being a million blocks. Levels of 4096 blocks or more are now decoded in bands by three worker
+threads and the caller (`LARECOMP_BC_THREADS=<n>` to change, 0 for the old way). `tools/test_bc_threads.py` checks the
+output is byte for byte the same for every BC format and size (also under ThreadSanitizer): 2.0x faster on a 2-core
+build machine, more on the tablet's 8 cores.
+
+Not done, and why: converting the textures to formats the GPU reads natively (ETC2 / ASTC) needs an encoder in the
+app and a look at the result on the tablet - a lossy conversion done blind could make every texture worse; caching the
+decoded textures on disk would take tens of GB (they decode 4-8x larger). Output resolution's default stays Screen:
+1080p (Video > Output resolution) is worth trying, but making it the default wants a measurement first.
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep

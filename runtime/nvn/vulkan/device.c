@@ -1651,6 +1651,17 @@ static void quick_exit_handler(void) {
 // of the full heap in an earlier run of this driver (exec.c: cache/vk_host_import_failed) - takes the CPU copies, as a
 // driver without the extension does. LARECOMP_VK_HOST_IMPORT=1: the import whatever the probe says; =0: never.
 #define HOST_IMPORT_FAILED "cache/vk_host_import_failed"
+// The lowest memory type among `bits` the CPU's writes reach the GPU in without a flush (host-visible and coherent), -1
+// none (exec.c gmem_import too)
+int vk_coherent_type(uint32_t bits) {
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    const VkMemoryPropertyFlags need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    for (uint32_t i = 0; i < mp.memoryTypeCount && i < 32; i++)
+        if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & need) == need) return (int)i;
+    return -1;
+}
+
 static void host_import_probe(void) {
     if (!g_vk.host_import || getenv("LARECOMP_VK_HOST_IMPORT")) return;
     const char *why = NULL;
@@ -1678,12 +1689,14 @@ static void host_import_probe(void) {
     else if (props(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, (void *)(uintptr_t)HEAP_BASE, &mp) !=
                  VK_SUCCESS || !mp.memoryTypeBits)
         why = "no memory type takes the heap's pages";
+    else if (vk_coherent_type(mp.memoryTypeBits) < 0)
+        why = "only non-coherent memory types take the heap's pages";
     else {
         VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
                                                 .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
                                                 .pHostPointer = (void *)(uintptr_t)HEAP_BASE};
         VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp, .allocationSize = size,
-                                   .memoryTypeIndex = (uint32_t)__builtin_ctz(mp.memoryTypeBits)};
+                                   .memoryTypeIndex = (uint32_t)vk_coherent_type(mp.memoryTypeBits)};
         VkDeviceMemory mem = VK_NULL_HANDLE;
         VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
         if (r != VK_SUCCESS) why = "the driver refused a test import";
@@ -1698,16 +1711,46 @@ static void host_import_probe(void) {
     }
 }
 
-// What the bug reports need first: the device profile (SlateDisplay.java), the GPU, and the paths it takes
+// An Arm GPU (Mali / Immortalis: the Galaxy Tab S10 Ultra's Immortalis-G720)
+bool vk_gpu_is_arm(void) {
+    return g_vk.props.vendorID == 0x13B5 || strstr(g_vk.props.deviceName, "Mali") || strstr(g_vk.props.deviceName, "Immortalis");
+}
+
+// Video > 32-bit shader math (settings.h shader_int32): the translated shaders' address math in 32-bit words even
+// where the driver offers 64-bit integers. Automatic: on for Arm GPUs. On the Tab S10 Ultra the 64-bit path - tested
+// only on Turnip - drew the game's text with letters missing or taken from elsewhere in its font: the text's vertex
+// shader finds each glyph's quad and font-sheet place through that math. Upstream's own advice for Mali stock drivers
+// ("try it if lighting, grass or text are missing or wrong"), now the default there.
+bool vk_shader_int32(void) { return g_settings.shader_int32 < 0 ? vk_gpu_is_arm() : g_settings.shader_int32 != 0; }
+
+// What the bug reports need first: the device profile (SlateDisplay.java), the GPU, and the paths it takes - and the
+// driver features the next optimizations for Mali depend on (an in-place read of draw targets by the Vulkan rules:
+// attachment feedback loops; on-tile reads; the guest heap as GPU memory)
 static void slate_profile_log(void) {
     const char *profile = getenv("LARECOMP_DEVICE_PROFILE"), *dpi = getenv("LARECOMP_SCREEN_DPI");
-    bool mali = g_vk.props.vendorID == 0x13B5 || strstr(g_vk.props.deviceName, "Mali") || strstr(g_vk.props.deviceName, "Immortalis");
+    bool mali = vk_gpu_is_arm();
     VkPhysicalDeviceFeatures ft;
     vkGetPhysicalDeviceFeatures(g_vk.phys, &ft);
-    LOG("[slate] profile %s, %s ppi, GPU %s (vendor %#x%s): heap %s, BC textures %s\n", profile ? profile : "unknown",
-        dpi ? dpi : "?", g_vk.props.deviceName, g_vk.props.vendorID, mali ? ", Arm" : "",
-        g_vk.map_placed ? "placed in GPU memory" : g_vk.host_import ? "imported" : "through CPU copies",
-        ft.textureCompressionBC ? "native" : "decoded on the CPU");
+    LOG("[slate] profile %s, %s ppi, GPU %s (vendor %#x%s, driver %#x): heap %s, BC textures %s, shader math %s-bit%s\n",
+        profile ? profile : "unknown", dpi ? dpi : "?", g_vk.props.deviceName, g_vk.props.vendorID, mali ? ", Arm" : "",
+        g_vk.props.driverVersion, g_vk.map_placed ? "placed in GPU memory" : g_vk.host_import ? "imported" : "through CPU copies",
+        ft.textureCompressionBC ? "native" : "decoded on the CPU", !g_vk.shader_int64 || vk_shader_int32() ? "32" : "64",
+        g_settings.shader_int32 < 0 ? " (automatic)" : " (settings)");
+    static const char *const want[] = {
+        "VK_EXT_attachment_feedback_loop_layout", "VK_EXT_attachment_feedback_loop_dynamic_state",
+        "VK_EXT_rasterization_order_attachment_access", "VK_ARM_rasterization_order_attachment_access",
+        "VK_KHR_dynamic_rendering_local_read", VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, "VK_EXT_map_memory_placed",
+        "VK_EXT_shader_tile_image", "VK_KHR_shader_float_controls2"};
+    uint32_t ne = 0;
+    vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
+    VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
+    vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+    char line[768] = "";
+    size_t n = 0;
+    for (size_t i = 0; i < sizeof want / sizeof *want && n < sizeof line - 80; i++)
+        n += (size_t)snprintf(line + n, sizeof line - n, " %s%s", has_ext(ep, ne, want[i]) ? "+" : "-", want[i] + 3);
+    free(ep);
+    LOG("[slate] driver features (+ has, - lacks):%s; shaderInt64 %u, %u extensions\n", line, ft.shaderInt64, ne);
     if (profile && !strcmp(profile, "tab-s10-ultra") && !mali)
         LOG("[slate] Galaxy Tab S10 Ultra without an Arm GPU name (%s): reports welcome\n", g_vk.props.deviceName);
 }

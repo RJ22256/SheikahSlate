@@ -40,7 +40,10 @@ typedef struct {
     int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps
     int display_refresh;  // the display's refresh rate (Sheikah Slate, android/.../SlateDisplay.java): 0 the highest at
                           // this resolution (120 Hz on the Galaxy Tab S10 Ultra), 1 60 Hz (saves battery), 2 the system's
-    bool shader_int32;    // shader address math in 32-bit words even where the driver offers 64-bit (vulkan/exec.c)
+    int shader_int32;     // shader address math in 32-bit words even where the driver offers 64-bit (vulkan/exec.c
+                          // vk_shader_int32): -1 Automatic - on for Arm (Mali) GPUs, whose compilers got the 64-bit
+                          // address math of the game's text and lighting shaders wrong on the Galaxy Tab S10 Ultra
+                          // (letters missing or taken from elsewhere in the font) - 1 on, 0 off. ini: shader_math
     // Driver compatibility (the start screen's Settings > Prelaunch, ui/launcher.mm; from LASRecompAndroid), for GPUs
     // where a Turnip path draws wrong: read when the game starts (gpu_heap, inplace_reads) or when the app starts
     // (turnip_lrz, log_file). -1 Automatic: on for the Adreno 8xx GPUs these paths were made on, off elsewhere

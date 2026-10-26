@@ -45,6 +45,7 @@ Settings g_settings = {
     .gpu_heap = -1,
     .inplace_reads = -1,
     .turnip_lrz = -1,
+    .shader_int32 = -1,
     .fps_mode = 1,  // (30: the game's own choice dropped the overworld to 20, where the GPU's clocks settled low)
     .res_mode = 1,  // (1x: the Switch's 900p scene, the HUD at the screen's resolution - Match display drew the scene at
                     // 2560x1440 on the POCO F7 Ultra: 22 fps)
@@ -200,7 +201,10 @@ void settings_load(void) {
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
         else if (!strcmp(key, "frame_rate")) g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : 0;
         else if (!strcmp(key, "display_refresh")) g_settings.display_refresh = !strcmp(val, "60") ? 1 : !strcmp(val, "system") ? 2 : 0;
-        else if (!strcmp(key, "shader_int32")) g_settings.shader_int32 = atoi(val) != 0;
+        // (shader_math = auto | 32 | 64; upstream's shader_int32 = 1 still turns it on - its 0 was the default, now
+        // Automatic, so a settings file from before keeps Automatic)
+        else if (!strcmp(key, "shader_math")) g_settings.shader_int32 = !strcmp(val, "32") ? 1 : !strcmp(val, "64") ? 0 : -1;
+        else if (!strcmp(key, "shader_int32")) { if (atoi(val)) g_settings.shader_int32 = 1; }
         else if (!strcmp(key, "gpu_heap")) g_settings.gpu_heap = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
         else if (!strcmp(key, "inplace_reads")) g_settings.inplace_reads = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
         else if (!strcmp(key, "turnip_lrz")) g_settings.turnip_lrz = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
@@ -271,7 +275,7 @@ void settings_save(void) {
     fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
     fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : "auto");
     fprintf(f, "display_refresh = %s\n", g_settings.display_refresh == 1 ? "60" : g_settings.display_refresh == 2 ? "system" : "max");
-    fprintf(f, "shader_int32 = %d\n", g_settings.shader_int32);
+    fprintf(f, "shader_math = %s\n", g_settings.shader_int32 < 0 ? "auto" : g_settings.shader_int32 ? "32" : "64");
     static const char *const tri[] = {"auto", "0", "1"};  // (-1 / 0 / 1)
 #define TRI(v) tri[(v) < 0 ? 0 : (v) ? 2 : 1]
     fprintf(f, "gpu_heap = %s\ninplace_reads = %s\nturnip_lrz = %s\nlog_file = %d\ngpu_model = %s\n", TRI(g_settings.gpu_heap),

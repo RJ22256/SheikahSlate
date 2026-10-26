@@ -222,6 +222,12 @@ static void bc_decode(VkFormat bc, const uint8_t *blocks, uint32_t wb, uint32_t 
             }
         }
 }
+
+// (bc_threads.h: big levels decoded on several cores)
+static void bc_decode_fmt(int fmt, const uint8_t *blocks, uint32_t wb, uint32_t hb, uint32_t bsize, uint8_t *out, uint32_t bpp) {
+    bc_decode((VkFormat)fmt, blocks, wb, hb, bsize, out, bpp);
+}
+#include "bc_threads.h"
 #endif
 
 // ================================================================== output resolution / per-frame clears
@@ -847,7 +853,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                 if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, blocks, l.w, l.h, l.wb * bsize);
                 VkSpan s = vk_transient((uint64_t)l.wb * 4 * l.hb * 4 * bpp, 16);
                 uint64_t decode_start = texture_trace_on() ? SDL_GetTicksNS() : 0;
-                bc_decode(b->bc_vf, blocks, l.wb, l.hb, bsize, s.ptr, bpp);
+                bc_decode_parallel(bc_decode_fmt, (int)b->bc_vf, blocks, l.wb, l.hb, bsize, s.ptr, bpp);
                 uint64_t decode_ns = decode_start ? SDL_GetTicksNS() - decode_start : 0;
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.wb * 4, .bufferImageHeight = l.hb * 4,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},

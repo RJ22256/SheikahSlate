@@ -1,0 +1,5 @@
+df5f066ed772a211
+# The game code id the app expects (android/gamelib_id.cmake). It hashes tools/gen.py, lifter.py, analyze.py,
+# nso.py, passes.py, patches.py, simd_c.py, gamelib_entry.c, runtime/hle/hle_symbols.txt, runtime/cpu.h, simd.h,
+# simd_fp.h and gamelib.h: a change to any of them makes every player rebuild the game code on the tablet (an hour).
+# The CI fails while this line and the computed id differ (.github/workflows/build-apk.yml).
