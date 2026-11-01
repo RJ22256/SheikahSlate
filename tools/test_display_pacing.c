@@ -31,6 +31,7 @@ typedef struct {
     bool no_earliest;              // the system doesn't report the earliest times
     double report_offset;          // the system reports present times this much later than the frames went up (ns)
     int frames;
+    double fps;                    // the game's frame rate (0: 30)
 } Sim;
 
 typedef struct {
@@ -51,7 +52,8 @@ static void run(const Sim *s, Result *res) {
     double prev_shown = 0;
     int prev_id = 0;
     for (int i = 1; i <= s->frames && i < MAXF; i++) {
-        double period = s->pace ? dp_locked_period(res->p.refresh, 1e9 / 30) : 1e9 / 30;
+        double fp = 1e9 / (s->fps > 0 ? s->fps : 30);
+        double period = s->pace ? dp_locked_period(res->p.refresh, fp) : fp;
         if (i > 1) grid += period;
         if (s->hitch_at && i == s->hitch_at) grid += 150e6;  // (a stall: the grid starts again after it)
         double q = grid + s->render_lo + urand() * (s->render_hi - s->render_lo);
@@ -64,7 +66,7 @@ static void run(const Sim *s, Result *res) {
                         s->no_earliest ? 0 : (uint64_t)(earliest_at[next_feedback] + off));
             next_feedback++;
         }
-        uint64_t desired = dp_desired(&res->p, (uint32_t)i, (uint64_t)q, 1e9 / 30, s->pace);
+        uint64_t desired = dp_desired(&res->p, (uint32_t)i, (uint64_t)q, (uint64_t)fp, s->pace);
         double ready = g + 0.5e6;  // (the compositor's latch: half a millisecond before the refresh)
         if (!s->ignore_desired && desired && desired > ready) ready = (double)desired;
         // the first refresh at or after ready; a frame eligible at the refresh the one before was waiting for goes up
@@ -175,6 +177,20 @@ int main(void) {
     report("60 Hz, jitter 9 ms", &s, &r);
     expect(share(&r, 2) >= 0.98, "60 Hz paced: 98% at 2 refreshes");
 
+    // 5b. Turbo: 40 fps on 120 Hz, 3 refreshes a frame (render 8-14 ms, GPU 2-9 ms after the present).
+    s = base;
+    s.fps = 40, s.render_lo = 8e6, s.render_hi = 14e6, s.gpu_lo = 2e6, s.gpu_hi = 9e6;
+    s.pace = false;
+    run(&s, &r);
+    report("120 Hz, 40 fps", &s, &r);
+    double unpaced3 = share(&r, 3);
+    s.pace = true;
+    run(&s, &r);
+    report("120 Hz, 40 fps", &s, &r);
+    expect(share(&r, 3) >= 0.97, "40 fps paced: 97% at 3 refreshes");
+    expect(share(&r, 3) > unpaced3, "40 fps paced better than unpaced");
+    expect(r.dropped == 0, "40 fps paced: no frame overtaken");
+
     // 6. A compositor that ignores the asked-for times: nothing worse than without.
     s = base;
     s.ignore_desired = true;
@@ -213,6 +229,8 @@ int main(void) {
     // 8. A rate that isn't a whole number of refreshes (30 fps on 90.5 Hz... 40 on 120 is 3): not paced.
     expect(dp_frames_per(1e9 / 120, 1e9 / 30) == 4, "30 fps on 120 Hz: 4");
     expect(dp_frames_per(1e9 / 90, 1e9 / 30) == 3, "30 fps on 90 Hz: 3");
+    expect(dp_frames_per(1e9 / 120, 1e9 / 40) == 3, "40 fps on 120 Hz (Turbo): 3");
+    expect(dp_frames_per(1e9 / 60, 1e9 / 40) == 0, "40 fps on 60 Hz: not whole");
     expect(dp_frames_per(1e9 / 90, 1e9 / 60) == 0, "60 fps on 90 Hz: not whole");
     expect(dp_frames_per(1e9 / 120, 1e9 / 300) == 0, "300 fps on 120 Hz: none");
 

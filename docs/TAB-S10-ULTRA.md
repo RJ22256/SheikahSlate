@@ -381,6 +381,44 @@ budget: at 30 fps a GPU frame within 90% of its 33 ms reads as on target, a long
 the GPU's clock where frames are about to miss (where the game lowered its resolution in the logs), not for every frame.
 `LARECOMP_ADPF_GPU=0`: off; `=1`: the raw time (upstream's test).
 
+## Update 10 (0.2.8-slate.10): 60 fps unblocked, Battery / Performance / Turbo, 40 fps
+
+Same game code id (65da5d95e597ba58): no rebuild of the game code.
+
+### 30. Frame rate 60 stayed at 30 (`exec.c` pace_end_counter, drs_rate_scale)
+
+At Frame rate 60 the game's GPU counters were capped at 8 ms (upstream's choice for Adreno, where its 60 fps frames
+fit): the game read every frame as quick, kept its resolution at the top, and on the Mali a frame took 25-28 ms - the
+pacer's 60 fps grid restarted every frame and the game sat at ~30-36. On Arm GPUs the cap is gone; instead, at 40 or
+60 fps, the GPU time the game's own dynamic resolution reads is scaled to the frame it has to fit (its budget is its
+present interval's, 33 ms in its 30 fps way: x1.33 at 40, x2 at 60), after the Steadied filter - so it lowers its
+resolution until a frame fits. At 60 the Tab still lands under 60 (~20 ms a frame at the game's lowest resolution in
+the logs), unevenly; the menu says so. `LARECOMP_FAST_COUNTERS=1` puts the old cap back.
+
+### 31. Video > Mode: Battery, Performance, Turbo (`settings.c` mode_into, `menu.mm`)
+
+The Graphics preset is replaced by three modes, at the top of the Video tab:
+
+| | Battery | Performance (default) | Turbo |
+| --- | --- | --- | --- |
+| Frame rate | 30 | 30 | 40 |
+| Display refresh rate | 60 Hz (2 refreshes a frame) | Highest, 120 Hz (4 a frame) | Highest, 120 Hz (3 a frame) |
+| Game's resolution changes | Hold low (its lowest resolution) | Steadied | Steadied, aimed at 25 ms |
+| Upscaler | Snapdragon GSR 1 (one pass) | AMD FSR 1 (the sharpest) | Snapdragon GSR 1 |
+
+All three: Internal resolution 1x, Output resolution Auto (1080 lines), no extra anti-aliasing, Even frame pacing,
+overlapping passes and 32-bit shader math automatic, Sync lag on, cutscenes at 30. Performance is Update 9's preset
+(already applied once over earlier settings: it isn't applied again). Changing any of these options shows Custom;
+choosing a mode sets them all. Tested on the desktop (`tools/test_modes.c`).
+
+### 32. Frame rate 40 (`framepace.c`, `settings.c`)
+
+Frame rate gets 40 fps on 1.8.2 and 1.9.0 (`frame_rate = 40` in sheikahslate.ini). The pacer's grid is 25 ms - on
+the 120 Hz panel exactly 3 refreshes, locked to the panel's real period with Even frame pacing - and the game's clock
+steps 0.75 of a console frame each frame, staying in the game's 30 fps way (its interval switches below 0.7). In the
+pacing simulation (`tools/test_display_pacing.c`): 100% of frames up for 3 refreshes paced, 63% without. On a 60 Hz
+screen 40 isn't a whole number of refreshes: it isn't paced there (Battery stays at 30).
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep
@@ -402,6 +440,9 @@ On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log 
    game; 60 Hz switches it at once. Logcat: `display refresh: ...`.
 7. **Heat and speed.** 15-20 minutes on the Great Plateau at Frame rate 30: note FPS, SoC temperature and whether it
    throttles. Internal resolution Dynamic, or 75% / 50%, if the GPU can't hold 30.
+8. **Modes.** Video > Mode: Battery, Performance, Turbo each set the options below them (Custom after changing one).
+   Turbo: the overlay reads ~40 fps, Show refresh rate 120; the log has `[pace] frame rate set to 40 fps`. Frame rate
+   60: above 30 now, at a lower resolution.
 
 Switches for testing (adb, as upstream's `android/run_boot.sh`):
 

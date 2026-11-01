@@ -522,17 +522,22 @@ static void tab_display(void) {
     opt_begin("##video", scale);
     opt_section("Display");
 #ifdef __ANDROID__
-    {   // (Sheikah Slate: settings.c settings_apply_tab_preset - the Galaxy Tab S10 Ultra's, from its logs)
-        static const char *pre[] = {"Tab S10 Ultra", "Custom"};
-        int pi = settings_tab_preset_on() ? 0 : 1;
-        if (opt_choice("Graphics preset", &pi, pre, 2, 0,
-                       "The settings made for this tablet from its performance logs: 30 fps, each frame shown for exactly 4 "
-                       "refreshes of the 120 Hz screen; the Switch's 900p scene (1x) with the game's own resolution changes "
-                       "steadied, scaled to a 1080p image by AMD FSR 1, the sharpest upscaler; no extra anti-aliasing; "
-                       "overlapping render passes, 32-bit shader math and Sync lag on. In the logs: 29-30 fps in the world, "
-                       "the scene at 1440x810 most of the time. Tab S10 Ultra: applies them all at once. Custom: shown once "
-                       "you change any of them below.") && pi == 0) {
-            settings_apply_tab_preset();
+    {   // (Sheikah Slate: settings.c settings_apply_mode - three sets of the options below, from the tablet's logs)
+        static const char *modes[] = {"Battery", "Performance", "Turbo", "Custom"};
+        int mi = settings_current_mode();
+        // (Custom only while the options match none: from it either way goes to a mode, never back to Custom)
+        if (opt_choice("Mode", &mi, modes, mi == MODE_CUSTOM ? 4 : 3, MODE_PERFORMANCE,
+                       "Sets the options below for this tablet, from its performance logs. Battery: 30 fps with the "
+                       "screen at 60 Hz, the game's lowest resolution held and the lighter Snapdragon GSR upscaler - "
+                       "the GPU stays cool and the battery lasts longest. Performance: 30 fps, each frame shown for "
+                       "exactly 4 refreshes of the 120 Hz screen, the game's resolution steadied and AMD FSR 1, the "
+                       "sharpest upscaler - the best image (in the logs: 29-30 fps in the world, the scene at 1440x810 "
+                       "most of the time). Turbo: 40 fps, each frame shown for exactly 3 refreshes of the 120 Hz "
+                       "screen - smoother, the resolution comes down as far as each frame needs, and the tablet runs "
+                       "warmer. All three: a 1080p image, no extra anti-aliasing, Sync lag on. Custom: shown once you "
+                       "change any of them below.") &&
+            mi != MODE_CUSTOM) {
+            settings_apply_mode(mi);
             android_set_display_refresh(g_settings.display_refresh);
         }
     }
@@ -576,14 +581,21 @@ static void tab_display(void) {
         bool sixty = g_game_version == 0 || g_game_version >= 182;
         if (!sixty && g_settings.fps_mode > 1) g_settings.fps_mode = 1;
         static const char *fr[] = {"Auto (20 / 30)", "30 fps"};
-        static const char *fr60[] = {"Auto (30 / 60)", "30 fps", "60 fps"};
-        opt_choice("Frame rate", &g_settings.fps_mode, sixty ? fr60 : fr, sixty ? 3 : 2, 1,
-                   sixty ? "Auto: 60 fps where your device keeps up, 30 where it doesn't (the game's clock stays right "
-                           "either way). 30 fps: steady and cooler - the phone heats less. 60 fps: always aims for 60 "
-                           "(game versions 1.8.2 and 1.9.0; 1.0.0 and 1.6.0 run at 30)."
-                         : "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in 30. "
-                           "30 fps: always 30 - where a frame takes longer, the game runs slightly slower instead of "
-                           "dropping to 20.");
+        static const char *fr60[] = {"Auto (30 / 60)", "30 fps", "40 fps", "60 fps"};
+        static const int fr60_mode[] = {0, 1, 3, 2};  // (in the list's order; g_settings.fps_mode 3 is 40 fps)
+        int fi = !sixty ? g_settings.fps_mode : g_settings.fps_mode == 3 ? 2 : g_settings.fps_mode == 2 ? 3 : g_settings.fps_mode;
+        if (opt_choice("Frame rate", &fi, sixty ? fr60 : fr, sixty ? 4 : 2, 1,
+                       sixty ? "Auto: 60 fps where your device keeps up, 30 where it doesn't (the game's clock stays right "
+                               "either way). 30 fps: steady and cooler. 40 fps: each frame shown for exactly 3 refreshes "
+                               "of a 120 Hz screen - smoother than 30, the resolution lowered where a frame needs it. 60 "
+                               "fps: always aims for 60 - the resolution comes down as far as the GPU needs, but on the "
+                               "Galaxy Tab S10 Ultra it usually lands under 60 (in its logs the GPU needed ~20 ms a frame "
+                               "even at the game's lowest resolution) and frames come unevenly; 40 is the smooth one there "
+                               "(game versions 1.8.2 and 1.9.0; 1.0.0 and 1.6.0 run at 30)."
+                             : "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in 30. "
+                               "30 fps: always 30 - where a frame takes longer, the game runs slightly slower instead of "
+                               "dropping to 20."))
+            g_settings.fps_mode = sixty ? fr60_mode[fi] : fi;
         if (sixty)
             opt_toggle("Cutscenes at 60 fps (experimental)", &g_settings.event_fps_unlock, false,
                        "In-game cutscenes and talks run at the chosen frame rate instead of 30. Some of them count frames "

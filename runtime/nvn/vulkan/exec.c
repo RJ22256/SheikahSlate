@@ -312,7 +312,7 @@ void vk_pace_frame(void) {
         avg = 0;
         slow_since = probe_at = 0;
         probe_wait = 10000000000ull;
-        pace_slow = pace_on && g_settings.fps_mode == 1;
+        pace_slow = pace_on && (g_settings.fps_mode == 1 || g_settings.fps_mode == 3);
         last = 0;  // discard the transition frame's timing, including menu time and resource reallocation
         LOG("[pace] settings changed: fresh %s pacing history\n", g_settings.fps_mode ? "fixed" : "auto");
     }
@@ -439,9 +439,10 @@ void vk_pace_frame(void) {
     idx = (idx + 1) % 60;
     if (!pace_on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
 #ifdef __ANDROID__
-    if (g_settings.fps_mode) {  // (Video: Frame rate 30 / 60) fixed: no measuring, no trials
-        bool slow = g_settings.fps_mode == 1;
-        if (slow != pace_slow) LOG("[pace] frame rate set to %d fps\n", slow ? 30 : 60);
+    if (g_settings.fps_mode) {  // (Video: Frame rate 30 / 40 / 60) fixed: no measuring, no trials
+        bool slow = g_settings.fps_mode == 1 || g_settings.fps_mode == 3;  // (40: the game's 30 fps way, 0.75 of its step)
+        if (slow != pace_slow)
+            LOG("[pace] frame rate set to %d fps\n", g_settings.fps_mode == 1 ? 30 : g_settings.fps_mode == 3 ? 40 : 60);
         pace_slow = slow;
         return;
     }
@@ -507,22 +508,46 @@ void vk_pace_frame(void) {
 // 1280x720 -> 1600x900 within a second every few seconds, the longest frames (280-300 ms) on those swings: a hitch
 // read as GPU time took it down several steps at once. Steadied: the median of the last 9 frames' times (record: a
 // resolved GPU time joins them; the provisional host times only read them). Hold sharp / low: a steady 20 / 40 ms.
+// (0.2.8-slate.10) At Frame rate 40 or 60 the time is also scaled to the frame the game should fit: its resolution
+// aims at its present interval's budget (16.7 ms a vsync: 33 ms in its 30 fps way), and 40 fps needs 25 ms, 60 needs
+// 16.7 - so the GPU time is reported as budget / frame of it, and the game lowers its resolution until a frame fits.
+// (At 60 the counters were capped at 8 ms instead - upstream's Adreno, where frames fit: on the Tab S10 Ultra's Mali
+// the resolution then never came down, a frame took 25-28 ms, and 60 fps stayed at ~30.)
+static double drs_rate_scale(void) {
+#ifdef __ANDROID__
+    if (g_settings.fps_mode != 2 && g_settings.fps_mode != 3) return 1;
+    extern int framepace_current_fps(void);
+    extern int g_present_interval;
+    int fps = framepace_current_fps();
+    if (fps <= 30) return 1;  // (menus, cutscenes, movies: 30 there)
+    double budget = 16.6667 * (g_present_interval >= 2 ? g_present_interval : 1), want = 1000.0 / fps;
+    return budget > want ? budget / want : 1;
+#else
+    return 1;
+#endif
+}
+
 static uint64_t drs_filter(const uint64_t *start_entry, uint64_t value, bool record) {
     int mode = g_settings.drs_mode;
-    if (mode == 3 || value < start_entry[1]) return value;
+    if (value < start_entry[1]) return value;
     if (mode == 1) return start_entry[1] + ns_to_gpu_ticks(20000000ull);
     if (mode == 2) return start_entry[1] + ns_to_gpu_ticks(40000000ull);
+    double scale = drs_rate_scale();
+    uint64_t d = value - start_entry[1];
+    if (mode == 3 || d > ns_to_gpu_ticks(1000000000ull))  // (as the game does / a second or more: a stall it handles itself)
+        return scale == 1 || d > ns_to_gpu_ticks(1000000000ull) ? value : start_entry[1] + (uint64_t)((double)d * scale);
     static uint64_t hist[9];
     static int n, at;
-    uint64_t d = value - start_entry[1];
-    if (d > ns_to_gpu_ticks(1000000000ull)) return value;  // (a second or more: a stall the game handles itself)
     if (record) hist[at] = d, at = (at + 1) % 9, n = n < 9 ? n + 1 : 9;
-    if (n < 3) return value;
-    uint64_t s[9];
-    memcpy(s, hist, sizeof s);
-    for (int i = 1; i < n; i++)  // (insertion sort of the n kept)
-        for (int j = i; j > 0 && s[j - 1] > s[j]; j--) { uint64_t t = s[j]; s[j] = s[j - 1]; s[j - 1] = t; }
-    return start_entry[1] + s[n / 2];
+    uint64_t m = d;
+    if (n >= 3) {
+        uint64_t s[9];
+        memcpy(s, hist, sizeof s);
+        for (int i = 1; i < n; i++)  // (insertion sort of the n kept)
+            for (int j = i; j > 0 && s[j - 1] > s[j]; j--) { uint64_t t = s[j]; s[j] = s[j - 1]; s[j - 1] = t; }
+        m = s[n / 2];
+    }
+    return start_entry[1] + (uint64_t)((double)m * scale);
 }
 
 static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *entry, uint64_t value, bool record) {
@@ -531,7 +556,10 @@ static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *en
 #ifdef __ANDROID__
     static int fast = -1;
     if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") ? atoi(getenv("LARECOMP_FAST_COUNTERS")) : 0;
-    if ((!pace_slow && pace_on > 0 && (fast || g_settings.fps_mode == 2)) || fast == 2) {  // (2: with LARECOMP_PACE=0 too, a test)
+    extern bool vk_gpu_is_arm(void);
+    static int arm = -1;  // (Mali: no cap at 60 - drs_rate_scale lets its resolution come down instead)
+    if (arm < 0) arm = vk_gpu_is_arm();
+    if ((!pace_slow && pace_on > 0 && (fast || (g_settings.fps_mode == 2 && !arm))) || fast == 2) {  // (2: with LARECOMP_PACE=0 too, a test)
         uint64_t max = start_entry[1] + ns_to_gpu_ticks(PACE_FAST_NS);
         return value > max ? max : value;
     }

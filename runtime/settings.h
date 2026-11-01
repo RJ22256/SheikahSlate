@@ -41,7 +41,8 @@ typedef struct {
     int overlay_style;    // Show FPS's overlay (ui/perf_overlay.mm): 0 full, 1 compact (one line)
     float overlay_pos[2]; // its top left, a share of the screen, dragged there with a finger (negative: the corner)
     bool event_fps_unlock;  // in-game cutscenes and talks at the chosen frame rate, not 30 (hle/framepace.c)
-    int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps
+    int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps, 3: 40 fps (Sheikah
+                          // Slate: 3 refreshes a frame at 120 Hz; the game's 30 fps way, its clock stepped 0.75 a frame)
     int display_refresh;  // the display's refresh rate (Sheikah Slate, android/.../SlateDisplay.java): 0 the highest at
                           // this resolution (120 Hz on the Galaxy Tab S10 Ultra), 1 60 Hz (saves battery), 2 the system's
     int shader_int32;     // shader address math in 32-bit words even where the driver offers 64-bit (vulkan/exec.c
@@ -97,12 +98,13 @@ void settings_save(void);
 // layout, mods and the one-time questions stay)
 void settings_reset_defaults(void);
 #ifdef __ANDROID__
-// (Sheikah Slate) Video > Graphics preset: the Galaxy Tab S10 Ultra's own settings, from its performance logs
-// (settings.c). On the tablet they are the defaults, and they were applied once over earlier settings on the first
-// start of 0.2.8-slate.9.
+// (Sheikah Slate) Video > Mode: three sets of the Video options for the Galaxy Tab S10 Ultra, from its performance logs
+// (settings.c mode_into). Performance is the tablet's default (and was applied once over earlier settings on the first
+// start of 0.2.8-slate.9: sheikahslate.ini tab_preset).
+enum { MODE_BATTERY = 0, MODE_PERFORMANCE = 1, MODE_TURBO = 2, MODE_CUSTOM = 3 };
 bool settings_on_tab(void);             // the device profile is the Tab S10 Ultra's (SlateDisplay.java)
-void settings_apply_tab_preset(void);
-bool settings_tab_preset_on(void);      // the settings are the preset's now
+void settings_apply_mode(int mode);
+int settings_current_mode(void);        // the mode the options are now, MODE_CUSTOM if none
 #endif
 // The language code to serve the game ("es", "en-US", ...): the setting, or the host locale for LANG_AUTO
 const char *settings_language(void);

@@ -113,8 +113,8 @@ jobs:
           build/test_display_pacing
           mkdir -p build/stub/sys
           printf '#define PROP_VALUE_MAX 92\nint __system_property_get(const char *, char *);\n' > build/stub/sys/system_properties.h
-          clang -O1 -Wall -D__ANDROID__ -Iruntime -Iandroid/deps/out/include -Ibuild/stub -o build/test_tab_preset tools/test_tab_preset.c runtime/settings.c
-          build/test_tab_preset
+          clang -O1 -Wall -D__ANDROID__ -Iruntime -Iandroid/deps/out/include -Ibuild/stub -o build/test_modes tools/test_modes.c runtime/settings.c
+          build/test_modes
           python3 tools/test_bc_threads.py
           sudo apt-get install -y -qq glslang-tools >/dev/null
           python3 tools/test_tile_glsl.py "$(command -v glslangValidator)"

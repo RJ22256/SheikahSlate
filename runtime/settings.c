@@ -228,56 +228,60 @@ void settings_reset_defaults(void) {
 }
 
 #ifdef __ANDROID__
-// ---- (Sheikah Slate) the Galaxy Tab S10 Ultra's graphics preset, from its logs (0.1.9-slate.4 to .8; docs/TAB-S10-ULTRA.md):
-//   - 30 fps: the GPU took 25-28 ms of the 33 at the top resolution, ~20 at the lowest - 60 is out of reach, and 30
-//     held (29-30.3 in nearly every 2-second reading of the last log);
-//   - Display refresh rate Highest (120 Hz) and Even frame pacing: each 30 fps frame up for exactly 4 refreshes;
-//   - Internal resolution 1x (the Switch's 900p scene, the game's own dynamic resolution under it: 1440x810 most of
-//     the time) with the game's resolution changes Steadied: busy moments dip half a second instead of stuttering;
-//   - Output resolution Auto (1080 lines on the 1848-line panel: the HUD and the last passes over 0.4x the pixels);
-//   - AMD FSR 1: the sharpest upscaler, ~2 ms of the frame at 1080 lines - room the 30 fps frame has;
-//   - no extra anti-aliasing (SMAA / FXAA: GPU time the scene's resolution is better spent on);
-//   - overlapping render passes and 32-bit shader math (Automatic: on for Mali), Sync lag on (upstream's default:
-//     the game's next frame overlaps the GPU's last - in the logs the game waited on the GPU up to ~9% of the time).
-#define TAB_PRESET_REV 9  // (the version that applied it once over earlier settings: 0.2.8-slate.9)
+// ---- (Sheikah Slate) Video > Mode, from the Galaxy Tab S10 Ultra's logs (0.1.9-slate.4 to .8; docs/TAB-S10-ULTRA.md):
+// the GPU took 25-28 ms of a frame at the game's top resolution and ~20 at its lowest; the CPU had room.
+//   - Battery: 30 fps on the screen at 60 Hz (each frame up for 2 refreshes), the game's lowest resolution held, the
+//     lighter upscaler (Snapdragon GSR 1, one pass) - the GPU well under its budget, its clock low;
+//   - Performance (the default): 30 fps paced to the 120 Hz screen (4 refreshes a frame), the game's resolution
+//     steadied (1440x810 most of the time in the logs, half-second dips in busy moments), AMD FSR 1 - the sharpest;
+//   - Turbo: 40 fps (3 refreshes of 120 Hz a frame, the game's clock stepped 0.75 a frame), the resolution steadied
+//     and aimed at 25 ms (exec.c drs_rate_scale: it comes down as far as a frame needs), Snapdragon GSR 1.
+// All: Output resolution Auto (1080 lines on the 1848-line panel), no extra anti-aliasing (its GPU time is better spent
+// on the scene), overlapping render passes and 32-bit shader math automatic (on for Mali), Sync lag on.
+#define TAB_PRESET_REV 9  // (the version that applied Performance once over earlier settings: 0.2.8-slate.9)
 static int g_tab_preset_rev;  // (sheikahslate.ini tab_preset: the last revision applied)
 bool settings_on_tab(void) {
     const char *p = getenv("LARECOMP_DEVICE_PROFILE");
     return p && !strcmp(p, "tab-s10-ultra");
 }
-static void tab_preset_into(Settings *s) {
-    s->fps_mode = 1;
-    s->display_refresh = 0;
+static void mode_into(Settings *s, int mode) {
+    s->fps_mode = mode == MODE_TURBO ? 3 : 1;
+    s->display_refresh = mode == MODE_BATTERY ? 1 : 0;
     s->even_pacing = -1;
     s->res_mode = 1;
-    s->upscaler = UPSCALE_FSR1;
+    s->upscaler = mode == MODE_PERFORMANCE ? UPSCALE_FSR1 : UPSCALE_SGSR1;
     s->out_lines = OUT_AUTO;
     s->antialias = AA_OFF;
-    s->drs_mode = 0;
+    s->drs_mode = mode == MODE_BATTERY ? 2 : 0;
     s->pass_overlap = -1;
     s->shader_int32 = -1;
     s->sync_lag = true;
     s->event_fps_unlock = false;
 }
-void settings_apply_tab_preset(void) {
-    tab_preset_into(&g_settings);
+void settings_apply_mode(int mode) {
+    if (mode < MODE_BATTERY || mode > MODE_TURBO) return;
+    mode_into(&g_settings, mode);
     g_tab_preset_rev = TAB_PRESET_REV;
 }
-bool settings_tab_preset_on(void) {
-    Settings p = g_settings;
-    tab_preset_into(&p);
-    return p.fps_mode == g_settings.fps_mode && p.display_refresh == g_settings.display_refresh &&
-           p.even_pacing == g_settings.even_pacing && p.res_mode == g_settings.res_mode && p.upscaler == g_settings.upscaler &&
-           p.out_lines == g_settings.out_lines && p.antialias == g_settings.antialias && p.drs_mode == g_settings.drs_mode &&
-           p.pass_overlap == g_settings.pass_overlap && p.shader_int32 == g_settings.shader_int32 &&
-           p.sync_lag == g_settings.sync_lag && p.event_fps_unlock == g_settings.event_fps_unlock;
+int settings_current_mode(void) {
+    for (int m = MODE_BATTERY; m <= MODE_TURBO; m++) {
+        Settings p = g_settings;
+        mode_into(&p, m);
+        if (p.fps_mode == g_settings.fps_mode && p.display_refresh == g_settings.display_refresh &&
+            p.even_pacing == g_settings.even_pacing && p.res_mode == g_settings.res_mode && p.upscaler == g_settings.upscaler &&
+            p.out_lines == g_settings.out_lines && p.antialias == g_settings.antialias && p.drs_mode == g_settings.drs_mode &&
+            p.pass_overlap == g_settings.pass_overlap && p.shader_int32 == g_settings.shader_int32 &&
+            p.sync_lag == g_settings.sync_lag && p.event_fps_unlock == g_settings.event_fps_unlock)
+            return m;
+    }
+    return MODE_CUSTOM;
 }
 #endif
 
 void settings_load(void) {
     static bool loaded;
 #ifdef __ANDROID__
-    if (!g_have_defaults && settings_on_tab()) tab_preset_into(&g_settings), g_tab_preset_rev = TAB_PRESET_REV;  // (the defaults)
+    if (!g_have_defaults && settings_on_tab()) settings_apply_mode(MODE_PERFORMANCE);  // (the tablet's defaults)
 #endif
     if (!g_have_defaults) g_defaults = g_settings, g_have_defaults = true;
     if (loaded) return;
@@ -317,7 +321,8 @@ void settings_load(void) {
 #ifdef __ANDROID__
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
         else if (!strcmp(key, "cutscenes_60")) g_settings.event_fps_unlock = atoi(val) != 0;
-        else if (!strcmp(key, "frame_rate")) g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : 0;
+        else if (!strcmp(key, "frame_rate"))
+            g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : !strcmp(val, "40") ? 3 : 0;
         else if (!strcmp(key, "display_refresh")) g_settings.display_refresh = !strcmp(val, "60") ? 1 : !strcmp(val, "system") ? 2 : 0;
         // (shader_math = auto | 32 | 64; upstream's shader_int32 = 1 still turns it on - its 0 was the default, now
         // Automatic, so a settings file from before keeps Automatic)
@@ -391,9 +396,9 @@ void settings_load(void) {
     if (g_settings.volume > 2) g_settings.volume = 2;
     LOG("[settings] loaded %s\n", SETTINGS_FILE);
 #ifdef __ANDROID__
-    if (settings_on_tab() && g_tab_preset_rev < TAB_PRESET_REV) {  // (once, over settings from before the preset)
-        settings_apply_tab_preset();
-        LOG("[settings] the Galaxy Tab S10 Ultra graphics preset applied (once: Video > Graphics preset)\n");
+    if (settings_on_tab() && g_tab_preset_rev < TAB_PRESET_REV) {  // (once, over settings from before the modes)
+        settings_apply_mode(MODE_PERFORMANCE);
+        LOG("[settings] Video > Mode: Performance, the Galaxy Tab S10 Ultra's (once, over earlier settings)\n");
         settings_save();
     }
 #endif
@@ -416,7 +421,7 @@ void settings_save(void) {
 #endif
 #ifdef __ANDROID__
     fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
-    fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : "auto");
+    fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : g_settings.fps_mode == 3 ? "40" : "auto");
     fprintf(f, "display_refresh = %s\n", g_settings.display_refresh == 1 ? "60" : g_settings.display_refresh == 2 ? "system" : "max");
     fprintf(f, "shader_math = %s\n", g_settings.shader_int32 < 0 ? "auto" : g_settings.shader_int32 ? "32" : "64");
     fprintf(f, "pass_overlap = %s\n", g_settings.pass_overlap < 0 ? "auto" : g_settings.pass_overlap ? "on" : "off");
