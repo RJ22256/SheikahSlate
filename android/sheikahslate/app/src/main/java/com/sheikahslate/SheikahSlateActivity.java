@@ -92,7 +92,7 @@ public class SheikahSlateActivity extends SDLActivity {
     private static native void nativeSaveDone(int result, String detail);
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47,
             REQ_DRIVER_RECOVER = 0x4c48, REQ_SAVE_IN = 0x4c49, REQ_SAVE_OUT = 0x4c4a, REQ_SAVE_IN_TREE = 0x4c4c,
-            REQ_DLC = 0x4c4d, REQ_LOOK_BG = 0x4c4e, REQ_LOOK_ICON = 0x4c4f;
+            REQ_DLC = 0x4c4d, REQ_LOOK_BG = 0x4c4e;
     private native String nativeBuildDlc(String[] paths, long[] sizes);
     private static native void nativeDlcDone(int result, String detail);
     private static SheikahSlateActivity self;
@@ -128,7 +128,7 @@ public class SheikahSlateActivity extends SDLActivity {
             setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "");
             // testing: the runtime's LARECOMP_* switches from the launch intent, separated by commas (adb shell drops
             // the quotes around spaces), e.g. LARECOMP_VK_DRIVER= is the system driver:
-            // adb shell am start -n com.sheikahslate.tab/com.sheikahslate.SheikahSlateActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
+            // adb shell am start -n com.sheikahslate.tab/com.sheikahslate.GameActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
             String env = getIntent() != null ? getIntent().getStringExtra("env") : null;
             // Opened again from the recent apps, Android hands back that test launch's intent: keep only which game
             // version it ran (a scripted input left in it ignored the touch screen - the menu looked frozen)
@@ -435,13 +435,10 @@ public class SheikahSlateActivity extends SDLActivity {
             }, "saves").start();
             return;
         }
-        if (req == REQ_LOOK_BG || req == REQ_LOOK_ICON) {
+        if (req == REQ_LOOK_BG) {
             Uri u = result == Activity.RESULT_OK && data != null ? data.getData() : null;
             if (u == null) nativeLookDone(LOOK_CANCELLED, "");
-            else new Thread(() -> {
-                if (req == REQ_LOOK_BG) setBackground(u);
-                else setIcon(u);
-            }, "look").start();
+            else new Thread(() -> setBackground(u), "look").start();
             return;
         }
         if (req == REQ_LOG) {
@@ -785,21 +782,77 @@ public class SheikahSlateActivity extends SDLActivity {
         }
     }
 
-    // ---- (Sheikah Slate) the start screen's Settings > Look: its background, and a home screen icon, from the player's
-    // own pictures (the photo picker; a file picker before Android 13). The background is decoded at the screen's size
-    // (the picture's own orientation applied), cut to the screen's shape later by the start screen (launcher.mm
-    // load_background), and saved as files/look/background.png - written beside it, then put in place. Android doesn't
-    // let an app swap its own launcher icon for a picture, so the icon is a home screen shortcut that opens the app,
-    // pinned once (the system asks) and updated in place after: the picture cut square, the whole of it inside the
-    // adaptive icon's visible 72 of 108 dp, and a blurred-out copy of it around (seen only as the icon moves).
+    // ---- (Sheikah Slate) the start screen's Settings > Look: its background from the player's own picture (the photo
+    // picker; a file picker before Android 13), decoded at the screen's size (the picture's own orientation applied),
+    // cut to the screen's shape later by the start screen (launcher.mm load_background), and saved as
+    // files/look/background.png - written beside it, then put in place. And the app's icon: the launcher entry is one
+    // of the activity-aliases in AndroidManifest.xml (APP_ICONS, in Look's order), one enabled at a time.
     private static native void nativeLookDone(int result, String detail);
-    private static final int LOOK_BG_SET = 0, LOOK_ICON_ADDED = 2, LOOK_ICON_UPDATED = 3, LOOK_CANCELLED = 4,
-            LOOK_FAILED = 5, LOOK_ICON_UNSUPPORTED = 6;
-    private static final String LOOK_ICON_ID = "own_icon";
+    private static final int LOOK_BG_SET = 0, LOOK_CANCELLED = 4, LOOK_FAILED = 5;
+    private static final String[] APP_ICONS = {"SheikahSlateActivity", "IconMidnight", "IconDawn", "IconAncient", "IconForest"};
+    private static final String OLD_PHOTO_ICON = "own_icon";  // (0.2.8-slate.11's home screen icon with a picture)
 
     public static void pickBackground() { pickImage(REQ_LOOK_BG); }
 
-    public static void pickIcon() { pickImage(REQ_LOOK_ICON); }
+    // The icon the app has now: its enabled alias, in APP_ICONS' order (0: the original, also when none is - can't be)
+    public static int appIcon() {
+        android.content.pm.PackageManager pm = self.getPackageManager();
+        for (int i = 0; i < APP_ICONS.length; i++) {
+            int st = pm.getComponentEnabledSetting(new android.content.ComponentName(self, "com.sheikahslate." + APP_ICONS[i]));
+            boolean on = st == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED ||
+                         (st == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && i == 0);
+            if (on) return i;
+        }
+        return 0;
+    }
+
+    // Another icon: its alias on first (the app is never without a launcher entry), the others off, and the app starts
+    // again from it at once, as restartApp does - before the system's word that the old entry is off arrives (it closes
+    // what that entry opened), and so that no task from the old entry is left beside the new one (a second copy of the
+    // game's activity). The home screen may drop the old icon: the new one is in the app list, to put back.
+    public static void setAppIcon(int which) {
+        if (which < 0 || which >= APP_ICONS.length || which == appIcon()) return;
+        self.runOnUiThread(() -> {
+            try {
+                android.content.pm.PackageManager pm = self.getPackageManager();
+                int flags = android.content.pm.PackageManager.DONT_KILL_APP;
+                pm.setComponentEnabledSetting(new android.content.ComponentName(self, "com.sheikahslate." + APP_ICONS[which]),
+                        android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED, flags);
+                for (int i = 0; i < APP_ICONS.length; i++)
+                    if (i != which)
+                        pm.setComponentEnabledSetting(new android.content.ComponentName(self, "com.sheikahslate." + APP_ICONS[i]),
+                                android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED, flags);
+                Log.i(TAG, "look: app icon " + APP_ICONS[which]);
+                photoIconToGame(self);
+                Intent i = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                        .setComponent(new android.content.ComponentName(self, "com.sheikahslate." + APP_ICONS[which]))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                self.startActivity(i);
+                System.exit(0);
+            } catch (Exception e) {
+                Log.e(TAG, "look: app icon", e);
+                nativeLookDone(LOOK_FAILED, e.toString());
+            }
+        });
+    }
+
+    // A home screen icon with a picture from 0.2.8-slate.11 opened the original's entry, gone with another icon: it opens
+    // the game's activity itself now
+    private static void photoIconToGame(Context c) {
+        try {
+            android.content.pm.ShortcutManager sm = c.getSystemService(android.content.pm.ShortcutManager.class);
+            for (android.content.pm.ShortcutInfo x : sm.getPinnedShortcuts()) {
+                if (!OLD_PHOTO_ICON.equals(x.getId())) continue;
+                Intent launch = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                        .setClassName(c.getPackageName(), GameActivity.class.getName())
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+                sm.updateShortcuts(java.util.Collections.singletonList(
+                        new android.content.pm.ShortcutInfo.Builder(c, OLD_PHOTO_ICON).setIntent(launch).build()));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "look: the picture icon from before", e);
+        }
+    }
 
     private static void pickImage(int req) {
         self.runOnUiThread(() -> {
@@ -847,60 +900,6 @@ public class SheikahSlateActivity extends SDLActivity {
             nativeLookDone(LOOK_BG_SET, "");
         } catch (Exception | OutOfMemoryError e) {
             Log.e(TAG, "look: background", e);
-            nativeLookDone(LOOK_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
-        }
-    }
-
-    private void setIcon(Uri u) {
-        try {
-            android.graphics.Bitmap pic = decodePicture(u, 1024);
-            int side = Math.min(pic.getWidth(), pic.getHeight());
-            android.graphics.Bitmap sq = android.graphics.Bitmap.createBitmap(pic, (pic.getWidth() - side) / 2,
-                    (pic.getHeight() - side) / 2, side, side);
-            final int full = 432, shown = full * 72 / 108;  // (108 dp at xxxhdpi; the masks show the middle 72)
-            android.graphics.Bitmap icon = android.graphics.Bitmap.createBitmap(full, full, android.graphics.Bitmap.Config.ARGB_8888);
-            android.graphics.Canvas c = new android.graphics.Canvas(icon);
-            android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
-            // around: the picture blown up from a tiny copy (a blur), a little darker
-            android.graphics.Bitmap tiny = android.graphics.Bitmap.createScaledBitmap(sq, 12, 12, true);
-            c.drawBitmap(tiny, null, new android.graphics.Rect(0, 0, full, full), p);
-            c.drawColor(0x40000000);
-            int o = (full - shown) / 2;
-            c.drawBitmap(sq, null, new android.graphics.Rect(o, o, o + shown, o + shown), p);
-            tiny.recycle();
-            if (sq != pic) sq.recycle();
-            pic.recycle();
-            android.content.pm.ShortcutManager sm = getSystemService(android.content.pm.ShortcutManager.class);
-            Intent launch = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-                    .setClassName(getPackageName(), SheikahSlateActivity.class.getName())
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-            android.content.pm.ShortcutInfo si = new android.content.pm.ShortcutInfo.Builder(this, LOOK_ICON_ID)
-                    .setShortLabel("Sheikah Slate").setLongLabel("Sheikah Slate")
-                    .setIcon(android.graphics.drawable.Icon.createWithAdaptiveBitmap(icon))
-                    .setIntent(launch).build();
-            boolean pinned = false;
-            for (android.content.pm.ShortcutInfo x : sm.getPinnedShortcuts())
-                if (LOOK_ICON_ID.equals(x.getId()) && x.isEnabled()) pinned = true;
-            if (pinned) {
-                sm.updateShortcuts(java.util.Collections.singletonList(si));
-                Log.i(TAG, "look: home screen icon updated");
-                nativeLookDone(LOOK_ICON_UPDATED, "");
-            } else if (sm.isRequestPinShortcutSupported()) {
-                runOnUiThread(() -> {
-                    try {
-                        sm.requestPinShortcut(si, null);
-                        Log.i(TAG, "look: home screen icon asked for");
-                        nativeLookDone(LOOK_ICON_ADDED, "");
-                    } catch (Exception e) {
-                        Log.e(TAG, "look: icon", e);
-                        nativeLookDone(LOOK_FAILED, e.toString());
-                    }
-                });
-            } else {
-                nativeLookDone(LOOK_ICON_UNSUPPORTED, "");
-            }
-        } catch (Exception | OutOfMemoryError e) {
-            Log.e(TAG, "look: icon", e);
             nativeLookDone(LOOK_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
         }
     }

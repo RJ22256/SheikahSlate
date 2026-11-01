@@ -534,6 +534,19 @@ static void android_call_int(const char *method, int v) {  // (one int argument)
     env->DeleteLocalRef(act);
 }
 
+static int android_call_ret_int(const char *method, int fallback) {  // (no argument, an int back)
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return fallback;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, method, "()I");
+    int r = m ? env->CallStaticIntMethod(c, m) : fallback;
+    if (env->ExceptionCheck()) env->ExceptionClear(), r = fallback;
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+    return r;
+}
+
 // A content:// URI the SDL dialog picked (Import fonts): its name, and a copy of it at an absolute path
 // (SheikahSlateActivity documentName / copyDocument)
 static std::string android_document_name(const std::string &uri) {
@@ -669,7 +682,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nat
     pthread_mutex_unlock(&g_lock);
 }
 
-// Settings > Look (SheikahSlateActivity pickBackground / pickIcon): the result, shown under the buttons
+// Settings > Look (SheikahSlateActivity pickBackground, setAppIcon): the result, shown under the buttons
 static std::string g_look_msg;  // (g_lock)
 static bool g_look_failed, g_look_busy;
 static std::atomic<bool> g_bg_reload{false};  // (the start screen loads the background again: load_background)
@@ -682,10 +695,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nat
     char msg[600];
     switch (result) {
     case 0: snprintf(msg, sizeof msg, "%s", tr("Background changed.")); g_bg_reload = true; break;
-    case 2: snprintf(msg, sizeof msg, "%s", tr("Your phone asks to add the icon to the home screen: tap Add.")); break;
-    case 3: snprintf(msg, sizeof msg, "%s", tr("The home screen icon has the new picture.")); break;
     case 4: msg[0] = 0; break;
-    case 6: snprintf(msg, sizeof msg, "%s", tr("This home screen doesn't take icons from apps.")); break;
     default: snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str()); break;
     }
     pthread_mutex_lock(&g_lock);
@@ -1200,6 +1210,27 @@ static void load_background(GpuDevice dev) {
     avformat_close_input(&fmt);
 #endif
 }
+
+#ifdef __ANDROID__
+// Settings > Look's app icons' pictures (freed with the start screen's ImGui backend, when a game starts)
+static uint64_t g_icon_tex[5];
+static bool g_icon_tex_loaded;
+// A shipped PNG (rt_resource) as an ImGui texture, 0 if missing: Settings > Look's app icons
+static uint64_t load_png_texture(const char *name) {
+    char path[1100];
+    if (!rt_resource(name, NULL, path, sizeof path)) return 0;
+    SDL_Surface *src = SDL_LoadPNG(path);
+    SDL_Surface *rgba = src ? SDL_ConvertSurface(src, SDL_PIXELFORMAT_RGBA32) : NULL;
+    if (src) SDL_DestroySurface(src);
+    if (!rgba) return 0;
+    std::vector<uint8_t> pixels((size_t)rgba->w * rgba->h * 4);
+    for (int y = 0; y < rgba->h; y++)
+        memcpy(pixels.data() + (size_t)y * rgba->w * 4, (const uint8_t *)rgba->pixels + (size_t)y * rgba->pitch, (size_t)rgba->w * 4);
+    uint64_t t = vk_imgui_texture_rgba(pixels.data(), rgba->w, rgba->h);
+    SDL_DestroySurface(rgba);
+    return t;
+}
+#endif
 
 // ------------------------------------------------------------------ screen
 static ImFont *g_font_title, *g_font_menu, *g_font_small;
@@ -1826,7 +1857,7 @@ static void prelaunch_tab(float sc) {
     }
     ImGui::Spacing();
     ImGui::Spacing();
-    heading("Look");  // (Sheikah Slate: the start screen's background and a home screen icon, from the player's pictures)
+    heading("Look");  // (Sheikah Slate: the start screen's background from the player's picture, and the app's icon)
     {
         pthread_mutex_lock(&g_lock);
         std::string msg = g_look_msg;
@@ -1855,18 +1886,51 @@ static void prelaunch_tab(float sc) {
                 pthread_mutex_unlock(&g_lock);
             }
         }
-        ImGui::Spacing();
-        ImGui::TextDisabled("%s", tr("The app's icon: Android doesn't let an app change its own icon, so this puts an icon "
-                                     "with your picture on the home screen that opens Sheikah Slate - choosing another "
-                                     "picture later changes that one. To keep only yours, long-press the original on the "
-                                     "home screen and remove it (the app list keeps it)."));
-        if (ImGui::Button(tr("Choose icon picture"))) {
-            pthread_mutex_lock(&g_lock);
-            g_look_busy = true, g_look_msg.clear();
-            pthread_mutex_unlock(&g_lock);
-            android_call("pickIcon");
-        }
         if (lbusy) ImGui::EndDisabled();
+        ImGui::Spacing();
+        {   // the app's icon (SheikahSlateActivity setAppIcon: AndroidManifest.xml's activity-aliases, the real launcher
+            // icon) - a picture each, the one in use framed in gold; one chosen asks first: the app starts again
+            static const char *names[] = {"Original", "Midnight", "Dawn", "Ancient", "Forest"};
+            static const char *files[] = {"icon.png", "app-icon-midnight.png", "app-icon-dawn.png", "app-icon-ancient.png",
+                                          "app-icon-forest.png"};
+            uint64_t *tex = g_icon_tex;
+            static int current = -1, pending = -1;
+            if (!g_icon_tex_loaded) {
+                g_icon_tex_loaded = true;
+                for (int k = 0; k < 5; k++) tex[k] = load_png_texture(files[k]);
+            }
+            if (current < 0) current = android_call_ret_int("appIcon", 0);
+            ImGui::TextDisabled("%s", tr("The app's icon, on the home screen and in the app list. Sheikah Slate starts "
+                                         "again to change it; the home screen may drop the old icon - the new one is in "
+                                         "the app list, to put back."));
+            ImGui::Text(tr("App icon: %s"), tr(names[pending >= 0 ? pending : current]));
+            float side = 92 * sc;
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            for (int k = 0; k < 5; k++) {
+                if (k) ImGui::SameLine(0, 18 * sc);
+                ImGui::PushID(k);
+                bool chosen = tex[k] ? ImGui::ImageButton("##icon", (ImTextureID)tex[k], ImVec2(side, side))
+                                     : ImGui::Button(tr(names[k]), ImVec2(side, side));
+                ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+                if (k == current)
+                    dl->AddRect(ImVec2(a.x - 3 * sc, a.y - 3 * sc), ImVec2(b.x + 3 * sc, b.y + 3 * sc),
+                                IM_COL32(237, 194, 84, 255), 10 * sc, 0, 4 * sc);
+                else if (k == pending)
+                    dl->AddRect(ImVec2(a.x - 3 * sc, a.y - 3 * sc), ImVec2(b.x + 3 * sc, b.y + 3 * sc),
+                                IM_COL32(110, 235, 250, 255), 10 * sc, 0, 3 * sc);
+                if (chosen) pending = k == current ? -1 : k;
+                ImGui::PopID();
+            }
+            if (pending >= 0) {
+                ImGui::Text(tr("Use the %s icon? Sheikah Slate starts again."), tr(names[pending]));
+                if (ImGui::Button(tr("Use it"))) {
+                    android_call_int("setAppIcon", pending);  // (then the app starts again)
+                    current = pending, pending = -1;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(tr("Cancel"))) pending = -1;
+            }
+        }
         if (!msg.empty()) {
             if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
             else ImGui::Text("%s", msg.c_str());
@@ -2649,6 +2713,12 @@ extern "C" void launcher_run(const char *root) {
     }
     // play: hand the window to the game
     settings_save();
+#ifdef __ANDROID__
+    for (auto &t : g_icon_tex)  // (their descriptors go with the backend: loaded again on the next start screen)
+        if (t) vk_imgui_texture_free(t), t = 0;
+    g_icon_tex_loaded = false;
+    if (g_bg) vk_imgui_texture_free(g_bg);  // (g_bg = 0 below: its image went with it before - kept)
+#endif
 #ifdef __APPLE__
     ImGui_ImplMetal_Shutdown();
 #else

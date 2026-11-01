@@ -24,7 +24,7 @@
         <intent
             android:action="com.sheikahslate.action.WATCH_MAP"
             android:targetPackage="com.sheikahslate.tab"
-            android:targetClass="com.sheikahslate.SheikahSlateActivity" />
+            android:targetClass="com.sheikahslate.GameActivity" />
     </shortcut>
     <shortcut
         android:shortcutId="system_driver"
@@ -35,6 +35,6 @@
         <intent
             android:action="com.sheikahslate.action.SYSTEM_DRIVER"
             android:targetPackage="com.sheikahslate.tab"
-            android:targetClass="com.sheikahslate.SheikahSlateActivity" />
+            android:targetClass="com.sheikahslate.GameActivity" />
     </shortcut>
 </shortcuts>

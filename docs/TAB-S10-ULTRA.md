@@ -460,6 +460,25 @@ The start screen's Settings, beside Saves and DLC:
   The picture is cut square and fitted inside the adaptive icon's visible 72 of 108 dp, a blurred copy of it around.
   The original icon can then be removed from the home screen (the app list keeps it).
 
+## Update 12 (0.2.8-slate.12): the app's real icon, chosen in the app
+
+### 37. Settings > Look > App icon (`AndroidManifest.xml`, `GameActivity.java`, `SheikahSlateActivity.setAppIcon`)
+
+Update 11's icon was a home screen shortcut with a picture beside the app's own; now the app's real launcher icon - on
+the home screen and in the app list - changes. Android lets an app switch its launcher entry among the ones in its
+manifest, not give it a picture at run time, so the icons are built in: the original and four more original designs
+(`tools/make_app_icons.py`: Midnight, Dawn, Ancient, Forest - no Nintendo artwork or emblems), each an
+activity-alias of the game's activity, one enabled at a time. The activity itself is now `GameActivity` (the code is
+still SheikahSlateActivity's, the class it extends, and the JNI names with it); the original icon's alias keeps the
+old name `com.sheikahslate.SheikahSlateActivity`, so a home screen icon from before stays through the update.
+
+Choosing an icon (a picture each, the one in use framed in gold; then "Use it") enables its alias first, disables the
+others, and starts the app again from it straight away - before the system closes what the old entry opened, and with
+no second copy of the game's activity left beside it. The home screen may drop the old icon: the new one is in the app
+list. The long-press shortcuts follow every icon (they name `GameActivity`), and Update 11's picture icon, if one was
+added, now opens `GameActivity` too. The Choose icon picture button is gone. CI fails the build without the launcher
+entry, the aliases or their icons. A picture of your own as the real icon has to be built into the APK.
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep
@@ -485,12 +504,13 @@ On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log 
    changing one). Turbo: the overlay reads ~40 fps; Turbo 60: above 40, `[dynres] the game's resolution for 60 fps`
    lines as it settles. The fps lines no longer say "not paced" with Even frame pacing on.
 9. **Look.** Settings > Look > Choose background: the start screen shows the picture at once; Original background puts
-   the artwork back. Choose icon picture: the system asks to add the icon, and a second picture changes it.
+   the artwork back. App icon: tap a picture, Use it - the app starts again, and the app list shows the new icon (put
+   it back on the home screen if it went).
 
 Switches for testing (adb, as upstream's `android/run_boot.sh`):
 
 ```bash
-adb shell am start -n com.sheikahslate.tab/com.sheikahslate.SheikahSlateActivity --es env LARECOMP_VK_HOST_IMPORT=0
+adb shell am start -n com.sheikahslate.tab/com.sheikahslate.GameActivity --es env LARECOMP_VK_HOST_IMPORT=0
 adb logcat -v time SheikahSlate:V '*:S'
 ```
 

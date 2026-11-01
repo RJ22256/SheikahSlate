@@ -46,8 +46,14 @@
         <!-- simpleperf over adb on release builds (CPU profiles: docs/las/ANDROID-PORT.md); nothing else changes -->
         <profileable android:shell="true" />
 
+        <!-- (Sheikah Slate, 0.2.8-slate.12) The game's activity is GameActivity (SheikahSlateActivity's code, the class it
+             extends): the app's icons are the activity-aliases below, one enabled at a time - Settings > Look > App icon
+             (SheikahSlateActivity.setAppIcon) switches them, the real launcher icon, and the app starts again. Android
+             has no way for an app to give its launcher icon a picture at run time: the icons are built in
+             (tools/make_app_icons.py). Everything that starts the app asks for its launcher entry
+             (getLaunchIntentForPackage), whichever is enabled; the shortcuts name GameActivity. -->
         <activity
-            android:name=".SheikahSlateActivity"
+            android:name=".GameActivity"
             android:alwaysRetainTaskState="true"
             android:launchMode="singleInstance"
             android:screenOrientation="sensorLandscape"
@@ -55,15 +61,80 @@
             android:preferMinimalPostProcessing="true"
             android:exported="true">
             <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+        </activity>
+        <!-- the original icon - the name the activity had before 0.2.8-slate.12, so a home screen icon from before stays -->
+        <activity-alias
+            android:name=".SheikahSlateActivity"
+            android:targetActivity=".GameActivity"
+            android:icon="@mipmap/ic_launcher"
+            android:label="Sheikah Slate"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
-            </intent-filter>
-            <!-- the app icon's long-press shortcut: back to the system driver (res/xml/shortcuts.xml) -->
+            <!-- the app icon's long-press shortcuts (res/xml/shortcuts.xml) -->
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
-        </activity>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconMidnight"
+            android:targetActivity=".GameActivity"
+            android:icon="@mipmap/ic_launcher_midnight"
+            android:label="Sheikah Slate"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- the app icon's long-press shortcuts (res/xml/shortcuts.xml) -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity-alias>
+        <activity-alias
+            android:name=".IconDawn"
+            android:targetActivity=".GameActivity"
+            android:icon="@mipmap/ic_launcher_dawn"
+            android:label="Sheikah Slate"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- the app icon's long-press shortcuts (res/xml/shortcuts.xml) -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity-alias>
+        <activity-alias
+            android:name=".IconAncient"
+            android:targetActivity=".GameActivity"
+            android:icon="@mipmap/ic_launcher_ancient"
+            android:label="Sheikah Slate"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- the app icon's long-press shortcuts (res/xml/shortcuts.xml) -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity-alias>
+        <activity-alias
+            android:name=".IconForest"
+            android:targetActivity=".GameActivity"
+            android:icon="@mipmap/ic_launcher_forest"
+            android:label="Sheikah Slate"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- the app icon's long-press shortcuts (res/xml/shortcuts.xml) -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity-alias>
         <!-- the long-press "Choose driver" shortcut: a driver package picked before the game starts (no window of its
              own: the system's file picker, then the app again) -->
         <activity

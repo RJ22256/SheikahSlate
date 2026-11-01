@@ -24,8 +24,8 @@ android {
         // (each build installs over the last: same application id, same key, a versionCode never lower. The game code
         // built on the tablet stays valid while android/gamelib_id.expected does - the CI checks it; 0.2.8's generator
         // gave it a new id: built once more on the tablet, or Native Mode)
-        versionCode = 11
-        versionName = "0.2.8-slate.11"  // (upstream BOTWRecompAndroid 0.2.8-beta, Galaxy Tab S10 Ultra port 11)
+        versionCode = 12
+        versionName = "0.2.8-slate.12"  // (upstream BOTWRecompAndroid 0.2.8-beta, Galaxy Tab S10 Ultra port 12)
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -96,8 +96,11 @@ val prepareSheikahSlate by tasks.registering {
     val icon = repo.resolve("assets/artwork/sheikah-slate-icon-v1.png")  // (Sheikah Slate: an original icon, tools/make_icon.py)
     val background = repo.resolve("assets/artwork/great-plateau-background-v2.png")
     val touchSkin = repo.resolve("assets/artwork/sheikah-touch-atlas-v1.png")
+    val appIcons = repo.resolve("assets/artwork/app-icons")  // (tools/make_app_icons.py)
+    val appIconNames = listOf("midnight", "dawn", "ancient", "forest")
     val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so", "libswscale.so")
     inputs.files(smaa, font, icon, background, touchSkin)
+    inputs.dir(appIcons)
     inputs.files(libs.map { deps.resolve("lib/$it") }.filter { it.exists() })
     if (deps.resolve("gen").exists()) inputs.dir(deps.resolve("gen"))  // (the game code's builder, below)
     inputs.files(listOf("tools/gen.py", "tools/lifter.py", "tools/analyze.py", "tools/nso.py", "tools/passes.py", "tools/patches.py",
@@ -122,6 +125,13 @@ val prepareSheikahSlate by tasks.registering {
         background.copyTo(out.resolve("assets/res/launcher-background.png"), overwrite = true)
         touchSkin.copyTo(out.resolve("assets/res/sheikah-touch-atlas.png"), overwrite = true)
         icon.copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher.png"), overwrite = true)
+        // the other app icons (Settings > Look > App icon: AndroidManifest.xml's activity-aliases), and their pictures
+        // for the start screen's choice
+        for (name in appIconNames) {
+            val f = appIcons.resolve("app-icon-$name.png")
+            f.copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher_$name.png"), overwrite = true)
+            f.copyTo(out.resolve("assets/res/app-icon-$name.png"), overwrite = true)
+        }
         // the game code's builder (docs/las/ANDROID-PORT.md, Fase 6; android/deps/build_gen_deps.sh): its programs and
         // libraries as native libraries (Android runs binaries only from nativeLibraryDir), the rest as assets/gen
         // (runtime/gamebuild.c; unpacked by SheikahSlateActivity)

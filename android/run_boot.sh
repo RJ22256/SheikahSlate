@@ -11,7 +11,7 @@ OUT=android/out/boot.log
 mkdir -p android/out
 adb shell am force-stop com.sheikahslate.tab
 adb logcat -c
-adb shell am start -n com.sheikahslate.tab/com.sheikahslate.SheikahSlateActivity --es env "$ENV" >/dev/null
+adb shell am start -n com.sheikahslate.tab/com.sheikahslate.GameActivity --es env "$ENV" >/dev/null
 timeout "$SECS" adb logcat -v time SheikahSlate:V SDL:V DEBUG:V libc:F AndroidRuntime:E '*:S' > "$OUT" || true
 grep -c . "$OUT" | sed 's/^/lines: /'
 tail -40 "$OUT"

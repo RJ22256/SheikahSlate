@@ -213,6 +213,19 @@ jobs:
           note "Native libraries" "$(unzip -l "$APK" | awk '/lib\/arm64-v8a\//{printf "%s (%d KB)\n", $4, $1/1024}' | sed 's#lib/arm64-v8a/##')"
           note "Assets" "$(unzip -l "$APK" | awk '/ assets\//{n++; s+=$1} END {printf "%d files, %d MB", n, s/1048576}')"
           note "Signing" "$("$BT/apksigner" verify --print-certs "$APK" | grep -E "DN:|SHA-256")"
+          # (Settings > Look > App icon: the launcher entry is an activity-alias - the original's, with the name the
+          # activity had before, enabled; the others there, off; their icons in the APK. No APK without them.)
+          LA=$("$BT/aapt2" dump badging "$APK" | grep "^launchable-activity:" || true)
+          note "Launcher entry" "$LA"
+          echo "$LA" | grep -q "name='com.sheikahslate.SheikahSlateActivity'" || { echo "::error::no launcher entry com.sheikahslate.SheikahSlateActivity"; exit 1; }
+          XT=$("$BT/aapt2" dump xmltree --file AndroidManifest.xml "$APK")
+          for a in IconMidnight IconDawn IconAncient IconForest; do
+            echo "$XT" | grep -q "com.sheikahslate.$a" || { echo "::error::no alias $a"; exit 1; }
+          done
+          RS=$("$BT/aapt2" dump resources "$APK")
+          for n in "" _midnight _dawn _ancient _forest; do
+            echo "$RS" | grep -qE "mipmap/ic_launcher$n( |$)" || { echo "::error::no icon mipmap/ic_launcher$n"; exit 1; }
+          done
 
       - name: Failure report
         if: failure()
