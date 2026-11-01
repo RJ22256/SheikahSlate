@@ -34,6 +34,11 @@ static void dyn_update(double now, double gpu_ms) {
     g_last_t = now;
     if (dt > 250) return;  // (loading, menus, a stall: not the GPU's steady state)
     double want = framepace_on() && framepace_target() > 0 ? 1000.0 / framepace_target() : 1000.0 / 30;  // (ms a frame)
+#ifdef __ANDROID__
+    // the frame rate it keeps: 60 with Frame rate at 60 fps, else 30 - Auto's 60 comes by itself where the GPU has room.
+    // (Aiming at Auto's tries for 60 took the scale to its floor while the game stayed at 30: POCO F7 Ultra, 2026-10-25)
+    want = g_settings.fps_mode == 2 ? want : 1000.0 / 30;
+#endif
     g_dyn_dt_sum += dt;
     g_dyn_n++;
     if (gpu_ms >= 0) { g_dyn_gpu_sum += gpu_ms; g_dyn_gpu_n++; }
@@ -43,7 +48,10 @@ static void dyn_update(double now, double gpu_ms) {
     g_dyn_n = g_dyn_gpu_n = 0;
     if (now < g_dyn_cool_until) return;
     double prev = g_dyn;
-    bool slow = avg_dt > want * 1.04 || (avg_gpu >= 0 && avg_gpu > want * 0.87);
+    // With the GPU's time: slow frames lower the scale only while the GPU is busy most of them - else the CPU holds
+    // them, and a smaller image doesn't help (on the POCO 36 ms frames with 25 ms of GPU kept lowering it)
+    bool slow = avg_gpu >= 0 ? avg_gpu > want * 0.87 || (avg_dt > want * 1.08 && avg_gpu > want * 0.7)
+                             : avg_dt > want * 1.04;
     if (slow) {
         g_dyn = fmax(0.5, g_dyn - (avg_dt > want * 1.3 ? 0.1 : 0.05));
         g_dyn_good = 0;
@@ -51,7 +59,10 @@ static void dyn_update(double now, double gpu_ms) {
     } else if (g_dyn < 1.0) {
         g_dyn_good++;
         // with GPU timing: raise when there is clear headroom; without (Vulkan): probe upwards now and then
-        bool room = avg_gpu >= 0 ? avg_gpu < want * 0.63 && g_dyn_good >= 4 : now >= g_dyn_probe_at && g_dyn_good >= 2 * (int)g_dyn_probe_wait;
+        // (with it too, a raise that had to be taken back soon waits longer before the next: g_dyn_probe_wait - the
+        // POCO swung 0.55 <-> 0.70 every couple of seconds, each change reallocating the targets)
+        bool room = avg_gpu >= 0 ? avg_gpu < want * 0.63 && g_dyn_good >= 4 && now >= g_dyn_probe_at
+                                 : now >= g_dyn_probe_at && g_dyn_good >= 2 * (int)g_dyn_probe_wait;
         if (room) { g_dyn = fmin(1.0, g_dyn + 0.05); g_dyn_good = 0; g_dyn_last_raise = now; g_dyn_probe_at = now + g_dyn_probe_wait; }
     }
     g_dyn = round(g_dyn * 20) / 20;
@@ -73,13 +84,15 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     if (!reshape) shape = 1.0;
     // the final image: the window's resolution, in units of the Switch's 1080 lines
     double h = fmax(reshape ? dh / 1080.0 : fit, 0.1);
-    double sx = h * shape, sy = h;
+    double sx = h * shape, sy = h, h_screen = h;
+    bool out_auto = false;
     {   // Video tab "Output resolution" (g_settings.out_lines): the final image at most that many lines, scaled up to the
         // window when presented - the game's last passes and the scene's upscale over fewer pixels, the HUD softer
         // (LARECOMP_OUT_LINES=<n> for tests: the same, over the setting)
         static double env_lines = -1;
         if (env_lines < 0) env_lines = getenv("LARECOMP_OUT_LINES") ? atof(getenv("LARECOMP_OUT_LINES")) : 0;
-        double out_lines = env_lines > 0 ? env_lines : g_settings.out_lines;
+        out_auto = env_lines <= 0 && g_settings.out_lines == OUT_AUTO;  // (Auto: 1080 lines at most)
+        double out_lines = env_lines > 0 ? env_lines : out_auto ? 1080 : g_settings.out_lines;
         if (out_lines > 0 && sy * 1080.0 > out_lines) { double k = out_lines / (sy * 1080.0); sx *= k; sy *= k; }
     }
     h = sy;  // (Match display below: the final image's size, which is the screen's unless Output resolution is lower)
@@ -94,10 +107,14 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     else if (mode >= 1 && mode <= 8) hs = mode;
     else {
         hs = h * 1080.0 / SCENE_LINES;  // Match display
-        if (mode == RES_DYNAMIC) { dyn_update(now, gpu_ms); hs *= g_dyn; }
-        else if (mode == RES_Q75) hs *= 0.75;
-        else if (mode == RES_Q25) hs *= 0.25;
-        else if (mode == RES_Q50) hs *= 0.5;
+        // (Auto output: the shares below are of the screen's lines, as they were before it - only the final image is
+        // smaller - and at most the scene's size in it: 50% on a 1440-line screen stays 720 lines, 75% is 1080)
+        double base = out_auto ? h_screen * 1080.0 / SCENE_LINES : hs, share = 1.0;
+        if (mode == RES_DYNAMIC) { dyn_update(now, gpu_ms); share = g_dyn; }
+        else if (mode == RES_Q75) share = 0.75;
+        else if (mode == RES_Q25) share = 0.25;
+        else if (mode == RES_Q50) share = 0.5;
+        if (mode != RES_MATCH) hs = fmin(base * share, hs);
     }
     hs = fmax(hs, 0.1);
     o->scene_sx = hs * shape; o->scene_sy = hs;

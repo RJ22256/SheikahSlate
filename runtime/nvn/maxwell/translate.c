@@ -31,10 +31,12 @@ unsigned maxwell_gmem_miss_stages = ~0u;
 bool maxwell_brx_window;
 bool maxwell_static_stacks;
 bool maxwell_structured;
+bool maxwell_struct_skips = true;  // (structure: forward jumps out of a region as guarded skips; LARECOMP_NO_STRUCT_SKIPS)
 bool maxwell_no_switch;
 bool maxwell_no_local_struct;
 bool maxwell_native_half;
 bool maxwell_fast_minmax;
+bool maxwell_cb_window;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
 int maxwell_dbg_reg;
@@ -97,7 +99,25 @@ typedef struct {
     bool structured;         // (maxwell_structured) the body is if / else / for, not the state machine
     int nbrx;                // jump tables read from cbuf 1 (brx_table): each BRX's possible targets
     struct { uint32_t at; int n; uint32_t t[256]; } brx[4];
+    uint32_t lmem_const_words;  // local memory words the LDL / STL at constant addresses reach (lmem_words)
+    bool lmem_dynamic;          // an LDL / STL at a register's address
+    uint32_t lmem_sph_bytes;    // the SPH's local memory size (graphics stages; 0: none given)
 } Ctx;
+
+// The local memory array's size in words, a power of two (its index is masked to it: lmask_). Every invocation zeroes
+// it, and an array that big lives in scratch memory: TOTK's material shaders spill one register (STL / LDL [0x0]) and
+// zeroed 256 words a pixel - one draw took 100 ms of GPU on the Adreno 830 (2026-10-26). Constant addresses only: the
+// words they reach; else the SPH's size (or the whole LMEM_WORDS without one).
+static uint32_t lmem_words(const Ctx *c) {
+    uint32_t need = c->lmem_const_words;
+    if (c->lmem_dynamic) {
+        uint32_t sph = (c->lmem_sph_bytes + 3) / 4;
+        need = sph ? (sph > need ? sph : need) : LMEM_WORDS;
+    }
+    uint32_t n = 1;
+    while (n < need && n < LMEM_WORDS) n <<= 1;
+    return n;
+}
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
 static int64_t sbits(uint64_t w, int lo, int n) {
@@ -201,12 +221,15 @@ static const char *fneg_abs(const char *e, bool neg, bool abs_, char *buf) {
 }
 #define NA(e, n, a) fneg_abs((e), (n), (a), alloca(600))
 
-static const char *fresult(const char *e, bool sat, char *buf) {
-    if (sat) sprintf(buf, "as_type<uint>(saturate(%s))", e);
-    else sprintf(buf, "as_type<uint>(%s)", e);
+// (GLSL: the built-in; the overloaded as_u helper would be a function call per instruction for the driver to inline -
+// SavageWindRecomp's)
+static const char *fresult(const Ctx *c, const char *e, bool sat, char *buf) {
+    const char *cast = c->glsl ? "floatBitsToUint" : "as_type<uint>";
+    if (sat) sprintf(buf, "%s(saturate(%s))", cast, e);
+    else sprintf(buf, "%s(%s)", cast, e);
     return buf;
 }
-#define FRES(e, sat) fresult((e), (sat), alloca(700))
+#define FRES(e, sat) fresult(c, (e), (sat), alloca(700))
 
 static const char *cmp_op(int op) {
     static const char *const ops[] = {"false", "<", "==", "<=", ">", "!=", ">=", "num", "nan",
@@ -630,6 +653,22 @@ static void glsl_sample(Ctx *c, char *out, int slot, const char *const *co, cons
     } else if (n == 2) {
         if (off) snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(%s).xy))", co[0], co[1], off, off_scale(c, slot, 2), slot, L);
         else snprintf(xs, sizeof xs, "vec2(%s, %s)", co[0], co[1]);
+        // Vertex stage: the coordinates rounded to 1/256 of a texel, as the Switch's texture unit weighs a bilinear
+        // lookup (8 bits of sub-texel position). The terrain's tiles read their heights at a shared edge each from its
+        // own texture, at what is meant to be a texel's centre; a hair off from float rounding, the Switch still gets
+        // that texel exactly, while the Adreno's finer weights blended in a trace of the next one - the edges' heights
+        // differed and the ground showed a grid of dotted cracks, denser at higher resolutions (issue #21; with nearest
+        // filtering they were gone, 2026-10-27). LARECOMP_NO_VS_SNAP=1: not rounded.
+        static int snap = -1, fs_snap = -1;
+        if (snap < 0) snap = getenv("LARECOMP_NO_VS_SNAP") == NULL;
+        if (fs_snap < 0) fs_snap = getenv("LARECOMP_FS_SNAP") != NULL;  // (diagnosis: fragment lookups too, at level 0's texels)
+        if ((snap && c->stage == STAGE_VERTEX && !t->shadow && lod_kind == 1) ||
+            (fs_snap && c->stage == STAGE_FRAGMENT && !t->shadow)) {
+            char raw[1600];
+            snprintf(raw, sizeof raw, "%s", xs);
+            snprintf(xs, sizeof xs, "(floor((%s) * vec2(tsize%d(%s).xy) * 256.0f + 0.5f) / (vec2(tsize%d(%s).xy) * 256.0f))",
+                     raw, slot, L, slot, L);
+        }
     } else {
         if (off && !cube) snprintf(xs, sizeof xs, "vec3(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(%s).xy), %s)", co[0], co[1], off, off_scale(c, slot, 2), slot, L, co[2]);
         else snprintf(xs, sizeof xs, "vec3(%s, %s, %s)", co[0], co[1], co[2]);  // cube lookups take no offset
@@ -668,6 +707,22 @@ static void glsl_gather(Ctx *c, char *out, int slot, const char *const *co, cons
     if (n == 2) {
         if (off) snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(0).xy))", co[0], co[1], off, off_scale(c, slot, 2), slot);
         else snprintf(xs, sizeof xs, "vec2(%s, %s)", co[0], co[1]);
+        // The coordinates rounded to 1/256 of a texel, as the Switch's texture unit takes them, and nudged a quarter of
+        // that up: a gather's 2x2 is the texels around the coordinate, so at a texel's centre - a pixel's own, gathered
+        // from a target of the same size - which 2x2 it is hangs on the last bit. The Switch rounds it there exactly
+        // and keeps the pixel's texel at the 2x2's top left; the Adreno, a hair under from the interpolation, took the
+        // 2x2 before it - another pixel's depth. BOTW's half-size ambient occlusion (fs 8c42c9bc) gathers its depth
+        // that way: by the blades of grass it shaded dark dots, in rows and columns across the screen where the
+        // interpolation's error changes sign (2026-10-28; the dots on grassy ground at more than 50% resolution, in
+        // both modes, and also in Switch emulators on Adreno). LARECOMP_NO_GATHER_SNAP=1: not rounded.
+        static int snap = -1;
+        if (snap < 0) snap = getenv("LARECOMP_NO_GATHER_SNAP") == NULL;
+        if (snap) {
+            char raw[1600];
+            snprintf(raw, sizeof raw, "%s", xs);
+            snprintf(xs, sizeof xs, "((floor((%s) * vec2(tsize%d(0).xy) * 256.0f + 0.5f) + 0.25f) / (vec2(tsize%d(0).xy) * 256.0f))",
+                     raw, slot, slot);
+        }
     } else {
         snprintf(xs, sizeof xs, "vec3(%s, %s, %s)", co[0], co[1], co[2]);
     }
@@ -1137,6 +1192,24 @@ static void emit_tmml(Ctx *c, uint64_t w, bool bindless, uint32_t pc) {
 }
 
 // ------------------------------------------------------------------ instruction translation
+// Whether the instruction that last wrote reg before pc (straight-line, 32 back) is FMUL by the immediate 255.0: an
+// 8-bit value read back from a UNORM texture. Truncated, a sample a little under k/255 gives k - 1: off the texel
+// centre (a scaled G-buffer) the filter lands there, and the material ID 7 read as 6 left distant trees unlit (#112).
+static bool scaled_by_255(const Ctx *c, uint32_t pc, int reg) {
+    const uint64_t *code = (const uint64_t *)c->code;
+    for (size_t i = pc / 8, n = 0; i-- > 0 && n < 32; n++) {
+        if (i % 4 == 0) continue;
+        uint64_t x = code[i];
+        if ((int)bits(x, 0, 8) != reg) continue;
+        if ((x & 0xfef8000000000000ull) == 0x3868000000000000ull)  // FMUL imm: 19 bits + sign at 56, the float's top
+            return !bits(x, 56, 1) && (uint32_t)bits(x, 20, 19) << 12 == 0x437f0000u;
+        if ((x & 0xff00000000000000ull) == 0x1e00000000000000ull)  // FMUL32I
+            return (uint32_t)bits(x, 20, 32) == 0x437f0000u;
+        return false;
+    }
+    return false;
+}
+
 static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     char t[2048], u[2048];
     int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8);
@@ -1293,7 +1366,22 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         case 1: sprintf(t, "sin(%s)", x); break;
         case 2: sprintf(t, "exp2(%s)", x); break;
         case 3: sprintf(t, "log2(%s)", x); break;
-        case 4: sprintf(t, "(1.0f / %s)", x); break;
+        case 4: {
+            // BOTW's particles (the eft2 vertex shaders) stretch along their velocity by velocity / the effect's time
+            // step, c[10][0x2c] - the game's delta frame, 1.0 at 30 fps and 0.5 at 60, times the slowest time
+            // multiplier: a hit-stop's 10% drew Death Mountain's smoke, the horizon's and defeated monsters' as stars
+            // of spikes for a few frames (at 30 fps too: the game's own). The reciprocal of that step, and only that,
+            // reads it at no less than 0.5: slow motion no longer lengthens them (the stretch of 60 fps without it).
+            // LARECOMP_NO_STEP_CLAMP=1: as the game does.
+            static int clamp_step = -1;
+            if (clamp_step < 0) clamp_step = getenv("LARECOMP_NO_STEP_CLAMP") == NULL;
+            uint32_t bank, off;
+            if (clamp_step && c->stage == STAGE_VERTEX && handle_cbuf(c, pc, a, &bank, &off) && bank == 10 && off == 0x2c)
+                sprintf(t, "(1.0f / max(%s, 0.5f))", x);
+            else
+                sprintf(t, "(1.0f / %s)", x);
+            break;
+        }
         case 5: sprintf(t, "rsqrt(%s)", x); break;
         case 8: sprintf(t, "sqrt(%s)", x); break;
         default: fail(c, "mufu %d", fn); return;
@@ -1392,6 +1480,11 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         int rnd = (int)bits(w, 39, 2);
         bool sgn = bits(w, 12, 1), i16 = bits(w, 8, 2) == 1;
         static const char *const rf[] = {"rint", "floor", "ceil", "trunc"};
+        static int unorm_round = -1;  // (LARECOMP_NO_UNORM_ROUND=1: truncated as written)
+        if (unorm_round < 0) unorm_round = getenv("LARECOMP_NO_UNORM_ROUND") == NULL;
+        if (rnd == 3 && unorm_round && OPM(0x5cb0000000000000ull, 0xfff8000000000000ull) && bits(w, 10, 2) == 2 &&
+            scaled_by_255(c, pc, (int)bits(w, 20, 8)))
+            rnd = 0;
         if (i16)
             sprintf(t, sgn ? "uint(int(clamp(%s(%s), -32768.0f, 32767.0f)))" : "uint(clamp(%s(%s), 0.0f, 65535.0f))", rf[rnd], x);
         else
@@ -1482,6 +1575,19 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             }
             if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = uint(sum);\n", d); }
             sp(&c->body, "    }\n");
+        } else if (OPM(0x5cc0000000000000ull, 0xfff0000000000000ull) && bits(w, 31, 8)) {
+            // (SavageWindRecomp 7ce70fa, MIT) register form with a shift or half selects: .RS / .LS (bits 37-38) shift
+            // the first two operands' sum 16 bits right / left before the third is added; bits 35-36, 33-34, 31-32 pick
+            // a / b / c's low or high half (1 low, 2 high). The compiler's division by a constant ends in IADD3.RS:
+            // without the shift the quotient was wrong (BOTW's beach shell sprites drawn as huge walls, their #147).
+            static const char *const half[4] = {"", " & 0xFFFFu", " >> 16", ""};
+            int sh = (int)bits(w, 37, 2);
+            char ra[96], rb[96], rc[96];
+            snprintf(ra, sizeof ra, "%s(%s%s)", bits(w, 51, 1) ? "-" : "", R(a), half[bits(w, 35, 2)]);  // (half, then negate)
+            snprintf(rb, sizeof rb, "%s(%s%s)", bits(w, 50, 1) ? "-" : "", B(false), half[bits(w, 33, 2)]);
+            snprintf(rc, sizeof rc, "%s(%s%s)", bits(w, 49, 1) ? "-" : "", R((int)bits(w, 39, 8)), half[bits(w, 31, 2)]);
+            sprintf(t, "(((%s + %s)%s) + %s)", ra, rb, sh == 1 ? " >> 16u" : sh == 2 ? " << 16u" : "", rc);
+            set_reg(c, d, t);
         } else {
             sprintf(t, "(%s%s + %s%s + %s%s)", bits(w, 51, 1) ? "-" : "", R(a), bits(w, 50, 1) ? "-" : "", B(false),
                     bits(w, 49, 1) ? "-" : "", R((int)bits(w, 39, 8)));
@@ -1887,32 +1993,38 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         bool store = bits(w, 52, 1);
         int size = (int)bits(w, 48, 3);
         int32_t off = (int32_t)sbits(w, 20, 24);
+        int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
         if (shared) c->uses_shared = true;
-        else c->uses_local = true;
+        else {
+            c->uses_local = true;
+            if (a != RZ || off < 0) c->lmem_dynamic = true;
+            else if ((uint32_t)off / 4 + (uint32_t)nw > c->lmem_const_words) c->lmem_const_words = (uint32_t)off / 4 + (uint32_t)nw;
+        }
         const char *arr = shared ? "smem" : "lmem";
-        uint32_t wmask = (shared ? SMEM_WORDS : LMEM_WORDS) - 1;
+        char wmask[16];  // (local: lmask_, the array's size once every access is known - lmem_words)
+        if (shared) sprintf(wmask, "%uu", SMEM_WORDS - 1);
+        else strcpy(wmask, "lmask_");
         char addr[128];
         if (a == RZ) sprintf(addr, "%du", off);
         else sprintf(addr, "(%s + %du)", R(a), (uint32_t)off);
-        int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
         sp(&c->body, "    { uint la = %s;\n", addr);
         if (!store) {
             if (size < 4) {
                 static const char *const ext[] = {"(v >> sh) & 0xFFu", "uint(int(char((v >> sh) & 0xFFu)))", "(v >> sh) & 0xFFFFu",
                                                   "uint(int(short((v >> sh) & 0xFFFFu)))"};
-                if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      uint v = %s[(la >> 2) & %uu]; uint sh = (la & 3u) * 8u; r%d = %s;\n", arr, wmask, d, ext[size]); }
+                if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      uint v = %s[(la >> 2) & %s]; uint sh = (la & 3u) * 8u; r%d = %s;\n", arr, wmask, d, ext[size]); }
             } else {
                 for (int k = 0; k < nw; k++)
-                    if (d != RZ && d + k < RZ) { c->reg_used[d + k] = 1; sp(&c->body, "      r%d = %s[((la >> 2) + %du) & %uu];\n", d + k, arr, k, wmask); }
+                    if (d != RZ && d + k < RZ) { c->reg_used[d + k] = 1; sp(&c->body, "      r%d = %s[((la >> 2) + %du) & %s];\n", d + k, arr, k, wmask); }
             }
         } else {
             if (size < 4) {
                 uint32_t m = size < 2 ? 0xFFu : 0xFFFFu;
-                sp(&c->body, "      uint sh = (la & 3u) * 8u; uint i = (la >> 2) & %uu; %s[i] = (%s[i] & ~(0x%xu << sh)) | ((%s & 0x%xu) << sh);\n",
+                sp(&c->body, "      uint sh = (la & 3u) * 8u; uint i = (la >> 2) & %s; %s[i] = (%s[i] & ~(0x%xu << sh)) | ((%s & 0x%xu) << sh);\n",
                    wmask, arr, arr, m, R(d), m);
             } else {
                 for (int k = 0; k < nw; k++)
-                    sp(&c->body, "      %s[((la >> 2) + %du) & %uu] = %s;\n", arr, k, wmask, R(d == RZ ? RZ : d + k));
+                    sp(&c->body, "      %s[((la >> 2) + %du) & %s] = %s;\n", arr, k, wmask, R(d == RZ ? RZ : d + k));
             }
         }
         sp(&c->body, "    }\n");
@@ -2002,6 +2114,29 @@ static bool is_branch_target_op(uint64_t w) {
 static bool id_start(char ch) { return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'; }
 static bool id_char(char ch) { return id_start(ch) || (ch >= '0' && ch <= '9'); }
 
+// Whether p is "(" + a uint operand + ")": a register (rN), a constant buffer word (cbN[i][j]) or a literal ending in u.
+static bool uint_operand(const char *p) {
+    if (*p++ != '(') return false;
+    const char *q = p;
+    if (*q == 'r' && q[1] >= '0' && q[1] <= '9') {
+        for (q++; *q >= '0' && *q <= '9'; q++) {}
+    } else if (!strncmp(q, "cb", 2) && q[2] >= '0' && q[2] <= '9') {
+        for (q += 2; *q >= '0' && *q <= '9'; q++) {}
+        for (int k = 0; k < 2; k++) {
+            if (*q++ != '[') return false;
+            if (*q < '0' || *q > '9') return false;
+            while (*q >= '0' && *q <= '9') q++;
+            if (*q++ != ']') return false;
+        }
+    } else if (*q >= '0' && *q <= '9') {
+        while (id_char(*q)) q++;
+        if (q[-1] != 'u') return false;
+    } else {
+        return false;
+    }
+    return *q == ')';
+}
+
 // MSL-spelled instruction body -> GLSL (token-aware; comments and numbers are copied as they are).
 static void glsl_rewrite(Ctx *c, Str *o, const char *src) {
     static const char *const map[][2] = {
@@ -2054,7 +2189,10 @@ static void glsl_rewrite(Ctx *c, Str *o, const char *src) {
             const char *gt = strchr(p, '>');
             if (!gt) { fail(c, "glsl: bad as_type"); return; }
             int tn = (int)(gt - p - 1);
-            if (tn == 5 && !strncmp(p + 1, "float", 5)) sp(o, "as_f");
+            // a register, a constant buffer word or an unsigned literal is a uint: the built-in, not the overloaded
+            // helper (a function call per use, which the driver then inlines: thousands in a big shader)
+            if (tn == 5 && !strncmp(p + 1, "float", 5) && uint_operand(gt + 1)) sp(o, "uintBitsToFloat");
+            else if (tn == 5 && !strncmp(p + 1, "float", 5)) sp(o, "as_f");
             else if (tn == 4 && !strncmp(p + 1, "uint", 4)) sp(o, "as_u");
             else if (tn == 3 && !strncmp(p + 1, "int", 3)) sp(o, "as_i");
             else if (tn == 5 && !strncmp(p + 1, "half2", 5)) sp(o, "unpack_h2");
@@ -2082,6 +2220,30 @@ static void glsl_rewrite(Ctx *c, Str *o, const char *src) {
             bool num = true;
             for (int i = 1; i < n; i++) num = num && id[i] >= '0' && id[i] <= '9';
             if (num && atoi(id + 1) > 255) { fail(c, "register %s out of range", id); return; }
+        }
+        if (c->info->cbwin_mask && id[0] == 'c' && id[1] == 'b') {  // (maxwell_cb_window) cbW[v] -> cbwW(vu), cbr(cbW, -> cbrwW(
+            const char *q = p;
+            bool r = !strcmp(id, "cbr") && *q == '(' && !strncmp(q + 1, "cb", 2);
+            if (r) q += 3;
+            else q = id + 2;
+            int k = 0, nd = 0;
+            for (; *q >= '0' && *q <= '9' && nd < 3; q++, nd++) k = k * 10 + (*q - '0');
+            if (nd && k < 32 && (c->info->cbwin_mask >> k & 1u)) {
+                if (r && *q == ',') {
+                    sp(o, "cbrw%d(", k);
+                    for (p = q + 1; *p == ' '; p++) {}
+                    continue;
+                }
+                if (!r && !*q && *p == '[') {
+                    const char *v = p + 1, *ve = v;
+                    while (*ve >= '0' && *ve <= '9') ve++;
+                    if (ve > v && *ve == ']') {
+                        sp(o, "cbw%d(%.*su)", k, (int)(ve - v), v);
+                        p = ve + 1;
+                        continue;
+                    }
+                }
+            }
         }
         const char *rep = id;
         if (maxwell_no_int64 && !strcmp(id, "ulong")) { fail(c, "unlowered 64-bit shader operation"); return; }
@@ -2138,6 +2300,68 @@ static const char glsl_prelude[] =
     "vec2 hx(uint v, uint swz) { if (swz == 1u) return vec2(uintBitsToFloat(v)); vec2 h = unpack_h2(v); return swz == 2u ? h.xx : (swz == 3u ? h.yy : h); }\n"
     "uint hpack(vec2 r, uint merge, uint old) { if (merge == 1u) return floatBitsToUint(r.x); uint lo = packHalf2x16(vec2(r.x, 0.0f)), hi = packHalf2x16(vec2(r.y, 0.0f)); if (merge == 2u) return (old & 0xFFFF0000u) | lo; if (merge == 3u) return (old & 0xFFFFu) | (hi << 16); return lo | (hi << 16); }\n"
     "uint prmt(uint a, uint b, uint sel) { uint r = 0u; for (uint i = 0u; i < 4u; i++) { uint s = (sel >> (i * 4u)) & 7u; uint bt = s < 4u ? (a >> (s * 8u)) & 0xFFu : (b >> ((s - 4u) * 8u)) & 0xFFu; r |= bt << (i * 8u); } return r; }\n";
+
+// The prelude, a line each: directives (kept) and helpers by name (kept when called).
+enum { PRELUDE_MAX = 64 };
+typedef struct {
+    const char *line[PRELUDE_MAX];
+    size_t len[PRELUDE_MAX];
+    char name[PRELUDE_MAX][24];  // "" for directives
+    bool keep[PRELUDE_MAX];
+    int n;
+} Prelude;
+
+// Marks the helpers text calls: identifiers followed by '(' that name one (every overload of that name). A name a
+// #define of the shader maps elsewhere (h2f -> h2fn, fmin -> min) still counts as a call: kept, unused - harmless.
+static void prelude_mark_calls(Prelude *pr, const char *text, const char *end) {
+    for (const char *t = text; t < end;) {
+        if (!id_start(*t) || (t > text && id_char(t[-1]))) { t++; continue; }
+        const char *u = t;
+        while (u < end && id_char(*u)) u++;
+        if (u < end && *u == '(')
+            for (int i = 0; i < pr->n; i++)
+                if (!pr->keep[i] && pr->name[i][0] && (size_t)(u - t) == strlen(pr->name[i]) && !memcmp(t, pr->name[i], u - t))
+                    for (int j = i; j < pr->n; j++) if (!strcmp(pr->name[j], pr->name[i])) pr->keep[j] = true;
+        t = u;
+    }
+}
+
+// The shader's GLSL with only the prelude's directives and the helpers the rest calls, directly or through another
+// helper or a directive: glslang parses every function it is given, ~2 ms a shader for all of them (a quarter of an
+// average shader's GLSL -> SPIR-V time; SavageWindRecomp's measure). src holds glsl_prelude once, as written.
+static char *glsl_with_prelude(char *src) {
+    char *at = strstr(src, glsl_prelude);
+    if (!at) return src;
+    const char *rest = at + strlen(glsl_prelude);
+    Prelude pr = {0};
+    for (const char *p = glsl_prelude; *p && pr.n < PRELUDE_MAX; pr.n++) {
+        int i = pr.n;
+        const char *e = strchr(p, '\n');
+        pr.line[i] = p;
+        pr.len[i] = e ? (size_t)(e - p + 1) : strlen(p);
+        p += pr.len[i];
+        const char *par = pr.line[i][0] == '#' ? NULL : memchr(pr.line[i], '(', pr.len[i]);
+        if (!par) { pr.keep[i] = true; continue; }  // (directives, and the #define everything uses)
+        const char *q = par;
+        while (q > pr.line[i] && id_char(q[-1])) q--;
+        snprintf(pr.name[i], sizeof pr.name[i], "%.*s", (int)(par - q), q);
+    }
+    if (pr.n >= PRELUDE_MAX) return src;  // (a prelude grown past the table: all of it, as before)
+    prelude_mark_calls(&pr, rest, rest + strlen(rest));
+    for (bool more = true; more;) {  // helpers (and directives) that call helpers
+        bool before[PRELUDE_MAX];
+        memcpy(before, pr.keep, sizeof before);
+        for (int i = 0; i < pr.n; i++)
+            if (pr.keep[i]) prelude_mark_calls(&pr, pr.line[i], pr.line[i] + pr.len[i]);
+        more = memcmp(before, pr.keep, sizeof before) != 0;
+    }
+    Str s = {0};
+    sp(&s, "%.*s", (int)(at - src), src);
+    for (int i = 0; i < pr.n; i++) if (pr.keep[i]) sp(&s, "%.*s", (int)pr.len[i], pr.line[i]);
+    sp(&s, "%s", rest);
+    free(src);
+    return s.buf;
+}
 
 static const char *glsl_sampler_type(const ShaderTexture *t) {
     static const char *const names[][2] = {
@@ -2283,6 +2507,10 @@ typedef struct {
     uint8_t *consumed;
     Str out;
     bool fail, exit_used;
+    // Skips: a forward jump past the region it sits in (or over code inside it) sets sk<id>; the code after it is
+    // guarded by `if (!sk<id>)` at each level up to the target block, where the flag drops again.
+    int nsk, sk_t[16], sk_id[16], sk_depth[16], nskv;  // pending: target block, flag, depth it was made at; flags made
+    int ngd, gd_id[64];                                  // open guards (innermost last), each a flag
 } SCtx;
 
 static int st_thread(SCtx *x, int b) {  // through blocks that are only an unconditional jump
@@ -2320,12 +2548,50 @@ static int st_switch(SCtx *x, int k, int end, int depth);
 
 static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt);
 static void st_range(SCtx *x, int a, int end, int opened, int depth) { st_range_alt(x, a, end, opened, depth, -1); }
+static void st_range_body(SCtx *x, int a, int end, int opened, int depth, int alt, int g0);
 static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt) {
+    int g0 = x->ngd;
+    st_range_body(x, a, end, opened, depth, alt, g0);
+    for (; x->ngd > g0; x->ngd--) sp(&x->out, "  }\n");  // (this level's guards end with its region)
+}
+// A construct over blocks (k, e) - a loop, an if / else - can't hold a pending skip's target: a jump into it.
+static bool st_skip_inside(const SCtx *x, int k, int e) {
+    for (int i = 0; i < x->nsk; i++)
+        if (x->sk_t[i] > k && x->sk_t[i] < e) return true;
+    return false;
+}
+// Block k reached: skips that end here drop their flag (after closing this level's guards down to theirs), and the
+// pending ones made at this depth or deeper get a guard here.
+static void st_skip_at(SCtx *x, int k, int depth, int g0) {
+    for (int i = 0; i < x->nsk;) {
+        if (x->sk_t[i] != k) { i++; continue; }
+        int id = x->sk_id[i];
+        for (int g = g0; g < x->ngd; g++)
+            if (x->gd_id[g] == id) {
+                for (; x->ngd > g; x->ngd--) sp(&x->out, "  }\n");
+                break;
+            }
+        sp(&x->out, "  sk%d = false;\n", id);
+        x->nsk--;
+        for (int j = i; j < x->nsk; j++) x->sk_t[j] = x->sk_t[j + 1], x->sk_id[j] = x->sk_id[j + 1], x->sk_depth[j] = x->sk_depth[j + 1];
+    }
+    for (int i = 0; i < x->nsk; i++) {
+        if (x->sk_depth[i] < depth || x->sk_t[i] <= k) continue;
+        bool open = false;
+        for (int g = g0; g < x->ngd && !open; g++) open = x->gd_id[g] == x->sk_id[i];
+        if (open) continue;
+        if (x->ngd == 64) { x->fail = true; return; }
+        x->gd_id[x->ngd++] = x->sk_id[i];
+        sp(&x->out, "  if (!sk%d) {\n", x->sk_id[i]);
+    }
+}
+static void st_range_body(SCtx *x, int a, int end, int opened, int depth, int alt, int g0) {
     if (depth > 64) { x->fail = true; return; }
     for (int k = a; k < end && !x->fail;) {
+        if (x->nsk) { st_skip_at(x, k, depth, g0); if (x->fail) return; }
         if (x->latch[k] >= 0 && k != opened) {  // a loop: [k, its last back edge]
             int le = x->latch[k] + 1;
-            if (le > end || x->nloops == 32) { x->fail = true; return; }
+            if (le > end || x->nloops == 32 || st_skip_inside(x, k, le)) { x->fail = true; return; }
             sp(&x->out, "  for (;;) {\n");
             x->loops[x->nloops][0] = k, x->loops[x->nloops][1] = le, x->nloops++;
             st_range(x, k, le, k, depth + 1);
@@ -2339,6 +2605,7 @@ static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt
         st_code(x, k);
         if (!b->term || x->consumed[k]) { k++; continue; }
         if (b->term == 3) {
+            if (x->nsk) { x->fail = true; return; }
             k = st_switch(x, k, end, depth);
             if (k < 0 || x->fail) return;
             continue;
@@ -2358,10 +2625,20 @@ static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt
                 if (k + 1 < end) x->fail = true;
                 return;
             }
+            if (st_skip_inside(x, k, end)) { x->fail = true; return; }
             sp(&x->out, "  if (!(%s)) {\n", b->cond);
             st_range(x, k + 1, end, -1, depth + 1);
             sp(&x->out, "  }\n");
             return;
+        }
+        if (t > k && (t > end || always) && !x->nsw && x->nsk < 16 && maxwell_struct_skips &&
+            (!x->nloops || t < x->loops[x->nloops - 1][1])) {  // past the region (or over code in it): a skip
+            int id = x->nskv++;
+            if (always) sp(&x->out, "  sk%d = true;\n", id);
+            else sp(&x->out, "  if (%s) sk%d = true;\n", b->cond, id);
+            x->sk_t[x->nsk] = t, x->sk_id[x->nsk] = id, x->sk_depth[x->nsk] = depth, x->nsk++;
+            k++;
+            continue;
         }
         if (t <= k || t > end || always) { x->fail = true; return; }
         SBlk *last = &x->b[t - 1];
@@ -2376,6 +2653,7 @@ static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt
             x->nloops = nl;
         }
         if (!els && alt >= 0 && t - 1 > k && last->term == 1 && !strcmp(last->cond, "true") && J == alt && !x->consumed[t - 1]) {
+            if (st_skip_inside(x, k, end)) { x->fail = true; return; }
             x->consumed[t - 1] = 1;
             sp(&x->out, "  if (!(%s)) {\n", b->cond);
             st_range_alt(x, k + 1, t, -1, depth + 1, alt);
@@ -2384,6 +2662,7 @@ static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt
             sp(&x->out, "  }\n");
             return;
         }
+        if (st_skip_inside(x, k, els ? J : t)) { x->fail = true; return; }
         sp(&x->out, "  if (!(%s)) {\n", b->cond);
         if (els) {
             x->consumed[t - 1] = 1;
@@ -2537,10 +2816,14 @@ static bool structure(Ctx *c, const uint64_t *code, size_t end, const uint8_t *l
     for (int k = 0; ok && k < nb; k++)
         if (x.b[k].term == 1 && x.b[k].tgt <= k && k > x.latch[x.b[k].tgt]) x.latch[x.b[k].tgt] = k;
     if (ok) st_range(&x, 0, nb, -1, 0);
-    ok = ok && !x.fail;
+    ok = ok && !x.fail && !x.nsk;
     if (ok) {
         free(c->body.buf);
-        c->body = x.out;
+        Str body = {0};
+        for (int i = 0; i < x.nskv; i++) sp(&body, "  bool sk%d = false;\n", i);
+        sp(&body, "%s", x.out.buf ? x.out.buf : "");
+        free(x.out.buf);
+        c->body = body;
     } else free(x.out.buf);
     free(x.skip); free(blk); free(x.b); free(x.latch); free(x.consumed);
     return ok;
@@ -2551,6 +2834,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     const ShaderKey *key = c->key;
     int stage = c->stage;
     Str body = {0};
+    info->cbwin_mask = 0;
+    if (maxwell_cb_window && (stage == STAGE_VERTEX || stage == STAGE_FRAGMENT))
+        info->cbwin_mask = info->cbuf_dynamic & info->cbuf_mask & 0x1FFF8u;  // (the game's: 3..16)
     glsl_rewrite(c, &body, c->body.buf ? c->body.buf : "");
     if (info->uses_gmem && (info->cbuf_mask & (1u << GMEM_BUFFER_INDEX))) fail(c, "cbuf %d clashes with gmem", GMEM_BUFFER_INDEX);
     if (info->cbuf_mask >> 18) fail(c, "cbuf index out of range");
@@ -2587,6 +2873,14 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if ((info->cbuf_dynamic & (1u << i)) && n < 4096) n = 4096;
         if (!n) n = 1;
         sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
+        if (info->cbwin_mask >> i & 1u) {  // (maxwell_cb_window: shader.h)
+            if (!(info->cbwin_mask & ((1u << i) - 1u)))
+                sp(&s, "layout(std140, set = %d, binding = %d) uniform CBP { uvec4 cbp_m; uvec4 cbp[64]; };\n", set,
+                   CBPATCH_BUFFER_INDEX);
+            sp(&s, "uvec4 cbw%d(uint i) { uint j = i - cbp_m.y; return cbp_m.x == %du && j < cbp_m.z ? cbp[min(j, 63u)] : cb%d[i]; }\n",
+               i, i + 1, i);
+            sp(&s, "#define cbrw%d(off) cbw%d(min((off) >> 4, %uu))[((off) >> 2) & 3u]\n", i, i, n - 1);
+        }
     }
     if (info->uses_gmem)
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
@@ -2611,9 +2905,12 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                    "uint lo = 0u, hi = gmap[%d].x; while (lo < hi) { uint m = (lo + hi) >> 1; "
                    "if (gmap[m].x <= g) lo = m + 1u; else hi = m; } if (lo == 0u) return 0xFFFFFFFFu; uvec4 e = gmap[lo - 1u]; "
                    "o = g - e.x; if (o >= e.y) return 0xFFFFFFFFu; gc_ = e.xyz; return e.z + (o >> 2); }\n", GMAP_MAX);
-        } else
-        sp(&s, "uint gfind(uint g) { uint n = gmap[%d].x; for (uint i = 0u; i < n; i++) { uint o = g - gmap[i].x; "
-               "if (g >= gmap[i].x && o < gmap[i].y) return gmap[i].z + (o >> 2); } return 0xFFFFFFFFu; }\n", GMAP_MAX);
+        } else  // (the entry last found first, as above: a single-invocation loop storing word by word searched the
+                // table for every word - TOTK's list clears, 1.5 ms of the GPU's frame)
+        sp(&s, "uvec3 gc_ = uvec3(0u, 0u, 0u);\n"
+               "uint gfind(uint g) { uint o = g - gc_.x; if (o < gc_.y) return gc_.z + (o >> 2); "
+               "uint n = gmap[%d].x; for (uint i = 0u; i < n; i++) { uvec4 e = gmap[i]; o = g - e.x; "
+               "if (g >= e.x && o < e.y) { gc_ = e.xyz; return e.z + (o >> 2); } } return 0xFFFFFFFFu; }\n", GMAP_MAX);
         if (GMISS_ON(stage)) {
             sp(&s, "layout(std430, set = %d, binding = %d) buffer GMiss { uint w[]; } gmiss_;\n", set, GMISS_BUFFER_INDEX);
             sp(&s, "uint gmiss(%s ga) { uint k = atomicAdd(gmiss_.w[0], 1u); if (k < 64u) gmiss_.w[1u + k] = uint(ga); "
@@ -2689,7 +2986,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     for (int i = 0; i < 7; i++)
         if (c->pred_used[i]) sp(&s, "  bool p%d = false;\n", i);
     if (c->uses_cc) sp(&s, "  uint cc = 0u; bool ccz = false, ccs = false;\n");
-    if (c->uses_local) sp(&s, "  uint lmem[%d]; for (int li_ = 0; li_ < %d; li_++) lmem[li_] = 0u;\n", LMEM_WORDS, LMEM_WORDS);
+    if (c->uses_local)
+        sp(&s, "  const uint lmask_ = %uu; uint lmem[%u]; for (int li_ = 0; li_ < %u; li_++) lmem[li_] = 0u;\n",
+           lmem_words(c) - 1, lmem_words(c), lmem_words(c));
     if (c->uses_shared && stage != STAGE_COMPUTE) sp(&s, "  uint smem[%d];\n", SMEM_WORDS);
     if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
     if (any_branch && c->structured) {
@@ -2739,7 +3038,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         }
     }
     sp(&s, "}\n");
-    info->msl = s.buf;
+    info->msl = glsl_with_prelude(s.buf);  // (only the helpers it calls)
     info->attr_mask = c->in_attr_mask;
     info->out_mask = stage == STAGE_FRAGMENT ? c->omap_target : c->out_attr_mask;
     free(c->body.buf);
@@ -2762,6 +3061,8 @@ ShaderInfo *maxwell_translate_bounded(const uint8_t *blob, size_t max_size, size
     c->glsl = key && key->glsl;
     const uint8_t *sph = blob + 0x30;
     const uint8_t *code = blob + 0x80;
+    if (stage != STAGE_COMPUTE)  // (CommonWord1 / 2: ShaderLocalMemoryLowSize / HighSize, bytes, 24 bits each)
+        c->lmem_sph_bytes = (*(const uint32_t *)(sph + 4) & 0xFFFFFFu) + (*(const uint32_t *)(sph + 8) & 0xFFFFFFu);
     // compute programs have neither the 0x30-byte NVN header nor an SPH: code starts at the blob
     if (stage == STAGE_COMPUTE) code = blob;
     if (stage == STAGE_FRAGMENT) {
@@ -2967,7 +3268,7 @@ ShaderInfo *maxwell_translate_bounded(const uint8_t *blob, size_t max_size, size
     for (int i = 0; i < 7; i++)
         if (c->pred_used[i]) sp(&s, "  bool p%d = false;\n", i);
     if (c->uses_cc) sp(&s, "  uint cc = 0; bool ccz = false, ccs = false;\n");
-    if (c->uses_local) sp(&s, "  uint lmem[%d] = {};\n", LMEM_WORDS);
+    if (c->uses_local) sp(&s, "  const uint lmask_ = %uu; uint lmem[%u] = {};\n", lmem_words(c) - 1, lmem_words(c));
     if (c->uses_shared) sp(&s, "  threadgroup uint smem[%d];\n", SMEM_WORDS);
     if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
     if (any_branch) {

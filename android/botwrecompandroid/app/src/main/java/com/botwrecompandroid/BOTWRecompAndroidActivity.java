@@ -74,12 +74,20 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static native void nativeImportDone(int result);
     private static native void nativeImportDetail(String what);  // (a failure's cause, shown under it)
     private native String nativeBuildRomfs(String[] paths, long[] sizes);
+    private static native boolean nativeCheckRomfs(int version, String[] paths, String versionTxt);
+    private static native boolean nativeCheckRomfsImage(int version, int fd);  // (fd: closed by the native side)
+    private static native String nativeImageLoose(int fd);
     private static native void nativeDriverPicked(String name);
     private static native void nativeModImportDone(String message);
     private static native void nativeLogFolderPicked(String name);
 
+    private static native String nativeSaveDir();  // (this version's save_0, absolute)
+    private static native void nativeSaveDone(int result, String detail);
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47,
-            REQ_DRIVER_RECOVER = 0x4c48;
+            REQ_DRIVER_RECOVER = 0x4c48, REQ_SAVE_IN = 0x4c49, REQ_SAVE_OUT = 0x4c4a, REQ_SAVE_IN_TREE = 0x4c4c,
+            REQ_DLC = 0x4c4d;
+    private native String nativeBuildDlc(String[] paths, long[] sizes);
+    private static native void nativeDlcDone(int result, String detail);
     private static BOTWRecompAndroidActivity self;
     private WatchMapServer watchMap;
 
@@ -97,6 +105,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             copyIfChanged(new File(games, "botwgame.so"), new File(res, "botwgame.so"));
             copyIfChanged(new File(games, "botwgame.so.id"), new File(res, "botwgame.so.id"));
             setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir);
+            setenv("LARECOMP_LAST_EXIT", lastExit());
             File gen = new File(getFilesDir(), "gen");
             unpackGen(gen);
             setenv("LARECOMP_GEN_DIR", gen.getAbsolutePath());
@@ -223,8 +232,23 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         for (String n : names) copyAssetTree(from + "/" + n, new File(to, n));
     }
 
+    // ---- the game code build's foreground service (BuildService; runtime/ui/launcher.mm build_game_code)
+    public static void buildServiceStart() {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            self.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            self.runOnUiThread(() -> self.requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 0x4c4b));
+        BuildService.start(self);
+    }
+
+    public static void buildServiceStop() { BuildService.stop(self); }
+
+    public static void buildServiceProgress(int percent) { BuildService.progress(self, percent); }
+
     // ---- pickers (called from the start screen, on SDL's thread)
+    private static volatile boolean importInPlace;  // (the next game folder picked: its romfs/ used where it is)
+
     public static void pickGameFolder() {
+        importInPlace = false;
         self.runOnUiThread(() -> {
             try {
                 self.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_GAME);
@@ -233,6 +257,43 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 nativeImportDone(1);
             }
         });
+    }
+
+    // Game files used in place (Game Files > Game files: Use them in place): the native side reads the picked romfs/ by
+    // its path (runtime/services/fs.c, romfs.link), which Android allows only with the access to all files. Without it,
+    // the system's page for it opens and the setup waits for the folder to be chosen again.
+    public static void pickGameFolderInPlace() {
+        if (android.os.Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
+            self.runOnUiThread(() -> {
+                try {
+                    self.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:" + self.getPackageName())));
+                } catch (Exception e) {
+                    self.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                }
+            });
+            nativeImportDetail("Allow BOTWRecompAndroid to access all files (the page Android just opened), then choose the folder again");
+            nativeImportDone(5);
+            return;
+        }
+        pickGameFolder();
+        importInPlace = true;
+    }
+
+    // A folder the file picker gave (its document id: "primary:Download/BOTW", "1A2B-3C4D:Games/BOTW", "raw:/storage/...")
+    // as a path the native side can open, or null (a cloud provider, or no such folder)
+    private static String documentPath(String id) {
+        if (id == null) return null;
+        String path;
+        if (id.startsWith("raw:")) path = id.substring(4);
+        else {
+            int c = id.indexOf(':');
+            if (c < 0) return null;
+            String vol = id.substring(0, c), rel = id.substring(c + 1);
+            File base = "primary".equalsIgnoreCase(vol) ? android.os.Environment.getExternalStorageDirectory() : new File("/storage/" + vol);
+            path = rel.isEmpty() ? base.getPath() : new File(base, rel).getPath();
+        }
+        return new File(path).isDirectory() ? path : null;
     }
 
     public static void pickDriver() {
@@ -321,6 +382,22 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             }, "driver").start();
             return;
         }
+        if (req == REQ_DLC) {
+            Uri tree = result == Activity.RESULT_OK && data != null ? data.getData() : null;
+            if (tree == null) nativeDlcDone(DLC_CANCELLED, "");
+            else new Thread(() -> importDlc(tree), "dlc").start();
+            return;
+        }
+        if (req == REQ_SAVE_IN || req == REQ_SAVE_OUT || req == REQ_SAVE_IN_TREE) {
+            Uri u = result == Activity.RESULT_OK && data != null ? data.getData() : null;
+            if (u == null) nativeSaveDone(SAVE_CANCELLED, "");
+            else new Thread(() -> {
+                if (req == REQ_SAVE_IN) importSaveZip(u);
+                else if (req == REQ_SAVE_IN_TREE) importSave(u);
+                else exportSaveZip(u);
+            }, "saves").start();
+            return;
+        }
         if (req == REQ_LOG) {
             Uri tree = result == Activity.RESULT_OK && data != null ? data.getData() : null;
             if (tree != null) {
@@ -372,6 +449,36 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     }
 
     // The folder's name for the settings page ("Download/BOTWRecomp"); "" with none
+    public static String appVersion() {  // versionName ("0.2.0-beta"), for the start screen's corner
+        try {
+            return self.getPackageManager().getPackageInfo(self.getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // A file the SDL dialog picked, as the content:// URI it hands back (the start screen's Import fonts,
+    // runtime/ui/launcher.mm import_fonts): its name - the URI ends in a document id - and a copy of it at dst, an
+    // absolute path (fopen can't open the URI; issue #122). "" / false when it can't be read.
+    public static String documentName(String uri) {
+        try (Cursor c = self.getContentResolver().query(Uri.parse(uri), new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
+        } catch (Exception ignored) {
+        }
+        return "";
+    }
+
+    public static boolean copyDocument(String uri, String dst) {
+        try (InputStream in = self.getContentResolver().openInputStream(Uri.parse(uri))) {
+            if (in == null) return false;
+            copy(in, new File(dst));
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "copy " + uri + " to " + dst, e);
+            return false;
+        }
+    }
+
     public static String logFolderName() {
         Uri tree = logTree();
         if (tree == null) return "";
@@ -407,6 +514,299 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         }
     }
 
+    // ---- saves (the start screen's Settings > Saves): this version's save_0 lives in Android/data/, out of file managers'
+    // reach (issue #49: edited there for cheats, the changes didn't stick), and players bring saves from emulators
+    // (issue #40, the same layout: slots 0/ to 5/ with game_data.sav, option.sav). Export writes it as one .zip where
+    // the player saves it; import makes the save in a .zip - or, from a folder, an emulator's - this version's, the one
+    // before kept beside it.
+    private static final int SAVE_IMPORTED = 0, SAVE_EXPORTED = 1, SAVE_CANCELLED = 2, SAVE_NONE = 3, SAVE_FAILED = 4;
+
+    public static void pickSaveImport() {
+        pick(REQ_SAVE_IN, () -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");  // (zip types vary by provider: application/zip, application/x-zip-compressed...)
+            return i;
+        });
+    }
+
+    public static void pickSaveImportFolder() { pick(REQ_SAVE_IN_TREE, () -> new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)); }
+
+    public static void pickSaveExport() {
+        pick(REQ_SAVE_OUT, () -> {
+            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("application/zip");
+            i.putExtra(Intent.EXTRA_TITLE, saveZipName());
+            return i;
+        });
+    }
+
+    private static void pick(int req, java.util.function.Supplier<Intent> intent) {
+        self.runOnUiThread(() -> {
+            try {
+                self.startActivityForResult(intent.get(), req);
+            } catch (Exception e) {
+                Log.e(TAG, "save picker", e);
+                nativeSaveDone(SAVE_FAILED, e.toString());
+            }
+        });
+    }
+
+    // "BOTW 1.8.2 save 2026-10-27 09.40.zip": the game version from the save's folder (v182/save/save_0; 1.0.0's has none)
+    private static String saveZipName() {
+        String dir = nativeSaveDir(), ver = "1.0.0";
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("/v(\\d)(\\d)(\\d)/save/").matcher(dir);
+        if (m.find()) ver = m.group(1) + "." + m.group(2) + "." + m.group(3);
+        return "BOTW " + ver + " save " +
+                new java.text.SimpleDateFormat("yyyy-MM-dd HH.mm", java.util.Locale.ROOT).format(new java.util.Date()) + ".zip";
+    }
+
+    // The new save (tmp, complete) in place of this version's, that one kept as save_0.before-import[-n]
+    private void installSave(File tmp) throws IOException {
+        File dst = new File(nativeSaveDir()), parent = dst.getParentFile();
+        File keep = new File(parent, dst.getName() + ".before-import");
+        for (int n = 2; keep.exists() && n < 100; n++) keep = new File(parent, dst.getName() + ".before-import-" + n);
+        boolean had = dst.exists();
+        if (had && !dst.renameTo(keep)) throw new IOException("can't move the current save aside");
+        if (!tmp.renameTo(dst)) {
+            if (had) keep.renameTo(dst);
+            throw new IOException("can't put the imported save in place");
+        }
+        Log.i(TAG, "save imported into " + dst + (had ? ", the one before kept as " + keep.getName() : ""));
+        nativeSaveDone(SAVE_IMPORTED, had ? keep.getName() : "");
+    }
+
+    private File importTmp() {
+        File dst = new File(nativeSaveDir());
+        File tmp = new File(dst.getParentFile(), dst.getName() + ".importing");
+        deleteTree(tmp);
+        return tmp;
+    }
+
+    // A .zip's save: the folder (in it) holding a slot folder 0/ to 7/ with game_data.sav - at the zip's top (one
+    // exported here) or below it (a zipped emulator folder). Read twice: the entries' names, then that folder's files.
+    private void importSaveZip(Uri u) {
+        try {
+            String prefix = null;
+            java.util.regex.Pattern slot = java.util.regex.Pattern.compile("(?:^|.*/)[0-7]/game_data\\.sav$");
+            try (java.util.zip.ZipInputStream z = new java.util.zip.ZipInputStream(getContentResolver().openInputStream(u))) {
+                for (java.util.zip.ZipEntry e; (e = z.getNextEntry()) != null; ) {
+                    String n = e.getName().replace('\\', '/');
+                    if (!slot.matcher(n).matches()) continue;
+                    String p = n.substring(0, n.length() - "0/game_data.sav".length());
+                    if (prefix == null || p.length() < prefix.length()) prefix = p;
+                }
+            }
+            if (prefix == null) {
+                nativeSaveDone(SAVE_NONE, "");
+                return;
+            }
+            File tmp = importTmp();
+            String root = tmp.getCanonicalPath() + File.separator;
+            int files = 0;
+            try (java.util.zip.ZipInputStream z = new java.util.zip.ZipInputStream(getContentResolver().openInputStream(u))) {
+                for (java.util.zip.ZipEntry e; (e = z.getNextEntry()) != null; ) {
+                    String n = e.getName().replace('\\', '/');
+                    if (!n.startsWith(prefix) || n.length() == prefix.length()) continue;
+                    File f = new File(tmp, n.substring(prefix.length()));
+                    if (!f.getCanonicalPath().startsWith(root)) throw new IOException("a bad path in the zip: " + n);
+                    if (e.isDirectory()) {
+                        f.mkdirs();
+                        continue;
+                    }
+                    f.getParentFile().mkdirs();
+                    try (OutputStream o = new FileOutputStream(f)) {
+                        byte[] buf = new byte[1 << 16];
+                        for (int r; (r = z.read(buf)) > 0; ) o.write(buf, 0, r);
+                    }
+                    files++;
+                }
+            }
+            Log.i(TAG, "save zip: " + files + " files from \"" + prefix + "\"");
+            installSave(tmp);
+        } catch (Exception e) {
+            Log.e(TAG, "save import (zip)", e);
+            nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    private void zipTree(java.util.zip.ZipOutputStream z, File dir, String prefix) throws IOException {
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        java.util.Arrays.sort(kids);
+        for (File k : kids) {
+            String n = prefix + k.getName();
+            // (a file another app put in the save - a file manager with root, a save editor: #77 - keeps its owner,
+            // and this app can't open it)
+            if (!k.canRead())
+                throw new IOException(n + " can't be read: another app put it there, and it keeps that app's owner. " +
+                        "Bring a save in with Import saves instead (the folder there now is kept beside it).");
+            if (k.isDirectory()) {
+                z.putNextEntry(new java.util.zip.ZipEntry(n + "/"));
+                z.closeEntry();
+                zipTree(z, k, n + "/");
+                continue;
+            }
+            z.putNextEntry(new java.util.zip.ZipEntry(n));
+            try (InputStream in = new FileInputStream(k)) {
+                byte[] buf = new byte[1 << 16];
+                for (int r; (r = in.read(buf)) > 0; ) z.write(buf, 0, r);
+            }
+            z.closeEntry();
+        }
+    }
+
+    private void exportSaveZip(Uri u) {
+        try {
+            File src = new File(nativeSaveDir());
+            if (!src.isDirectory()) {
+                nativeSaveDone(SAVE_NONE, "");
+                return;
+            }
+            try (OutputStream o = getContentResolver().openOutputStream(u, "wt")) {
+                if (o == null) throw new IOException("can't write there");
+                java.util.zip.ZipOutputStream z = new java.util.zip.ZipOutputStream(o);
+                zipTree(z, src, "");  // (the slots at the zip's top, as the save folder holds them)
+                z.finish();
+            }
+            String name = u.getLastPathSegment();
+            try (Cursor c = getContentResolver().query(u, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                if (c != null && c.moveToFirst()) name = c.getString(0);
+            } catch (Exception ignored) {
+            }
+            Log.i(TAG, "save exported from " + src + " as " + name);
+            nativeSaveDone(SAVE_EXPORTED, name);
+        } catch (Exception e) {
+            Log.e(TAG, "save export", e);
+            nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    private Doc treeRoot(Uri tree) {
+        Doc root = new Doc();
+        root.id = DocumentsContract.getTreeDocumentId(tree);
+        root.dir = true;
+        return root;
+    }
+
+    // The folder holding a save: a slot folder (0/ to 7/) with game_data.sav in it - the picked folder or a few levels
+    // below it (an emulator's save path, a save_0/ inside, an exported folder's parent)
+    private Doc findSave(Uri tree, Doc dir, int depth) {
+        List<Doc> kids = children(tree, dir.id);
+        for (Doc k : kids)
+            if (k.dir && k.name != null && k.name.matches("[0-7]") && named(children(tree, k.id), "game_data.sav") != null)
+                return dir;
+        if (depth >= 4) return null;
+        for (Doc k : kids) {
+            if (!k.dir) continue;
+            Doc s = findSave(tree, k, depth + 1);
+            if (s != null) return s;
+        }
+        return null;
+    }
+
+    private void copySaveTree(Uri tree, Doc dir, File to) throws IOException {
+        if (!to.mkdirs() && !to.isDirectory()) throw new IOException("can't make " + to);
+        ContentResolver cr = getContentResolver();
+        for (Doc k : children(tree, dir.id)) {
+            File dst = new File(to, k.name);
+            if (k.dir) {
+                copySaveTree(tree, k, dst);
+                continue;
+            }
+            try (InputStream in = cr.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, k.id));
+                 OutputStream o = new FileOutputStream(dst)) {
+                byte[] buf = new byte[1 << 16];
+                for (int r; (r = in.read(buf)) > 0; ) o.write(buf, 0, r);
+            }
+        }
+    }
+
+    private void importSave(Uri tree) {
+        try {
+            Doc s = findSave(tree, treeRoot(tree), 0);
+            if (s == null) {
+                nativeSaveDone(SAVE_NONE, "");
+                return;
+            }
+            File tmp = importTmp();
+            copySaveTree(tree, s, tmp);  // (all of it first: a copy cut short leaves the save as it was)
+            installSave(tmp);
+        } catch (Exception e) {
+            Log.e(TAG, "save import", e);
+            nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    // ---- the DLC (the start screen's Settings > DLC; runtime/services/fs.c open_aoc_storage): the Expansion Pass's data
+    // is the RomFS of its larger pack (01007EF00011F001: the Master Trials' and the Champions' Ballad's content, 7,094
+    // files); the other (01007EF00011F002) holds System/AocVersion.txt alone, the Ballad's unlock. The picked folder's
+    // pack - System/AocVersion.txt with Pack/ beside it, the picked folder or a few levels below - becomes dlc/aoc.bin
+    // as the game's own romfs.bin is made (nativeBuildDlc), the movies loose beside it.
+    private static final int DLC_INSTALLED = 0, DLC_CANCELLED = 2, DLC_NONE = 3, DLC_FAILED = 4, DLC_BALLAD_ONLY = 5;
+
+    public static void pickDlcFolder() {
+        self.runOnUiThread(() -> {
+            try {
+                self.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_DLC);
+            } catch (Exception e) {
+                Log.e(TAG, "DLC folder picker", e);
+                nativeDlcDone(DLC_FAILED, e.toString());
+            }
+        });
+    }
+
+    private boolean dlcBalladOnly;
+
+    // The pack's romfs: a folder with System/AocVersion.txt and Pack/ (the game's own romfs has System/Version.txt)
+    private Doc findDlc(Uri tree, Doc dir, int depth) {
+        List<Doc> kids = children(tree, dir.id);
+        Doc sys = named(kids, "System"), pack = named(kids, "Pack");
+        if (sys != null && sys.dir && named(children(tree, sys.id), "AocVersion.txt") != null) {
+            if (pack != null && pack.dir) return dir;
+            dlcBalladOnly = true;  // (the Ballad's pack: its unlock only)
+        }
+        if (depth >= 4 || pack != null) return null;  // (a romfs: not into its ~7,000 files)
+        for (Doc k : kids) {
+            if (!k.dir) continue;
+            Doc d = findDlc(tree, k, depth + 1);
+            if (d != null) return d;
+        }
+        return null;
+    }
+
+    private void importDlc(Uri tree) {
+        try {
+            dlcBalladOnly = false;
+            Doc d = findDlc(tree, treeRoot(tree), 0);
+            if (d == null) {
+                nativeDlcDone(dlcBalladOnly ? DLC_BALLAD_ONLY : DLC_NONE, "");
+                return;
+            }
+            romfsTree = tree;
+            romfsFiles.clear();
+            romfsPaths.clear();
+            listFiles(tree, d, "");
+            Log.i(TAG, "DLC: " + romfsFiles.size() + " files");
+            long[] sizes = new long[romfsFiles.size()];
+            for (int i = 0; i < sizes.length; i++) sizes[i] = romfsFiles.get(i).size;
+            String failed;
+            try {
+                failed = nativeBuildDlc(romfsPaths.toArray(new String[0]), sizes);
+            } finally {
+                closeRomfsClient();
+                romfsFiles.clear();
+                romfsPaths.clear();
+            }
+            if (failed != null) nativeDlcDone(DLC_FAILED, failed);
+            else nativeDlcDone(DLC_INSTALLED, Integer.toString(sizes.length));
+        } catch (Exception e) {
+            Log.e(TAG, "DLC import", e);
+            nativeDlcDone(DLC_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
     // A document in the picked tree: id, name, folder or not, size
     private static final class Doc {
         String id, name;
@@ -414,8 +814,13 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         long size;
     }
 
+    // A folder's entries, each name once: a Huawei phone's file provider listed every file of the game twice (issue
+    // #31: 79,356 files, twice 1.0.0's, a 28.84 GB image of a 14.44 GB folder, and the game then failed to allocate)
+    private int listedTwice;  // (entries left out, since importGame began)
+
     private List<Doc> children(Uri tree, String id) {
         List<Doc> out = new ArrayList<>();
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
         Uri u = DocumentsContract.buildChildDocumentsUriUsingTree(tree, id);
         String[] cols = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                          DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE};
@@ -426,6 +831,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 d.name = c.getString(1);
                 d.dir = DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2));
                 d.size = c.isNull(3) ? -1 : c.getLong(3);  // (-1: the provider doesn't say - listFiles refuses it)
+                if (d.name != null && !seen.add(d.name)) { listedTwice++; continue; }
                 out.add(d);
             }
         }
@@ -440,13 +846,16 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     // exefs: the folder with main and main.npdm; romfs: the folder with Pack - in the picked folder or a few
     // levels below it (as runtime/ui/launcher.mm find_game)
     private Doc exefs, romfs;
+    // or a romfs.bin made already (on a PC: hactool's --romfs, from the game's own files) - one file to copy or use in
+    // place instead of ~41,000 (a phone's file provider choked on them), and the folder that holds it
+    private Doc romfsImage, romfsImageDir;
     private boolean packages;
     // A game code built already (botwgame.so with its .id, and .game: the game version it's for - a package made on a
     // PC from the same files), used instead of building it on the phone when it's for this version and this app
     private Doc preLib, preId, preGame;
 
     private void find(Uri tree, Doc dir, int depth) {
-        if (depth > 4 || (exefs != null && romfs != null)) return;
+        if (depth > 4 || (exefs != null && (romfs != null || romfsImage != null))) return;
         List<Doc> kids = children(tree, dir.id);
         if (preLib == null && named(kids, "botwgame.so") != null && named(kids, "botwgame.so.id") != null &&
             named(kids, "botwgame.so.game") != null) {
@@ -456,10 +865,19 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         }
         if (exefs == null && named(kids, "main") != null && named(kids, "main.npdm") != null) exefs = dir;
         Doc rc = named(kids, "Pack");
-        if (romfs == null && rc != null && rc.dir) romfs = dir;
+        boolean anyRomfs = rc != null && rc.dir;
+        if (romfs == null && anyRomfs) {  // (the game's has System/Version.txt; the DLC's, also with Pack, has
+            Doc sys = named(kids, "System");  //  AocVersion.txt there instead - taken for the game's: issue #87)
+            if (sys != null && sys.dir && named(children(tree, sys.id), "Version.txt") != null) romfs = dir;
+        }
+        Doc ri = named(kids, "romfs.bin");
+        if (romfsImage == null && ri != null && !ri.dir) {
+            romfsImage = ri;
+            romfsImageDir = dir;
+        }
         // (romfs/'s own folders hold no exefs: through the file provider, listing their ~40000 files took long enough
         // for the setup to look stuck - issue #17)
-        if (dir == romfs || dir == exefs) return;
+        if (anyRomfs || dir == exefs) return;
         for (Doc k : kids) {
             String n = k.name == null ? "" : k.name.toLowerCase();
             if (n.endsWith(".nsp") || n.endsWith(".xci") || n.endsWith(".nca") || n.endsWith(".nsz") || n.endsWith(".xcz")) packages = true;
@@ -573,14 +991,15 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         int result;
         nativeImportLooking();
         try {
-            exefs = romfs = null;
+            exefs = romfs = romfsImage = romfsImageDir = null;
             preLib = preId = preGame = null;
+            listedTwice = 0;
             packages = false;
             Doc root = new Doc();
             root.id = DocumentsContract.getTreeDocumentId(tree);
             root.dir = true;
             find(tree, root, 0);
-            if (exefs == null || romfs == null) {
+            if (exefs == null || (romfs == null && romfsImage == null)) {
                 nativeImportDone(packages ? 3 : 2);
                 return;
             }
@@ -595,11 +1014,23 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 nativeImportDone(4);
                 return;
             }
+            if (romfsImage != null) {  // (a romfs.bin beside exefs/: taken over a romfs/ folder, one file instead of thousands)
+                importImage(tree, version);
+                return;
+            }
             // (listed before nativeImportBegin removes an earlier setup: a folder that can't be used leaves it alone)
             romfsTree = tree;
             romfsFiles.clear();
             romfsPaths.clear();
             listFiles(tree, romfs, "");
+            if (listedTwice > 0) Log.w(TAG, "the file provider listed " + listedTwice + " entries twice: once each kept");
+            int vt = romfsPaths.indexOf("System/Version.txt");  // (its version against the exefs/'s, and its file count)
+            if (!nativeCheckRomfs(version, romfsPaths.toArray(new String[0]), vt >= 0 ? readText(tree, romfsFiles.get(vt)) : "")) {
+                romfsFiles.clear();
+                romfsPaths.clear();
+                nativeImportDone(6);
+                return;
+            }
             long romfsBytes = 0;
             for (Doc d : romfsFiles) romfsBytes = Math.addExact(romfsBytes, d.size);
             String name = DocumentsContract.getTreeDocumentId(tree);
@@ -614,6 +1045,23 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 Log.i(TAG, "game code from the picked folder: " + preLib.size + " bytes");
             }
             nativeImportProgress(copied, total);
+            if (importInPlace) {  // the romfs/ where it is: its path noted, no image built (runtime/services/fs.c)
+                String at = documentPath(romfs.id);
+                romfsFiles.clear();
+                romfsPaths.clear();
+                if (at == null || !new File(at, "System/Version.txt").canRead()) {
+                    nativeImportDetail("this folder can't be used in place (" + (at == null ? romfs.id : at) +
+                            "): choose Copy them, or a folder on the phone's storage");
+                    nativeImportDone(5);
+                    return;
+                }
+                try (OutputStream o = new FileOutputStream(new File(games, "romfs.link"))) {
+                    o.write((at + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                Log.i(TAG, "game data used in place: " + at);
+                nativeImportDone(0);
+                return;
+            }
             long[] sizes = new long[romfsFiles.size()];
             for (int i = 0; i < sizes.length; i++) sizes[i] = romfsFiles.get(i).size;
             romfsOpenError = null;
@@ -638,6 +1086,81 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             result = 5;
         }
         nativeImportDone(result);
+    }
+
+    // A document's data as a descriptor the native side reads and closes
+    private int docFd(Uri tree, Doc d) throws IOException {
+        android.os.ParcelFileDescriptor pfd =
+                getContentResolver().openFileDescriptor(DocumentsContract.buildDocumentUriUsingTree(tree, d.id), "r");
+        if (pfd == null) throw new IOException("Could not open " + d.name);
+        return pfd.detachFd();
+    }
+
+    // The game files from exefs/ and a romfs.bin made already (importGame found them): the image checked from its own
+    // tables (its version against exefs/'s, its file count), then copied whole - or, used in place, its path noted in
+    // romfs.link (runtime/services/fs.c opens it) - and the movies taken out of it (opened by path: hle/movie.c).
+    // Called from importGame's try: its exceptions end the setup there. (nativeImportDone here on every other end.)
+    private void importImage(Uri tree, int version) throws IOException {
+        if (!nativeCheckRomfsImage(version, docFd(tree, romfsImage))) {
+            nativeImportDone(6);
+            return;
+        }
+        String at = null;
+        if (importInPlace) {  // (checked before nativeImportBegin removes an earlier setup)
+            String dir = documentPath(romfsImageDir.id);
+            at = dir == null ? null : new File(dir, romfsImage.name).getPath();
+            if (at == null || !new File(at).canRead()) {
+                nativeImportDetail("this romfs.bin can't be used in place (" + (at == null ? romfsImage.id : at) +
+                        "): choose Copy them, or a folder on the phone's storage");
+                nativeImportDone(5);
+                return;
+            }
+        }
+        String name = DocumentsContract.getTreeDocumentId(tree);
+        File games = new File(nativeImportBegin(name.substring(name.lastIndexOf(':') + 1), version));
+        copied = reported = 0;
+        total = Math.addExact(at == null ? Math.max(romfsImage.size, 0) : 0, treeBytes(tree, exefs));
+        copyTree(tree, exefs, new File(games, "exefs"));
+        if (preLib != null && Integer.toString(version).equals(readText(tree, preGame).trim())) {
+            copyDoc(tree, preId, new File(games, "botwgame.so.id"));
+            copyDoc(tree, preLib, new File(games, "botwgame.so"));
+            Log.i(TAG, "game code from the picked folder: " + preLib.size + " bytes");
+        }
+        nativeImportProgress(copied, total);
+        int movies;
+        if (at != null) {
+            try (OutputStream o = new FileOutputStream(new File(games, "romfs.link"))) {
+                o.write((at + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            Log.i(TAG, "game data used in place: " + at);
+            movies = docFd(tree, romfsImage);
+        } else {
+            File img = new File(games, "romfs.bin");
+            try (InputStream in = getContentResolver().openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, romfsImage.id));
+                 OutputStream o = new FileOutputStream(img)) {
+                if (in == null) throw new IOException("Could not open " + romfsImage.name);
+                byte[] buf = new byte[1 << 20];
+                for (int r; (r = in.read(buf)) > 0; ) {
+                    o.write(buf, 0, r);
+                    copied += r;
+                    if (copied - reported > (16 << 20)) {
+                        reported = copied;
+                        nativeImportProgress(copied, total);
+                    }
+                }
+            }
+            if (romfsImage.size >= 0 && img.length() != romfsImage.size)
+                throw new IOException("romfs.bin copied " + img.length() + " of its " + romfsImage.size + " bytes: check free storage");
+            Log.i(TAG, "game data copied: " + img.length() + " bytes");
+            movies = android.os.ParcelFileDescriptor.open(img, android.os.ParcelFileDescriptor.MODE_READ_ONLY).detachFd();
+        }
+        nativeImportProgress(total, total);
+        String failed = nativeImageLoose(movies);
+        if (failed != null) {
+            nativeImportDone(5);
+            return;
+        }
+        nativeImportDone(0);
     }
 
     private void importDriver(Uri f) {
@@ -741,6 +1264,27 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             copy(in, dst);
         }
         Log.i(TAG, "copied " + src + " -> " + dst);
+    }
+
+    // How the previous run ended (ApplicationExitInfo), for the log: a setup that vanished with nothing in the log was
+    // the system closing the app - for memory or something else (issue #18). "" when unknown.
+    private static final String[] EXIT_REASONS = {"unknown", "exit self", "signaled", "low memory", "crash", "native crash",
+            "not responding", "initialization failure", "permission change", "excessive resource usage", "user requested",
+            "user stopped", "dependency died", "other", "freezer", "package state change", "package updated"};
+
+    private String lastExit() {
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+            List<android.app.ApplicationExitInfo> l = am.getHistoricalProcessExitReasons(getPackageName(), 0, 1);
+            if (l.isEmpty()) return "";
+            android.app.ApplicationExitInfo e = l.get(0);
+            int r = e.getReason();
+            return String.format(java.util.Locale.ROOT, "%s (reason %d, status %d) at %tF %<tT, pss %d MB, rss %d MB: %s",
+                    r >= 0 && r < EXIT_REASONS.length ? EXIT_REASONS[r] : "?", r, e.getStatus(), e.getTimestamp(),
+                    e.getPss() / 1024, e.getRss() / 1024, e.getDescription());
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private static void setenv(String name, String value) throws ErrnoException {
@@ -849,8 +1393,21 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     // version's mods/): romfs/ and the notes (.txt) beside it. Answers nativeModImportDone "1|<name>" imported,
     // "0|<reason>" failed, "2|" cancelled.
     private static String modsDir;
+    private static volatile boolean modInPlace;  // (its folder noted in <dir>/<name>.link, not copied: runtime/mods.c)
+
+    public static void importModInPlace(String dir) {
+        if (android.os.Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
+            self.runOnUiThread(() -> self.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:" + self.getPackageName()))));
+            nativeModImportDone("0|Allow BOTWRecompAndroid to access all files (the page Android just opened), then import the mod again.");
+            return;
+        }
+        importMod(dir);
+        modInPlace = true;
+    }
 
     public static void importMod(String dir) {
+        modInPlace = false;
         modsDir = dir;
         self.runOnUiThread(() -> {
             try {
@@ -911,6 +1468,18 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             if (name.length() > 80) name = name.substring(0, 80);
             File mods = new File(modsDir != null ? modsDir : new File(getExternalFilesDir(null), "mods").getPath());
             if (!mods.isDirectory() && !mods.mkdirs()) throw new IOException("Could not create the mods folder.");
+            if (modInPlace) {  // its folder where it is: noted, not copied
+                String at = documentPath(mod.id);
+                if (at == null || !new File(at, "romfs").isDirectory())
+                    throw new IOException("This folder can't be used in place; choose Game files: Copy them, or a folder on the phone's storage.");
+                deleteTree(new File(mods, name));  // (a copy imported before: the noted folder from now on)
+                try (OutputStream o = new FileOutputStream(new File(mods, name + ".link"))) {
+                    o.write((at + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                nativeModImportDone("1|" + name);
+                return;
+            }
+            new File(mods, name + ".link").delete();  // (one noted before: the copy from now on)
             stage = new File(mods, ".import-" + name);
             deleteTree(stage);
             Doc romfsDoc = named(children(tree, mod.id), "romfs");

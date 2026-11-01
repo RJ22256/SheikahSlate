@@ -15,9 +15,12 @@
 #include <libavutil/time.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
+#include <dirent.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <unistd.h>
 
 #include "../hle.h"
 #include "../settings.h"
@@ -101,7 +104,7 @@ HLE_FUNC("_ZNK5movie9MediaData8FindRectEPKcPiS3_S3_S3_", md_find_rect) {
     c->x[0] = 1;
 }
 
-// ------------------------------------------------------------------ Buffer (opaque, <= 0x40 bytes)
+// ------------------------------------------------------------------ Buffer (8-byte handle in the 2017 SDK, 0x40 in 2019's)
 typedef struct {
     uint64_t base, capacity;
     int32_t offset, size;
@@ -109,34 +112,56 @@ typedef struct {
     uint32_t u32;
     int32_t i32;
 } MBuffer;
-_Static_assert(sizeof(MBuffer) <= 0x40, "movie::Buffer size");
-#define BUF(x) ((MBuffer *)(uintptr_t)(x))
 
-HLE_FUNC("_ZN5movie6BufferC1Ev", buf_ctor) { memset(BUF(c->x[0]), 0, sizeof(MBuffer)); }
+static MBuffer *mbuf(uint64_t guest) {
+    MBuffer **p = (MBuffer **)(uintptr_t)guest;
+    if (!*p) *p = calloc(1, sizeof(MBuffer));
+    return *p;
+}
+#define BUF(x) mbuf(x)
+
+HLE_FUNC("_ZN5movie6BufferC1Ev", buf_ctor) { *(MBuffer **)(uintptr_t)c->x[0] = calloc(1, sizeof(MBuffer)); }
+HLE_FUNC("_ZN5movie6BufferC2Ev", buf_ctor_c2) { buf_ctor(c); }
 HLE_FUNC("_ZN5movie6BufferC1EPvm", buf_ctor_ext) {
-    MBuffer *b = BUF(c->x[0]);
-    memset(b, 0, sizeof *b);
+    MBuffer *b = calloc(1, sizeof(MBuffer));
     b->base = c->x[1];
     b->capacity = c->x[2];
     b->size = (int32_t)c->x[2];
+    *(MBuffer **)(uintptr_t)c->x[0] = b;
 }
+HLE_FUNC("_ZN5movie6BufferC2EPvm", buf_ctor_ext_c2) { buf_ctor_ext(c); }
 HLE_FUNC("_ZN5movie6BufferC1Em", buf_ctor_alloc) {
-    MBuffer *b = BUF(c->x[0]);
-    memset(b, 0, sizeof *b);
+    MBuffer *b = calloc(1, sizeof(MBuffer));
     b->base = (uint64_t)(uintptr_t)calloc(1, c->x[1] + 64);
     b->capacity = c->x[1];
     b->size = (int32_t)c->x[1];
+    *(MBuffer **)(uintptr_t)c->x[0] = b;
 }
-HLE_FUNC("_ZN5movie6BufferC1ERKS0_", buf_copy) { *BUF(c->x[0]) = *BUF(c->x[1]); }
+HLE_FUNC("_ZN5movie6BufferC2Em", buf_ctor_alloc_c2) { buf_ctor_alloc(c); }
+HLE_FUNC("_ZN5movie6BufferC1ERKS0_", buf_copy) {
+    MBuffer *b = calloc(1, sizeof(MBuffer));
+    *b = *BUF(c->x[1]);
+    *(MBuffer **)(uintptr_t)c->x[0] = b;
+}
+HLE_FUNC("_ZN5movie6BufferC2ERKS0_", buf_copy_c2) { buf_copy(c); }
 HLE_FUNC("_ZN5movie6BufferaSERKS0_", buf_assign) { *BUF(c->x[0]) = *BUF(c->x[1]); }
-HLE_FUNC("_ZN5movie6BufferD1Ev", buf_dtor) { (void)c; }
+HLE_FUNC("_ZN5movie6BufferD1Ev", buf_dtor) {
+    free(*(MBuffer **)(uintptr_t)c->x[0]);
+    *(uint64_t *)(uintptr_t)c->x[0] = 0;
+}
+HLE_FUNC("_ZN5movie6BufferD2Ev", buf_dtor_d2) { buf_dtor(c); }
 HLE_FUNC("_ZNK5movie6Buffer4BaseEv", buf_base) { c->x[0] = BUF(c->x[0])->base; }
+HLE_FUNC("_ZNK5movie6Buffer4DataEv", buf_data) { MBuffer *b = BUF(c->x[0]); c->x[0] = b->base + (uint64_t)(b->offset > 0 ? b->offset : 0); }
 HLE_FUNC("_ZNK5movie6Buffer4SizeEv", buf_size) { c->x[0] = (uint32_t)BUF(c->x[0])->size; }
 HLE_FUNC("_ZNK5movie6Buffer6OffsetEv", buf_offset) { c->x[0] = (uint32_t)BUF(c->x[0])->offset; }
+HLE_FUNC("_ZNK5movie6Buffer8CapacityEv", buf_capacity) { c->x[0] = BUF(c->x[0])->capacity; }
 // (BOTW's 2017 SDK: the same, not const)
+HLE_FUNC("_ZN5movie6Buffer4BaseEv", buf_base_old) { buf_base(c); }
+HLE_FUNC("_ZN5movie6Buffer4DataEv", buf_data_old) { buf_data(c); }
 HLE_FUNC("_ZN5movie6Buffer4SizeEv", buf_size_old) { buf_size(c); }
 HLE_FUNC("_ZN5movie6Buffer6OffsetEv", buf_offset_old) { buf_offset(c); }
-HLE_FUNC("_ZNK5movie6Buffer8CapacityEv", buf_capacity) { c->x[0] = BUF(c->x[0])->capacity; }
+HLE_FUNC("_ZN5movie6Buffer8CapacityEv", buf_capacity_old) { buf_capacity(c); }
+HLE_FUNC("_ZN5movie6Buffer11SetCapacityEm", buf_set_cap) { BUF(c->x[0])->capacity = c->x[1]; }
 HLE_FUNC("_ZN5movie6Buffer8SetRangeEii", buf_set_range) { BUF(c->x[0])->offset = (int32_t)c->x[1]; BUF(c->x[0])->size = (int32_t)c->x[2]; }
 HLE_FUNC("_ZN5movie6Buffer18SetDataAndCapacityEPvm", buf_set_data) {
     MBuffer *b = BUF(c->x[0]);
@@ -145,9 +170,13 @@ HLE_FUNC("_ZN5movie6Buffer18SetDataAndCapacityEPvm", buf_set_data) {
 }
 HLE_FUNC("_ZN5movie6Buffer12SetInt64DataEl", buf_set_i64) { BUF(c->x[0])->i64 = (int64_t)c->x[1]; }
 HLE_FUNC("_ZNK5movie6Buffer12GetInt64DataEv", buf_get_i64) { c->x[0] = (uint64_t)BUF(c->x[0])->i64; }
+HLE_FUNC("_ZN5movie6Buffer12GetInt64DataEv", buf_get_i64_old) { buf_get_i64(c); }
 HLE_FUNC("_ZN5movie6Buffer13SetUint32DataEj", buf_set_u32) { BUF(c->x[0])->u32 = (uint32_t)c->x[1]; }
 HLE_FUNC("_ZNK5movie6Buffer13GetUint32DataEv", buf_get_u32) { c->x[0] = BUF(c->x[0])->u32; }
+HLE_FUNC("_ZN5movie6Buffer13GetUint32DataEv", buf_get_u32_old) { buf_get_u32(c); }
 HLE_FUNC("_ZN5movie6Buffer12SetInt32DataEi", buf_set_i32) { BUF(c->x[0])->i32 = (int32_t)c->x[1]; }
+HLE_FUNC("_ZNK5movie6Buffer12GetInt32DataEv", buf_get_i32) { c->x[0] = (uint32_t)BUF(c->x[0])->i32; }
+HLE_FUNC("_ZN5movie6Buffer12GetInt32DataEv", buf_get_i32_old) { buf_get_i32(c); }
 
 HLE_FUNC("_ZN5movie12SetAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", movie_set_allocator) { (void)c; }
 HLE_FUNC("_ZN5movie17SetThreadPriorityEi", movie_set_thread_priority) { (void)c; }
@@ -237,11 +266,54 @@ static void ex_set_data_source(Cpu *c) {
     while (rel && *rel == '/') rel++;
     char host[1024];
     snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
+    {   // the DLC's ("aoc:/Movie/..."): loose beside its data image (services/fs.c fs_aoc_image: <dir>/aoc.bin -> <dir>/romfs)
+        extern const char *fs_aoc_image(void);
+        const char *aoc = path && !strncmp(path, "aoc:", 4) ? fs_aoc_image() : NULL;
+        const char *slash = aoc ? strrchr(aoc, '/') : NULL;
+        if (slash) snprintf(host, sizeof host, "%.*s/romfs/%s", (int)(slash - aoc), aoc, rel ? rel : "");
+    }
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
+    if (getenv("LARECOMP_MOVIE_MISSING") && strstr(host, getenv("LARECOMP_MOVIE_MISSING")) && strrchr(host, '/'))
+        snprintf(strrchr(host, '/') + 1, 16, "missing.webm");  // (test: a movie the dump lacks)
+    else if (access(host, R_OK) != 0) {  // (a player's own romfs/ used in place: its names' case may differ - Android minds)
+        char *slash = strrchr(host, '/');
+        DIR *dir = NULL;
+        if (slash) { *slash = 0; dir = opendir(host); *slash = '/'; }
+        for (struct dirent *de; dir && (de = readdir(dir));)
+            if (!strcasecmp(de->d_name, slash + 1)) {
+                snprintf(slash + 1, sizeof host - (size_t)(slash + 1 - host), "%s", de->d_name);
+                LOG("[movie] found as %s\n", host);
+                break;
+            }
+        if (dir) closedir(dir);
+    }
+    bool stand_in = false;
     if (avformat_open_input(&e->fmt, host, NULL, NULL) < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {
-        LOG("[movie] cannot open %s\n", host);
-        c->x[0] = 1;
-        return;
+        // A movie that isn't there crashed the game (#113: the Zora's Domain cutscene, a dump used in place): an
+        // error, or no video track (tried: a null object at +0x188), are things it never sees on the Switch. In its
+        // place, another movie of the same folder from its last moments: a video track that ends at once.
+        if (e->fmt) avformat_close_input(&e->fmt);
+        char *slash = strrchr(host, '/');
+        DIR *dir = NULL;
+        if (slash) { *slash = 0; dir = opendir(host); *slash = '/'; }
+        for (struct dirent *de; dir && (de = readdir(dir));) {
+            size_t n = strlen(de->d_name);
+            if (n < 5 || strcasecmp(de->d_name + n - 5, ".webm")) continue;
+            char other[1024];
+            snprintf(other, sizeof other, "%.*s/%s", (int)(slash - host), host, de->d_name);
+            if (avformat_open_input(&e->fmt, other, NULL, NULL) >= 0 && avformat_find_stream_info(e->fmt, NULL) >= 0) {
+                LOG("[movie] cannot open %s: %s in its place, from its end\n", host, de->d_name);
+                stand_in = true;
+                break;
+            }
+            if (e->fmt) avformat_close_input(&e->fmt);
+        }
+        if (dir) closedir(dir);
+        if (!stand_in) {
+            LOG("[movie] cannot open %s, nor any movie beside it\n", host);
+            c->x[0] = 1;
+            return;
+        }
     }
     e->pkt = av_packet_alloc();
     e->ntracks = 0;
@@ -252,6 +324,8 @@ static void ex_set_data_source(Cpu *c) {
         if (e->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO ||
             (e->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && g_settings.movie_audio && !getenv("LARECOMP_NO_MOVIE_AUDIO")))
             e->map[e->ntracks++] = (int)i;
+    if (stand_in && e->fmt->duration > 500000)  // (from the keyframe before its last 0.3 s)
+        av_seek_frame(e->fmt, -1, e->fmt->duration - 300000, AVSEEK_FLAG_BACKWARD);
     c->x[0] = 0;
 }
 
@@ -448,8 +522,20 @@ typedef struct {
     int64_t eos_time;
     bool stopped;  // Stop / destroyed: no more events (see dec_stop)
     bool playing;  // a started video decoder, counted in g_movie_playing
+    uint32_t seen;  // the milestones logged (milestone)
     pthread_mutex_t lock;
 } Decoder;
+
+// Each decoder's first start, input, decoded frame, output... logged once, always: a movie that freezes the game
+// (the Great Plateau tower's on an Adreno 840, issue #22) shows in a user's log how far it got.
+enum { MS_START = 1, MS_ACQ_IN = 2, MS_SEND = 4, MS_FRAME = 8, MS_ACQ_OUT = 16, MS_GET_OUT = 32, MS_REL_OUT = 64,
+       MS_EOS = 128, MS_SEND_ERR = 256 };
+static bool milestone(Decoder *d, uint32_t bit) {
+    if (__atomic_fetch_or(&d->seen, bit, __ATOMIC_RELAXED) & bit) return false;
+    return true;
+}
+#define MILESTONE(d, bit, ...) \
+    do { if (milestone(d, bit)) LOG("[movie] %s decoder: " __VA_ARGS__); } while (0)
 
 // Input / output buffers live in the HLE heap, which only a reboot frees: buffers of destroyed decoders are kept
 // for the next movie (the title's attract loop replays the opening, ~37 MB of buffers per showing).
@@ -548,6 +634,7 @@ static void dec_start(Cpu *c) {
     d->stopped = false;
     if (d->video && !d->playing) d->playing = true, __atomic_add_fetch(&g_movie_playing, 1, __ATOMIC_RELAXED);
     pthread_mutex_unlock(&d->lock);
+    MILESTONE(d, MS_START, "started\n", d->video ? "video" : "audio");
     dec_signal(c, d, 0);  // all input buffers are free
     c->x[0] = 0;
 }
@@ -606,6 +693,7 @@ static void dec_acquire_input(Cpu *c) {
     if (idx >= 0) d->in_busy[idx] = true;
     pthread_mutex_unlock(&d->lock);
     if (idx < 0) { c->x[0] = 1; return; }
+    MILESTONE(d, MS_ACQ_IN, "first input buffer to the game\n", d->video ? "video" : "audio");
     *(int32_t *)(uintptr_t)c->x[1] = idx;
     if (c->x[2]) *(int32_t *)(uintptr_t)c->x[2] = free_n;
     c->x[0] = 0;
@@ -694,8 +782,11 @@ static void dec_send_input(Cpu *c) {
         d->pkt->data = d->in_mem[idx] + off;
         d->pkt->size = size;
         d->pkt->pts = time;
-        avcodec_send_packet(d->ctx, d->pkt);
+        int r = avcodec_send_packet(d->ctx, d->pkt);
+        MILESTONE(d, MS_SEND, "first packet: %d bytes, flags %x\n", d->video ? "video" : "audio", size, flags);
+        if (r < 0) MILESTONE(d, MS_SEND_ERR, "the decoder refused a packet (%d)\n", d->video ? "video" : "audio", r);
     }
+    if (flags & MOVIE_EOS) MILESTONE(d, MS_EOS, "end of the stream\n", d->video ? "video" : "audio");
     if (flags & MOVIE_EOS) avcodec_send_packet(d->ctx, NULL);
     bool produced = false;
     while (avcodec_receive_frame(d->ctx, d->frame) == 0) {
@@ -710,6 +801,8 @@ static void dec_send_input(Cpu *c) {
             }
         }
         n_frames++;
+        MILESTONE(d, MS_FRAME, "first frame decoded (%dx%d, format %d)\n", d->video ? "video" : "audio",
+                  d->frame->width, d->frame->height, d->frame->format);
         produced = true;
     }
     if (flags & MOVIE_EOS) { d->eos_pending = true; d->eos_time = time; }
@@ -730,6 +823,7 @@ static void dec_acquire_output(Cpu *c) {
     memmove(d->ready, d->ready + 1, --d->nready * sizeof *d->ready);
     int remaining = d->nready;
     pthread_mutex_unlock(&d->lock);
+    MILESTONE(d, MS_ACQ_OUT, "first output to the game\n", d->video ? "video" : "audio");
     *(int32_t *)(uintptr_t)c->x[1] = r.idx;
     if (c->x[2]) *(int64_t *)(uintptr_t)c->x[2] = r.time;
     if (c->x[3]) *(uint32_t *)(uintptr_t)c->x[3] = r.flags;
@@ -743,6 +837,8 @@ static void dec_get_output_buffer(Cpu *c) {
     int i = (int)c->x[1];
     MBuffer *b = BUF(c->x[2]);
     if (i < 0 || i >= NOUT) { c->x[0] = 1; return; }
+    MILESTONE(d, MS_GET_OUT, "first output buffer: base %llx capacity %llu offset %d\n", d->video ? "video" : "audio",
+              (unsigned long long)b->base, (unsigned long long)b->capacity, b->offset);
     if (d->video && b->base && b->capacity == 8) {
         // texture output mode: the buffer points at the game's NVNtexture; write RGBA into it
         NvnTexture *t = *(NvnTexture **)(uintptr_t)b->base;
@@ -759,6 +855,37 @@ static void dec_get_output_buffer(Cpu *c) {
         c->x[0] = 0;
         return;
     }
+    if (d->video && b->base && b->capacity > 8) {
+        // the game's own buffer (BOTW's player: the memory pool under the texture it draws, SetDataAndCapacity +
+        // SetRange, released right after): the frame is copied in. Pointing the buffer at ours left that memory as
+        // it was - colored noise for the whole movie (the Great Plateau tower's, 2026-10-25).
+        uint64_t room = b->capacity - (uint64_t)(b->offset > 0 ? b->offset : 0);
+        uint8_t *dst = (uint8_t *)(uintptr_t)(b->base + (uint64_t)(b->offset > 0 ? b->offset : 0));
+        int w = d->width, h = d->height;
+        uint32_t n;
+        plat_write_prepare((uint64_t)(uintptr_t)dst, room);
+        if (room == (uint64_t)w * h * 3 / 2) {
+            // BOTW's buffer is width x height x 1.5 (3110400 bytes for its 1920x1080 movies): NV12 without padding -
+            // the luma rows, then the chroma's right after them
+            const uint8_t *uv = d->out_mem[i] + (size_t)d->stride * ((h + 15) & ~15);
+            for (int y = 0; y < h; y++) memcpy(dst + (size_t)y * w, d->out_mem[i] + (size_t)y * d->stride, w);
+            for (int y = 0; y < h / 2; y++) memcpy(dst + (size_t)w * h + (size_t)y * w, uv + (size_t)y * d->stride, w);
+            n = (uint32_t)room;
+        } else {
+            n = d->out_size[i] < room ? d->out_size[i] : (uint32_t)room;
+            memcpy(dst, d->out_mem[i], n);
+        }
+        static int nlog;
+        if (getenv("LARECOMP_LOG_MOVIE") && nlog++ < 4) {
+            LOG("[movie] frame into the game's buffer %llx (capacity %llu, offset %d, size %d): %u bytes, stride %d\n",
+                (unsigned long long)b->base, (unsigned long long)b->capacity, b->offset, b->size, n, d->stride);
+            extern void nvn_log_textures_over(uint64_t lo, uint64_t hi);
+            if (nlog == 1) nvn_log_textures_over(b->base, b->base + b->capacity);
+        }
+        b->size = (int32_t)n;
+        c->x[0] = 0;
+        return;
+    }
     memset(b, 0, sizeof *b);
     b->base = (uint64_t)(uintptr_t)d->out_mem[i];
     b->capacity = d->out_cap;
@@ -769,6 +896,7 @@ static void dec_get_output_buffer(Cpu *c) {
 static void dec_release_output(Cpu *c) {
     Decoder *d = self_state(c);
     n_rel_out++;
+    MILESTONE(d, MS_REL_OUT, "first output released\n", d->video ? "video" : "audio");
     dec_signal(c, d, 0);  // input may be accepted again
     int i = (int)c->x[1];
     pthread_mutex_lock(&d->lock);
@@ -813,9 +941,10 @@ RT_ON_RESET(movie_reset) {
     g_skip_held = false, g_skip_pressed_at = 0;
 }
 
-static void dec_get_counts(Cpu *c) {  // slot 14: (int*, int64*) queried after Configure
-    if (c->x[1]) *(int32_t *)(uintptr_t)c->x[1] = 0;
-    if (c->x[2]) *(int64_t *)(uintptr_t)c->x[2] = 0;
+static void dec_get_counts(Cpu *c) {  // slot 14: GetOutputBufferSize(int *size, int *alignment) queried after Configure
+    Decoder *d = self_state(c);
+    if (c->x[1]) *(int32_t *)(uintptr_t)c->x[1] = d ? (int32_t)d->out_cap : 0;
+    if (c->x[2]) *(int32_t *)(uintptr_t)c->x[2] = d && d->video ? 32 : 2;
     c->x[0] = 0;
 }
 
@@ -829,6 +958,8 @@ HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11Dec
         vt = g_dec_vt = make_vtable(f, 19, "Decoder");
     }
     uint64_t *self = (uint64_t *)(uintptr_t)c->x[0];
+    if (getenv("LARECOMP_LOG_MOVIE"))  // (BOTW 1.8.2's player: format 4, mode 1)
+        LOG("[movie] decoder type %u, output format %u, mode %u\n", (unsigned)c->x[1], (unsigned)c->x[2], (unsigned)c->x[3]);
     Decoder *d = calloc(1, sizeof *d);
     movie_track(1, d, true);
     pthread_mutex_init(&d->lock, NULL);

@@ -21,6 +21,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/ucontext.h>
 #include <time.h>
 #include <unistd.h>
@@ -186,6 +187,8 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
         }
         g_guest_lo = base;
         fprintf(stderr, "[android] guest window %#llx-%#llx\n", (unsigned long long)base, (unsigned long long)(base + hi - lo));
+        const char *last = getenv("LARECOMP_LAST_EXIT");  // (the activity: ApplicationExitInfo)
+        if (last && *last) fprintf(stderr, "[android] the last run ended: %s\n", last);
         return true;
     }
     void *p = mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE,
@@ -241,22 +244,44 @@ void plat_write_tracking_enable(uint64_t lo, uint64_t hi) {
 }
 
 // (signal handler) a write to a page made read-only here: true when handled
+// A fault on a page that should be writable already (not tracked, or written since) is reopened too, unless the same
+// address keeps faulting: on an Adreno 650, a Mali-G57 and an Adreno 610 (issues #70, #72, #75, 1.8.2 at its title
+// screen) the game's heap lock at 0x34000003c - the heap's first page, the first one tracked - faulted and wasn't
+// taken for ours; not on the POCO F7 Ultra with the same path. wt_odd counts those (the crash report shows it).
+static uint64_t wt_odd, wt_odd_addr;
+static int wt_odd_repeats;
 static bool wt_fault(uint64_t a) {
     if (!wt_state || a < wt_lo || a >= wt_hi) return false;
     uint64_t p = (a - wt_lo) >> 12, np = (wt_hi - wt_lo) >> 12;
     bool ours = false;
     wt_lock();
+    if (wt_state[p] == 1) wt_odd_repeats = 0;
+    else if (wt_odd_addr == a && ++wt_odd_repeats > 8) { wt_unlock(); return false; }  // (a real fault)
+    else if (wt_odd_addr != a) wt_odd_addr = a, wt_odd_repeats = 0;
+    if (wt_state[p] != 1) wt_odd++;
     // (2: another thread's fault on it got there first - writable already. The next page too: a store across the
     // boundary may report its first byte, in the page before the protected one)
     // (the next page only while still read-only: a real fault on this one must not retry forever)
     for (uint64_t k = p; k < p + 2 && k < np; k++) {
-        if (k == p ? !wt_state[k] : wt_state[k] != 1) continue;
+        if (k != p && wt_state[k] != 1) continue;
+        if (k == p && wt_state[k] == 0) {  // (untracked: writable unless mprotect can't make it so - a real fault)
+            if (mprotect((void *)(uintptr_t)(wt_lo + (k << 12)), 4096, PROT_READ | PROT_WRITE)) break;
+            ours = true;
+            continue;
+        }
         wt_state[k] = 2;
         mprotect((void *)(uintptr_t)(wt_lo + (k << 12)), 4096, PROT_READ | PROT_WRITE);
         ours = true;
     }
     wt_unlock();
     return ours;
+}
+
+// (the crash report) the tracking state of a guest page: -1 not tracked by this, else 0-2 (wt_state), and the odd faults
+static int plat_write_tracking_state(uint64_t a, uint64_t *odd) {
+    *odd = wt_odd;
+    if (!wt_state || a < wt_lo || a >= wt_hi) return -1;
+    return wt_state[(a - wt_lo) >> 12];
 }
 
 void plat_write_prepare(uint64_t addr, uint64_t size) {
@@ -437,9 +462,26 @@ static void crash_handler(int sig, siginfo_t *si, void *ctx) {
             if (h->magic == ESR_MAGIC) { g_fault_wnr = (int)((((struct esr_context *)h)->esr >> 6) & 1); break; }
     }
     if (rt_fault_watch(fa, pc)) return;  // (debugging watches first: a watched page may be write-tracked too)
-    if (sig == SIGSEGV && si->si_code == SEGV_ACCERR && wt_fault(fa)) return;  // (write tracking)
+    if (sig == SIGSEGV && wt_fault(fa)) return;  // (write tracking - whatever the code: mprotect decides, #70)
+    if (sig == SIGSEGV) {  // (what the next report needs: the kernel's code, and the page's tracking state)
+        extern int g_fault_wnr;
+        uint64_t odd;
+        int st = plat_write_tracking_state(fa, &odd);
+        fprintf(stderr, "*** SIGSEGV code %d (%s), write %d, page tracking %d, odd write faults %llu\n", si->si_code,
+                si->si_code == SEGV_ACCERR ? "no access" : si->si_code == SEGV_MAPERR ? "not mapped" : "other", g_fault_wnr,
+                st, (unsigned long long)odd);
+    }
     char what[32];
     snprintf(what, sizeof what, "signal %d", sig);
+    if (pc >= GUEST_LO && pc < GUEST_HI) {  // (the game's own code on the CPU: its registers are the signal's, not the Cpu's)
+        extern Cpu *kernel_current_cpu(void);  // (kernel.c)
+        Cpu *c = kernel_current_cpu();
+        if (c) {
+            memcpy(c->x, uc->uc_mcontext.regs, 31 * sizeof c->x[0]);
+            c->sp = uc->uc_mcontext.sp;
+            c->pc = pc;
+        }
+    }
     rt_fault_report(what, fa, pc, lr);
 }
 
@@ -489,7 +531,7 @@ int plat_proc_wait(PlatProc p, bool block) {
     pid_t r = waitpid((pid_t)p, &st, block ? 0 : WNOHANG);
     if (r == 0) return -1;
     if (r < 0) return 255;
-    return WIFEXITED(st) ? WEXITSTATUS(st) : 255;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : WIFSIGNALED(st) ? 128 + WTERMSIG(st) : 255;  // (128+n: stopped by signal n)
 }
 
 static int rm_entry(const char *path, const struct stat *sb, int flag, struct FTW *ftw) {
@@ -627,8 +669,38 @@ typedef struct APerformanceHintSession APerformanceHintSession;
 static cpu_set_t g_all_cores;
 static bool g_pinned;
 
+// LARECOMP_UCLAMP_MIN=<1-1024> (a test, issue #41): a utilization floor for every thread that starts here (the game's,
+// the render thread, audio), so the governor runs their cores at least at that share of their top clock, however
+// briefly each thread works. On a Snapdragon 8 Gen 3 (MagicOS) the game's busiest core stayed at ~600 MHz in the open
+// world - ~12 fps - with the ADPF session on, the app in the game list and performance mode. Per thread, so the
+// threads' relative speeds stay as they were (LARECOMP_PIN's fast main thread crashed the game's job system).
+// sched_setattr with SCHED_FLAG_UTIL_CLAMP_MIN keeps the policy and priority; whether Android allows it (seccomp,
+// SELinux, the cgroup's uclamp.max) goes to the log once.
+static void uclamp_min_thread(void) {
+    static int want = -1;
+    if (want < 0) {
+        const char *e = getenv("LARECOMP_UCLAMP_MIN");
+        want = e && atoi(e) > 0 ? (atoi(e) > 1024 ? 1024 : atoi(e)) : 0;
+    }
+    if (!want) return;
+    struct {
+        uint32_t size, policy;
+        uint64_t flags;
+        int32_t nice;
+        uint32_t priority;
+        uint64_t runtime, deadline, period;
+        uint32_t util_min, util_max;
+    } attr = {.size = 56, .flags = 0x08 | 0x10 | 0x20, .util_min = (uint32_t)want};  // (KEEP_POLICY | KEEP_PARAMS |
+                                                                                    //  UTIL_CLAMP_MIN; struct ver. 1)
+    long r = syscall(__NR_sched_setattr, 0, &attr, 0);
+    static atomic_int logged;
+    if (!atomic_exchange(&logged, 1))
+        LOG("[android] uclamp.min %d for the game's threads: %s\n", want, r ? strerror(errno) : "ok");
+}
+
 void plat_thread_unpin(void) {
     if (g_pinned) sched_setaffinity(0, sizeof g_all_cores, &g_all_cores);
+    uclamp_min_thread();
 }
 
 static void pin_to_fastest_cores(void) {

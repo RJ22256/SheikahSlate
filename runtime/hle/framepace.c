@@ -37,12 +37,19 @@
 #include "../settings.h"
 #include "../framepace.h"
 
+#ifdef LARECOMP_NO_FFMPEG
+static volatile int g_movie_playing;  // (no movie.c without FFmpeg: no movies)
+#else
 extern volatile int g_movie_playing;  // runtime/hle/movie.c: video decoders running
+#endif
 
-// a canonical address of 1.8.2's main (0x7000000000 + offset) where the guest window is
+// a canonical address of main (0x7000000000 + offset) where the guest window is: 1.8.2's, or 1.9.0's (the same code
+// elsewhere: tools/port_addrs.py found each one by the instructions that reach it)
 #define GA(a) ((uint64_t)(a) - 0x7000000000ull + GUEST_LO)
+#define GV(a182, a190) GA(g_game_version == 190 ? (a190) : (a182))
 #define VF(T, base, off) (*(T *)(uintptr_t)((base) + (off)))
-#define PAUSE_STATE GA(0x7001cb48a4ull)  // (u32: 0 playing, 2 in the pause menu or the map)
+#define PAUSE_STATE GV(0x7001cb48a4ull, 0x7001e1611cull)  // (u32: 0 playing, 2 in the pause menu or the map)
+#define UI_SCREENS GV(0x7001c05d88ull, 0x7001d66d58ull)
 
 static int env_int(const char *name, int def) {
     const char *e = getenv(name);
@@ -51,7 +58,7 @@ static int env_int(const char *name, int def) {
 
 bool framepace_on(void) {
     static int on = -1;
-    if (on < 0) on = g_game_version == 182 && env_int("LARECOMP_FRAMEPACE", 1) != 0;
+    if (on < 0) on = g_game_version >= 182 && env_int("LARECOMP_FRAMEPACE", 1) != 0;
     return on;
 }
 
@@ -60,18 +67,18 @@ bool framepace_on(void) {
 // manager [0x7001c05d88]: +0x28 count, +0x30 screens by id).
 static bool in_menu(void) {
     if (*(uint32_t *)(uintptr_t)PAUSE_STATE) return true;
-    uint64_t mgr = *(uint64_t *)(uintptr_t)*(uint64_t *)(uintptr_t)GA(0x7001c05d88ull);
+    uint64_t mgr = *(uint64_t *)(uintptr_t)*(uint64_t *)(uintptr_t)UI_SCREENS;
     return mgr && VF(uint32_t, mgr, 0x28) > 1 && VF(uint64_t, mgr, 0x30) &&
            *(uint64_t *)(uintptr_t)(VF(uint64_t, mgr, 0x30) + 8);
 }
 
 // (widescreen.c: the HUD stays in place in the menus)
-bool framepace_in_menu(void) { return g_game_version == 182 && in_menu(); }
+bool framepace_in_menu(void) { return g_game_version >= 182 && in_menu(); }
 
 // (widescreen.c) the title screen's menu is up - screen 1 in the UI screen manager, as in_menu - and the game isn't paused
 bool framepace_on_title(void) {
-    if (g_game_version != 182) return false;
-    uint64_t holder = *(uint64_t *)(uintptr_t)GA(0x7001c05d88ull);
+    if (g_game_version < 182) return false;
+    uint64_t holder = *(uint64_t *)(uintptr_t)UI_SCREENS;
     uint64_t mgr = holder ? *(uint64_t *)(uintptr_t)holder : 0;
     bool on = mgr && !*(uint32_t *)(uintptr_t)PAUSE_STATE && VF(uint32_t, mgr, 0x28) > 1 && VF(uint64_t, mgr, 0x30) &&
               *(uint64_t *)(uintptr_t)(VF(uint64_t, mgr, 0x30) + 8);
@@ -86,7 +93,7 @@ bool framepace_on_title(void) {
 // An event is running: a cutscene, a talk, an item fanfare (ksys::evt::Manager [0x7001cd8db8]: its active event at
 // +0x1d2b8). Some of their waits count frames: the new game's opening gave Link control 2 s early at 60 fps.
 static bool in_event(void) {
-    uint64_t evt = *(uint64_t *)(uintptr_t)GA(0x7001cd8db8ull);
+    uint64_t evt = *(uint64_t *)(uintptr_t)GV(0x7001cd8db8ull, 0x7001e3a638ull);
     return evt && *(uint64_t *)(uintptr_t)(evt + 0x1d2b8);
 }
 
@@ -95,12 +102,13 @@ int framepace_target(void) {
     if (forced == -2) forced = env_int("LARECOMP_FPS", -1);
     if (movie == -2) movie = env_int("LARECOMP_MOVIE_FPS", 30);
     if (menu == -2) menu = env_int("LARECOMP_MENU_FPS", 30);
-    if (event == -2) event = env_int("LARECOMP_EVENT_FPS", 30);
+    if (event == -2) event = env_int("LARECOMP_EVENT_FPS", -1);  // (-1: the setting - Cutscenes at 60 fps, else 30)
     // (Video > Frame rate: 30, 60; Auto is 60 here - the clock follows whatever the frames really take)
     int fps = forced >= 0 ? forced : g_settings.fps_mode == 1 ? 30 : 60;
     if (movie > 0 && __atomic_load_n(&g_movie_playing, __ATOMIC_RELAXED) > 0 && (fps == 0 || fps > movie)) fps = movie;
     if (menu > 0 && (fps == 0 || fps > menu) && in_menu()) fps = menu;
-    if (event > 0 && (fps == 0 || fps > event) && in_event()) fps = event;
+    int ev = event >= 0 ? event : g_settings.event_fps_unlock ? 0 : 30;
+    if (ev > 0 && (fps == 0 || fps > ev) && in_event()) fps = ev;
     return fps;
 }
 
@@ -120,7 +128,7 @@ int rt_frame_wait(void) { return framepace_on(); }
 // The controllers (sead::ControllerBase::updateDerivativeParams_, 0x7000d9d8a0) count how long each button has been
 // held, in frames, by a step the game keeps at 1 (a float at 0x7001c4ba40, read there only): the runtime sets it to
 // the frame's length in console frames, so holds last as long as on the console.
-#define CONTROLLER_STEP GA(0x7001c4ba40ull)
+#define CONTROLLER_STEP GV(0x7001c4ba40ull, 0x7001dad0e0ull)
 static float g_step = 1;   // the last frame's length between presents, in console frames
 static int g_grid_streak;  // presents in a row that kept the pace
 

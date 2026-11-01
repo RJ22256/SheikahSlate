@@ -70,6 +70,27 @@ static void touch_layout_draw(void) {
     ImGui::SetNextItemWidth(-1);
     if (ImGui::SliderFloat("##Opacity", &op, 20, 100, "%.0f%%")) g_settings.touch_opacity = op / 100;
     if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+    // FPS-style play (ui/touch_controls.mm drag_frame): the camera by dragging, the sticks hidden, larger areas
+    auto hint = [](const char *s) {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr(s));
+        ImGui::PopTextWrapPos();
+    };
+    ImGui::Spacing();
+    if (ImGui::Checkbox(tr("Camera by dragging"), &g_settings.touch_drag_camera)) settings_save();
+    hint("The camera turns while a finger moves on the right half of the screen and stops when it stops, as in phone "
+         "shooters, instead of a stick held to one side.");
+    if (g_settings.touch_drag_camera) {
+        float sens = g_settings.touch_drag_sens * 100;
+        ImGui::TextUnformatted(tr("Drag sensitivity"));
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##DragSens", &sens, 25, 300, "%.0f%%")) g_settings.touch_drag_sens = sens / 100;
+        if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+    }
+    if (ImGui::Checkbox(tr("Sticks only while touched"), &g_settings.touch_sticks_hidden)) settings_save();
+    hint("The sticks are drawn only while a finger holds them, for a cleaner screen.");
+    if (ImGui::Checkbox(tr("Larger stick areas"), &g_settings.touch_half_areas)) settings_save();
+    hint("Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.");
 }
 #endif
 
@@ -119,6 +140,18 @@ extern "C" void controls_bindings_draw(float scale) {
         if (kind == 1 || kind == 2 || kind == 5) settings_save();
     }
     if (msg[0]) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", msg);
+
+    {   // the sticks' dead zone (hle/input.c): for worn sticks that drift
+        float dz = g_settings.stick_deadzone * 100;
+        ImGui::TextUnformatted(tr("Stick dead zone"));
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##Deadzone", &dz, 0, 40, dz < 0.5f ? tr("Off") : "%.0f%%")) g_settings.stick_deadzone = dz / 100;
+        if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("A stick held this close to the centre counts as centred, for worn sticks that move Link "
+                                     "or the camera on their own (drift). Off: only the game's own."));
+        ImGui::PopTextWrapPos();
+    }
 
     if (ImGui::BeginTable("##binds", keys ? 3 : 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
         ImGui::TableSetupColumn("Switch", ImGuiTableColumnFlags_WidthStretch, 1.0f);

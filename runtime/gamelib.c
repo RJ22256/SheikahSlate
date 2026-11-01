@@ -56,9 +56,13 @@ static bool copy_to(const char *from, const char *to) {
 // A 1.6.0 / 1.8.2 library in that version's extracted/ (put there over adb: android/push_game.sh) newer than the one in
 // internal storage, or another size, is copied in with its id - as BOTWRecompAndroidActivity does 1.0.0's. Once per
 // process: a copy that fails isn't tried again every frame.
+// LARECOMP_GAME_LIB_SRC=<file> (development): that library instead - extracted/ of a version the app set up belongs to
+// the app, and adb can't write there, but it can write to the app's files/ root.
 static void sync_from_game_dir(const char *game_dir, const char *lib) {
     char src[1100], dir[1100];
-    snprintf(src, sizeof src, "%s/%s", game_dir, GAMELIB_NAME);
+    const char *e = getenv("LARECOMP_GAME_LIB_SRC");
+    if (e && *e) snprintf(src, sizeof src, "%s", e);
+    else snprintf(src, sizeof src, "%s/%s", game_dir, GAMELIB_NAME);
     struct stat s, d;
     if (stat(src, &s) != 0 || (stat(lib, &d) == 0 && d.st_size == s.st_size && d.st_mtime >= s.st_mtime)) return;
     static char tried[1100];
@@ -121,7 +125,18 @@ static const GameLibTables *open_lib(const char *path) {
     GameLibEntry entry = (GameLibEntry)(void *)GetProcAddress(h, GAMELIB_ENTRY);
 #else
     void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (!h) { snprintf(g_error, sizeof g_error, "%s", dlerror()); return NULL; }
+    if (!h) {
+        const char *e = dlerror();
+        snprintf(g_error, sizeof g_error, "%s", e ? e : path);
+        if (e && strstr(e, "cannot locate symbol")) {  // (built wrong - #56, #60: objects with UBSan from an earlier
+            char id[1200];                              //  build: its id goes, and the start screen builds it again)
+            snprintf(id, sizeof id, "%s.id", path);
+            remove(id);
+            snprintf(g_error, sizeof g_error, "%.180s\n\nThe game code will be built again: open the app and set up the "
+                     "game files.", e);
+        }
+        return NULL;
+    }
     GameLibEntry entry = (GameLibEntry)dlsym(h, GAMELIB_ENTRY);
 #endif
     if (!entry) { snprintf(g_error, sizeof g_error, "%s: not game code", path); return NULL; }

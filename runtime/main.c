@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "gamelib.h"
 #include "paths.h"
@@ -14,6 +15,7 @@
 #include "kernel.h"
 
 const char *g_romfs_dir;
+const char *g_romfs_link;
 
 // rtld normally passes these to nn::init::Start: run every module's init/fini arrays.
 static void run_array(Cpu *c, uint64_t arr, uint64_t size) {
@@ -142,6 +144,7 @@ __attribute__((section(".rst$z"), used)) static const ResetFn __stop_resets[1];
 void backend_reset(void);             // renderer: GPU idle, game textures and address-keyed caches dropped
 void backend_guest_memory_reset(void);  // renderer: guest memory was replaced (re-wrap the heap)
 void backend_clear_window(void);      // a black frame while the game is down
+void audio_stop(void);                // services/audio.c: its threads read guest memory the renderer's reset may free
 
 static void reboot_idle(void) {  // (main thread, while guest threads stop) keep the window alive
     SDL_Event e;
@@ -152,6 +155,7 @@ static void reboot_idle(void) {  // (main thread, while guest threads stop) keep
 static void teardown(void) {
     uint64_t t0 = plat_now_ns();
     kernel_stop_threads(reboot_idle);
+    audio_stop();
     backend_clear_window();
     backend_reset();
     const ResetFn *start = __start_resets, *stop = __stop_resets;
@@ -172,14 +176,31 @@ static void boot(const char *root) {
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
     snprintf(romfs, sizeof romfs, "%s/romfs", root);
     snprintf(npdm_path, sizeof npdm_path, "%s/main.npdm", exefs);
+    {   // the game files used in place: romfs.link names the player's own romfs/ (no romfs.bin; the movies from there
+        // too) - or their own romfs.bin, read as ours would be (the movies taken out of it into romfs/ at setup)
+        char link[1024], target[1024] = "";
+        snprintf(link, sizeof link, "%s/romfs.link", root);
+        FILE *f = fopen(link, "rb");
+        if (f) {
+            size_t n = fread(target, 1, sizeof target - 1, f);
+            fclose(f);
+            target[n] = 0;
+            while (n && (target[n - 1] == '\n' || target[n - 1] == '\r')) target[--n] = 0;
+            struct stat st;
+            if (n) g_romfs_link = strdup(target);
+            if (n && !(stat(target, &st) == 0 && S_ISREG(st.st_mode))) g_romfs_dir = g_romfs_link;
+        }
+    }
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);
 
     char why[512];
-    if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
+    native_begin_boot();  // (Native game code: the game's own code runs, no botwgame.so - runtime/native.c)
+    if (!native_on() && !gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
     { extern void settings_load(void); settings_load(); }
     kernel_init();
-    dispatch_init();
+    if (!native_on()) dispatch_init();
+    native_prepare();
 
     uint32_t stack_size = 0x100000;
     int prio = 44;

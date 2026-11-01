@@ -78,7 +78,7 @@ static void fail(const char *msg) {
 static bool g_dev;  // the data root is the starting folder because it has extracted/ (a source checkout)
 bool rt_dev_mode(void) { return g_dev; }
 
-// ---- game versions (paths.h): 1.0.0 in the data root, 1.6.0 / 1.8.2 in its v160 / v182
+// ---- game versions (paths.h): 1.0.0 in the data root, 1.6.0 / 1.8.2 / 1.9.0 in its v160 / v182 / v190
 static char g_main[1024];   // 1.0.0's data root, which the others' folders are in
 static int g_version = 100;  // whose folder the data root is
 
@@ -94,7 +94,7 @@ static int selected_version(const char *main_root) {
         if (fscanf(f, "%d", &v) != 1) v = 100;
         fclose(f);
     }
-    return v == 160 || v == 182 ? v : 100;
+    return v == 160 || v == 182 || v == 190 ? v : 100;
 }
 
 static bool copy_file(const char *from, const char *to) {
@@ -130,7 +130,7 @@ int rt_game_version(void) { return g_version; }
 
 bool rt_version_root(int v, char *out, size_t n) {
     if (v == 100) return (size_t)snprintf(out, n, "%s", g_main) < n;
-    if (v == 160 || v == 182) return (size_t)snprintf(out, n, "%s" SEP "v%d", g_main, v) < n;
+    if (v == 160 || v == 182 || v == 190) return (size_t)snprintf(out, n, "%s" SEP "v%d", g_main, v) < n;
     return false;
 }
 
@@ -151,8 +151,8 @@ int rt_game_dir_version(const char *game_dir) {
         if (abs) snprintf(got, sizeof got, "%s", game_dir);
         else snprintf(got, sizeof got, "%s" SEP "%s", g_root, game_dir);
     }
-    static const int versions[] = {100, 160, 182};
-    for (int i = 0; i < 3; i++) {
+    static const int versions[] = {100, 160, 182, 190};
+    for (int i = 0; i < 4; i++) {
         char r[1024], want[1100];
         if (!rt_version_root(versions[i], r, sizeof r)) continue;
         snprintf(want, sizeof want, "%s" SEP "extracted", r);
@@ -162,7 +162,7 @@ int rt_game_dir_version(const char *game_dir) {
 }
 
 bool rt_version_game_lib(int v, char *out, size_t n) {
-    if (v != 160 && v != 182) return false;
+    if (v != 160 && v != 182 && v != 190) return false;
 #ifdef __ANDROID__
     const char *in = SDL_GetAndroidInternalStoragePath();
     return in && (size_t)snprintf(out, n, "%s/v%d/%s", in, v, GAMELIB_NAME) < n;
@@ -223,7 +223,7 @@ void rt_paths_init(void) {
     if (bs > base) base = bs;
     snprintf(g_main, sizeof g_main, "%s", g_root);
     g_version = 100;
-    if (base && (!strcmp(base + 1, "v160") || !strcmp(base + 1, "v182"))) {
+    if (base && (!strcmp(base + 1, "v160") || !strcmp(base + 1, "v182") || !strcmp(base + 1, "v190"))) {
         g_version = atoi(base + 2);
         snprintf(g_main, sizeof g_main, "%.*s", (int)(base - g_root), g_root);
         version_seed();
@@ -255,8 +255,10 @@ bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
 // ---- game files
 // What the setup (runtime/ui/launcher.mm) creates in extracted/, plus what older versions' extraction and manual
 // extractions left there (never read at run time).
-static const char *const GAME_FILES[] = {"exefs", "romfs", "romfs.bin", GAMELIB_NAME, GAMELIB_NAME ".id", ".gamebuild",
-                                         ".extract", "extract.log", "xci_secure", "nso_raw", "update_pfs", ".DS_Store"};
+// (romfs.link: the files used in place - the note of where the player's romfs/ is; only the note goes, never that folder)
+static const char *const GAME_FILES[] = {"exefs", "romfs", "romfs.bin", "romfs.link", GAMELIB_NAME, GAMELIB_NAME ".id",
+                                         ".gamebuild", ".extract", "extract.log", "xci_secure", "nso_raw", "update_pfs",
+                                         ".DS_Store"};
 
 // game_dir must be <data root>/extracted or a game version's (set up from another version's start screen), a real
 // folder (a dev worktree's symlinked extracted/ is refused)
@@ -292,6 +294,17 @@ bool rt_remove_game_files(const char *game_dir) {
     bool ok = true;
     for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) ok &= rt_remove_game_file(game_dir, GAME_FILES[i]);
     rmdir(game_dir);  // only if empty: anything else in there stays
+    return ok;
+}
+
+bool rt_remove_game_files_for_setup(const char *game_dir) {
+    if (!game_dir_ok(game_dir)) {
+        fprintf(stderr, "[paths] refusing to delete game files in %s (not <data root>/extracted)\n", game_dir);
+        return false;
+    }
+    bool ok = true;
+    for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++)
+        if (strcmp(GAME_FILES[i], ".gamebuild")) ok &= rt_remove_game_file(game_dir, GAME_FILES[i]);
     return ok;
 }
 
