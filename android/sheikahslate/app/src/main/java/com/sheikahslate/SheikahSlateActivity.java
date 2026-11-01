@@ -92,7 +92,7 @@ public class SheikahSlateActivity extends SDLActivity {
     private static native void nativeSaveDone(int result, String detail);
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47,
             REQ_DRIVER_RECOVER = 0x4c48, REQ_SAVE_IN = 0x4c49, REQ_SAVE_OUT = 0x4c4a, REQ_SAVE_IN_TREE = 0x4c4c,
-            REQ_DLC = 0x4c4d;
+            REQ_DLC = 0x4c4d, REQ_LOOK_BG = 0x4c4e, REQ_LOOK_ICON = 0x4c4f;
     private native String nativeBuildDlc(String[] paths, long[] sizes);
     private static native void nativeDlcDone(int result, String detail);
     private static SheikahSlateActivity self;
@@ -435,6 +435,15 @@ public class SheikahSlateActivity extends SDLActivity {
             }, "saves").start();
             return;
         }
+        if (req == REQ_LOOK_BG || req == REQ_LOOK_ICON) {
+            Uri u = result == Activity.RESULT_OK && data != null ? data.getData() : null;
+            if (u == null) nativeLookDone(LOOK_CANCELLED, "");
+            else new Thread(() -> {
+                if (req == REQ_LOOK_BG) setBackground(u);
+                else setIcon(u);
+            }, "look").start();
+            return;
+        }
         if (req == REQ_LOG) {
             Uri tree = result == Activity.RESULT_OK && data != null ? data.getData() : null;
             if (tree != null) {
@@ -773,6 +782,126 @@ public class SheikahSlateActivity extends SDLActivity {
         } catch (Exception e) {
             Log.e(TAG, "save import", e);
             nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    // ---- (Sheikah Slate) the start screen's Settings > Look: its background, and a home screen icon, from the player's
+    // own pictures (the photo picker; a file picker before Android 13). The background is decoded at the screen's size
+    // (the picture's own orientation applied), cut to the screen's shape later by the start screen (launcher.mm
+    // load_background), and saved as files/look/background.png - written beside it, then put in place. Android doesn't
+    // let an app swap its own launcher icon for a picture, so the icon is a home screen shortcut that opens the app,
+    // pinned once (the system asks) and updated in place after: the picture cut square, the whole of it inside the
+    // adaptive icon's visible 72 of 108 dp, and a blurred-out copy of it around (seen only as the icon moves).
+    private static native void nativeLookDone(int result, String detail);
+    private static final int LOOK_BG_SET = 0, LOOK_ICON_ADDED = 2, LOOK_ICON_UPDATED = 3, LOOK_CANCELLED = 4,
+            LOOK_FAILED = 5, LOOK_ICON_UNSUPPORTED = 6;
+    private static final String LOOK_ICON_ID = "own_icon";
+
+    public static void pickBackground() { pickImage(REQ_LOOK_BG); }
+
+    public static void pickIcon() { pickImage(REQ_LOOK_ICON); }
+
+    private static void pickImage(int req) {
+        self.runOnUiThread(() -> {
+            try {
+                Intent i;
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    i = new Intent(android.provider.MediaStore.ACTION_PICK_IMAGES);
+                } else {
+                    i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("image/*");
+                }
+                self.startActivityForResult(i, req);
+            } catch (Exception e) {
+                Log.e(TAG, "picture picker", e);
+                nativeLookDone(LOOK_FAILED, e.toString());
+            }
+        });
+    }
+
+    // The picture at most `max` pixels on its longer side (never larger than it is), software pixels, upright
+    private android.graphics.Bitmap decodePicture(Uri u, int max) throws IOException {
+        android.graphics.ImageDecoder.Source src = android.graphics.ImageDecoder.createSource(getContentResolver(), u);
+        return android.graphics.ImageDecoder.decodeBitmap(src, (dec, info, s) -> {
+            dec.setAllocator(android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE);
+            int w = info.getSize().getWidth(), h = info.getSize().getHeight(), big = Math.max(w, h);
+            if (big > max) dec.setTargetSize(Math.max(1, w * max / big), Math.max(1, h * max / big));
+        });
+    }
+
+    private void setBackground(Uri u) {
+        try {
+            android.graphics.Rect b = getWindowManager().getCurrentWindowMetrics().getBounds();
+            int screen = Math.max(1280, Math.max(b.width(), b.height()));
+            android.graphics.Bitmap bmp = decodePicture(u, Math.min(screen, 4096));
+            File dir = new File(getFilesDir(), "look");
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("can't make " + dir);
+            File tmp = new File(dir, "background.png.new"), out = new File(dir, "background.png");
+            try (FileOutputStream o = new FileOutputStream(tmp)) {
+                if (!bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, o)) throw new IOException("PNG");
+            }
+            bmp.recycle();
+            if (!tmp.renameTo(out)) throw new IOException("can't save " + out);
+            Log.i(TAG, "look: background " + out.length() / 1024 + " KB");
+            nativeLookDone(LOOK_BG_SET, "");
+        } catch (Exception | OutOfMemoryError e) {
+            Log.e(TAG, "look: background", e);
+            nativeLookDone(LOOK_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    private void setIcon(Uri u) {
+        try {
+            android.graphics.Bitmap pic = decodePicture(u, 1024);
+            int side = Math.min(pic.getWidth(), pic.getHeight());
+            android.graphics.Bitmap sq = android.graphics.Bitmap.createBitmap(pic, (pic.getWidth() - side) / 2,
+                    (pic.getHeight() - side) / 2, side, side);
+            final int full = 432, shown = full * 72 / 108;  // (108 dp at xxxhdpi; the masks show the middle 72)
+            android.graphics.Bitmap icon = android.graphics.Bitmap.createBitmap(full, full, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas c = new android.graphics.Canvas(icon);
+            android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+            // around: the picture blown up from a tiny copy (a blur), a little darker
+            android.graphics.Bitmap tiny = android.graphics.Bitmap.createScaledBitmap(sq, 12, 12, true);
+            c.drawBitmap(tiny, null, new android.graphics.Rect(0, 0, full, full), p);
+            c.drawColor(0x40000000);
+            int o = (full - shown) / 2;
+            c.drawBitmap(sq, null, new android.graphics.Rect(o, o, o + shown, o + shown), p);
+            tiny.recycle();
+            if (sq != pic) sq.recycle();
+            pic.recycle();
+            android.content.pm.ShortcutManager sm = getSystemService(android.content.pm.ShortcutManager.class);
+            Intent launch = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                    .setClassName(getPackageName(), SheikahSlateActivity.class.getName())
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            android.content.pm.ShortcutInfo si = new android.content.pm.ShortcutInfo.Builder(this, LOOK_ICON_ID)
+                    .setShortLabel("Sheikah Slate").setLongLabel("Sheikah Slate")
+                    .setIcon(android.graphics.drawable.Icon.createWithAdaptiveBitmap(icon))
+                    .setIntent(launch).build();
+            boolean pinned = false;
+            for (android.content.pm.ShortcutInfo x : sm.getPinnedShortcuts())
+                if (LOOK_ICON_ID.equals(x.getId()) && x.isEnabled()) pinned = true;
+            if (pinned) {
+                sm.updateShortcuts(java.util.Collections.singletonList(si));
+                Log.i(TAG, "look: home screen icon updated");
+                nativeLookDone(LOOK_ICON_UPDATED, "");
+            } else if (sm.isRequestPinShortcutSupported()) {
+                runOnUiThread(() -> {
+                    try {
+                        sm.requestPinShortcut(si, null);
+                        Log.i(TAG, "look: home screen icon asked for");
+                        nativeLookDone(LOOK_ICON_ADDED, "");
+                    } catch (Exception e) {
+                        Log.e(TAG, "look: icon", e);
+                        nativeLookDone(LOOK_FAILED, e.toString());
+                    }
+                });
+            } else {
+                nativeLookDone(LOOK_ICON_UNSUPPORTED, "");
+            }
+        } catch (Exception | OutOfMemoryError e) {
+            Log.e(TAG, "look: icon", e);
+            nativeLookDone(LOOK_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
         }
     }
 

@@ -101,7 +101,7 @@ void settings_reset_defaults(void);
 // (Sheikah Slate) Video > Mode: three sets of the Video options for the Galaxy Tab S10 Ultra, from its performance logs
 // (settings.c mode_into). Performance is the tablet's default (and was applied once over earlier settings on the first
 // start of 0.2.8-slate.9: sheikahslate.ini tab_preset).
-enum { MODE_BATTERY = 0, MODE_PERFORMANCE = 1, MODE_TURBO = 2, MODE_CUSTOM = 3 };
+enum { MODE_BATTERY = 0, MODE_PERFORMANCE = 1, MODE_TURBO = 2, MODE_TURBO60 = 3, MODE_CUSTOM = 4 };
 bool settings_on_tab(void);             // the device profile is the Tab S10 Ultra's (SlateDisplay.java)
 void settings_apply_mode(int mode);
 int settings_current_mode(void);        // the mode the options are now, MODE_CUSTOM if none

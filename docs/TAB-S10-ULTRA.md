@@ -419,6 +419,47 @@ steps 0.75 of a console frame each frame, staying in the game's 30 fps way (its 
 pacing simulation (`tools/test_display_pacing.c`): 100% of frames up for 3 refreshes paced, 63% without. On a 60 Hz
 screen 40 isn't a whole number of refreshes: it isn't paced there (Battery stays at 30).
 
+## Update 11 (0.2.8-slate.11): the frame pacer stayed off; Turbo 60; your own background and icon
+
+Same game code id (65da5d95e597ba58): no rebuild of the game code.
+
+### 33. Frame rate 40 / 60 did nothing: the frame pacer was off all along (`framepace.c` framepace_on)
+
+The Galaxy S25's log (2026-11-01, 0.2.8-slate.10, Frame rate 60): 30.0 fps in every 2-second line, each frame up for
+4 refreshes of 120 Hz, and "not paced" though Even frame pacing was on. `framepace_on()` - is the runtime pacing the
+game and setting its clock - kept its first answer, and since Update 8 the first question came from the start
+screen's presents (Even frame pacing asks it), before any game was loaded: version 0, so no. Every game after ran with
+the game's own 30 fps pacing (its present interval of 2 vsyncs), whatever Frame rate said - on the tablet too. It now
+reads the game's version each time.
+
+### 34. The resolution follows the GPU at 40 and 60 fps (`exec.c` drs_rate_follow)
+
+Update 10 scaled the GPU time the game's own dynamic resolution reads by a fixed budget / frame. Now the factor follows
+the GPU's real time a frame, twice a second: x1.08 while it averages over 92% of the frame, /1.08 under 75%, between 1
+and 3, starting at 1 - the resolution comes down only as far as the frame rate needs, wherever the game's budget
+really is. The 8 ms counter cap at 60 is gone with the frame pacer on any GPU (it only fed the game's resolution: on a
+GPU where frames fit, the factor stays at 1 and so does the top resolution). In a simulation against a model of the
+game's resolution (budget 33 or 16.7 ms, a GPU taking 10-28 ms a frame at the top): 60 held wherever the game's
+lowest resolution allows it, and the top kept where frames fit; starting at budget / frame took it lower than needed
+(68% of the pixels where 77% held 60). `[dynres] the game's resolution for 60 fps: ...` in the log.
+
+### 35. Video > Mode: Turbo 60
+
+Turbo at 60 fps: 2 refreshes of 120 Hz a frame, the resolution lowered as far as 60 needs, Snapdragon GSR 1. On the
+Tab's Mali (~20 ms a frame at the game's lowest resolution in the logs) it may not hold 60; on the Galaxy S25's Adreno
+830 there is room. `tools/test_modes.c` covers it.
+
+### 36. Settings > Look: your own background and home screen icon (`launcher.mm`, `SheikahSlateActivity.java`)
+
+The start screen's Settings, beside Saves and DLC:
+- **Choose background**: a picture from the photo picker, decoded at the screen's size and saved as
+  `files/look/background.png`; the start screen fills itself with it, cut to its shape. **Original background** puts
+  the artwork back. (The old texture is freed: `imgui_glue.cpp` vk_imgui_texture_free.)
+- **Choose icon picture**: Android doesn't let an app swap its own launcher icon for a picture, so this pins a home
+  screen icon with the picture that opens the app (the system asks once: Add), and changes that icon's picture after.
+  The picture is cut square and fitted inside the adaptive icon's visible 72 of 108 dp, a blurred copy of it around.
+  The original icon can then be removed from the home screen (the app list keeps it).
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep
@@ -440,9 +481,11 @@ On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log 
    game; 60 Hz switches it at once. Logcat: `display refresh: ...`.
 7. **Heat and speed.** 15-20 minutes on the Great Plateau at Frame rate 30: note FPS, SoC temperature and whether it
    throttles. Internal resolution Dynamic, or 75% / 50%, if the GPU can't hold 30.
-8. **Modes.** Video > Mode: Battery, Performance, Turbo each set the options below them (Custom after changing one).
-   Turbo: the overlay reads ~40 fps, Show refresh rate 120; the log has `[pace] frame rate set to 40 fps`. Frame rate
-   60: above 30 now, at a lower resolution.
+8. **Modes.** Video > Mode: Battery, Performance, Turbo and Turbo 60 each set the options below them (Custom after
+   changing one). Turbo: the overlay reads ~40 fps; Turbo 60: above 40, `[dynres] the game's resolution for 60 fps`
+   lines as it settles. The fps lines no longer say "not paced" with Even frame pacing on.
+9. **Look.** Settings > Look > Choose background: the start screen shows the picture at once; Original background puts
+   the artwork back. Choose icon picture: the system asks to add the icon, and a second picture changes it.
 
 Switches for testing (adb, as upstream's `android/run_boot.sh`):
 

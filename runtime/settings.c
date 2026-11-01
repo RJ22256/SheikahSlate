@@ -235,7 +235,9 @@ void settings_reset_defaults(void) {
 //   - Performance (the default): 30 fps paced to the 120 Hz screen (4 refreshes a frame), the game's resolution
 //     steadied (1440x810 most of the time in the logs, half-second dips in busy moments), AMD FSR 1 - the sharpest;
 //   - Turbo: 40 fps (3 refreshes of 120 Hz a frame, the game's clock stepped 0.75 a frame), the resolution steadied
-//     and aimed at 25 ms (exec.c drs_rate_scale: it comes down as far as a frame needs), Snapdragon GSR 1.
+//     and aimed at 25 ms (exec.c drs_rate_scale: it comes down as far as a frame needs), Snapdragon GSR 1;
+//   - Turbo 60 (0.2.8-slate.11): Turbo at 60 fps (2 refreshes of 120 Hz a frame), the resolution aimed at 16.7 ms -
+//     on the Tab's Mali it may not hold 60 even at the game's lowest; a Snapdragon (the Galaxy S25's) has the room.
 // All: Output resolution Auto (1080 lines on the 1848-line panel), no extra anti-aliasing (its GPU time is better spent
 // on the scene), overlapping render passes and 32-bit shader math automatic (on for Mali), Sync lag on.
 #define TAB_PRESET_REV 9  // (the version that applied Performance once over earlier settings: 0.2.8-slate.9)
@@ -245,7 +247,7 @@ bool settings_on_tab(void) {
     return p && !strcmp(p, "tab-s10-ultra");
 }
 static void mode_into(Settings *s, int mode) {
-    s->fps_mode = mode == MODE_TURBO ? 3 : 1;
+    s->fps_mode = mode == MODE_TURBO60 ? 2 : mode == MODE_TURBO ? 3 : 1;
     s->display_refresh = mode == MODE_BATTERY ? 1 : 0;
     s->even_pacing = -1;
     s->res_mode = 1;
@@ -259,12 +261,12 @@ static void mode_into(Settings *s, int mode) {
     s->event_fps_unlock = false;
 }
 void settings_apply_mode(int mode) {
-    if (mode < MODE_BATTERY || mode > MODE_TURBO) return;
+    if (mode < MODE_BATTERY || mode > MODE_TURBO60) return;
     mode_into(&g_settings, mode);
     g_tab_preset_rev = TAB_PRESET_REV;
 }
 int settings_current_mode(void) {
-    for (int m = MODE_BATTERY; m <= MODE_TURBO; m++) {
+    for (int m = MODE_BATTERY; m <= MODE_TURBO60; m++) {
         Settings p = g_settings;
         mode_into(&p, m);
         if (p.fps_mode == g_settings.fps_mode && p.display_refresh == g_settings.display_refresh &&

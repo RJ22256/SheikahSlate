@@ -56,10 +56,14 @@ static int env_int(const char *name, int def) {
     return e && *e ? atoi(e) : def;
 }
 
+// (Sheikah Slate, 0.2.8-slate.11) the game's version read each time, not kept from the first call: the start screen's
+// presents (vulkan/device.c dp_before_present) asked before any game was loaded - version 0 - and the answer stuck for
+// the whole run. Every game ran with the game's own 30 fps pacing: Frame rate 40 / 60 did nothing, and frames were
+// never evenly paced (the Galaxy S25's log of 2026-11-01: 30.0 fps and "not paced" in every line).
 bool framepace_on(void) {
-    static int on = -1;
-    if (on < 0) on = g_game_version >= 182 && env_int("LARECOMP_FRAMEPACE", 1) != 0;
-    return on;
+    static int env = -1;
+    if (env < 0) env = env_int("LARECOMP_FRAMEPACE", 1) != 0;
+    return env && g_game_version >= 182;
 }
 
 // ------------------------------------------------------------------ the frame rate

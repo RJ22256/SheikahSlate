@@ -64,6 +64,7 @@ void *vk_frame_cmd(void);
 bool vk_imgui_backend_init(void);
 void vk_imgui_backend_shutdown(void);
 uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
+void vk_imgui_texture_free(uint64_t id);
 #endif
 }
 #ifdef __APPLE__
@@ -668,6 +669,30 @@ extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nat
     pthread_mutex_unlock(&g_lock);
 }
 
+// Settings > Look (SheikahSlateActivity pickBackground / pickIcon): the result, shown under the buttons
+static std::string g_look_msg;  // (g_lock)
+static bool g_look_failed, g_look_busy;
+static std::atomic<bool> g_bg_reload{false};  // (the start screen loads the background again: load_background)
+
+extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeLookDone(JNIEnv *env, jclass,
+                                                                                                    jint result, jstring detail) {
+    const char *t = env->GetStringUTFChars(detail, NULL);
+    std::string d = t ? t : "";
+    if (t) env->ReleaseStringUTFChars(detail, t);
+    char msg[600];
+    switch (result) {
+    case 0: snprintf(msg, sizeof msg, "%s", tr("Background changed.")); g_bg_reload = true; break;
+    case 2: snprintf(msg, sizeof msg, "%s", tr("Your phone asks to add the icon to the home screen: tap Add.")); break;
+    case 3: snprintf(msg, sizeof msg, "%s", tr("The home screen icon has the new picture.")); break;
+    case 4: msg[0] = 0; break;
+    case 6: snprintf(msg, sizeof msg, "%s", tr("This home screen doesn't take icons from apps.")); break;
+    default: snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str()); break;
+    }
+    pthread_mutex_lock(&g_lock);
+    g_look_msg = msg, g_look_failed = result >= 5, g_look_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+
 // The game version of the picked main module's first bytes (game_version_of_build: 0 = not one this app runs)
 extern "C" JNIEXPORT jint JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeGameVersion(JNIEnv *env, jclass, jbyteArray head) {
     if (env->GetArrayLength(head) < 0x48) return 0;
@@ -1077,11 +1102,30 @@ static uint64_t g_bg;  // ImGui texture id (Vulkan descriptor set)
 typedef void *GpuDevice;
 #endif
 static int g_bg_w, g_bg_h;
+#ifdef __ANDROID__
+// (Sheikah Slate) Settings > Look: the player's own background picture (SheikahSlateActivity pickBackground: decoded,
+// sized to the screen and saved as PNG here), over the bundled artwork; g_bg_reload (beside nativeLookDone): a new one,
+// or the original back
+static std::string custom_background_path() {
+    const char *in = SDL_GetAndroidInternalStoragePath();
+    return in ? std::string(in) + "/look/background.png" : "";
+}
+#endif
 
 static void load_background(GpuDevice dev) {
     if (g_bg) return;
     char artwork[1100];
-    if (rt_resource("launcher-background.png", "assets/artwork/great-plateau-background-v2.png", artwork, sizeof artwork)) {
+    bool found = false;
+#ifdef __ANDROID__
+    {
+        std::string own = custom_background_path();
+        struct stat st;
+        if (!own.empty() && stat(own.c_str(), &st) == 0 && (size_t)snprintf(artwork, sizeof artwork, "%s", own.c_str()) < sizeof artwork)
+            found = true;
+    }
+#endif
+    if (!found) found = rt_resource("launcher-background.png", "assets/artwork/great-plateau-background-v2.png", artwork, sizeof artwork);
+    if (found) {
         SDL_Surface *src = SDL_LoadPNG(artwork);
         SDL_Surface *rgba = src ? SDL_ConvertSurface(src, SDL_PIXELFORMAT_RGBA32) : NULL;
         if (src) SDL_DestroySurface(src);
@@ -1780,6 +1824,55 @@ static void prelaunch_tab(float sc) {
         }
         ImGui::PopTextWrapPos();
     }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("Look");  // (Sheikah Slate: the start screen's background and a home screen icon, from the player's pictures)
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_look_msg;
+        bool failed = g_look_failed, lbusy = g_look_busy;
+        pthread_mutex_unlock(&g_lock);
+        struct stat st;
+        std::string own = custom_background_path();
+        bool custom = !own.empty() && stat(own.c_str(), &st) == 0;
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("The start screen's background: a picture of your own - it fills the screen, cut to "
+                                     "its shape - or the original."));
+        if (lbusy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr("Choose background"))) {
+            pthread_mutex_lock(&g_lock);
+            g_look_busy = true, g_look_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickBackground");  // (then nativeLookDone)
+        }
+        if (custom) {
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Original background"))) {
+                unlink(own.c_str());
+                g_bg_reload = true;
+                pthread_mutex_lock(&g_lock);
+                g_look_msg = tr("The original background is back."), g_look_failed = false;
+                pthread_mutex_unlock(&g_lock);
+            }
+        }
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", tr("The app's icon: Android doesn't let an app change its own icon, so this puts an icon "
+                                     "with your picture on the home screen that opens Sheikah Slate - choosing another "
+                                     "picture later changes that one. To keep only yours, long-press the original on the "
+                                     "home screen and remove it (the app list keeps it)."));
+        if (ImGui::Button(tr("Choose icon picture"))) {
+            pthread_mutex_lock(&g_lock);
+            g_look_busy = true, g_look_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickIcon");
+        }
+        if (lbusy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::PopTextWrapPos();
+    }
 #endif
     ImGui::Spacing();
     ImGui::Spacing();
@@ -2013,6 +2106,13 @@ extern "C" void launcher_run(const char *root) {
             float s = ds.y / 720.0f;  // layout scale (fonts are built for ~2x)
             ImGui::GetIO().FontGlobalScale = s * 0.5f;
             ImDrawList *bg = ImGui::GetBackgroundDrawList();
+#ifdef __ANDROID__
+            if (g_bg_reload.exchange(false)) {  // (Settings > Look: a picture chosen, or the original back)
+                if (g_bg) vk_imgui_texture_free(g_bg);
+                g_bg = 0;
+                load_background(dev);
+            }
+#endif
             if (g_bg) {  // cover the window, keep the aspect
                 float ia = (float)g_bg_w / g_bg_h, wa = ds.x / ds.y;
                 ImVec2 uv0(0, 0), uv1(1, 1);

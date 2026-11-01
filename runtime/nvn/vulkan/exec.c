@@ -195,6 +195,9 @@ static void note_gmem_store(int stage);  // (below: it reads the bound storage b
 #define CQ_QUERIES (CQ_MAX + 2)
 static _Atomic uint64_t gpu_busy_total;  // (GPU ns working, all submissions so far: ADPF's GPU time per frame)
 static double g_pace_gpu_ms;  // (the last presented frame's GPU busy time: LARECOMP_LOG_PACE)
+#ifdef __ANDROID__
+static void drs_rate_follow(double gpu_ms);  // (drs_rate_scale's factor, kept by the GPU's real time a frame)
+#endif
 #else
 #define CQ_QUERIES CQ_MAX
 #endif
@@ -353,6 +356,7 @@ void vk_pace_frame(void) {
         uint64_t total = gpu_busy_total, gpu = total - last_busy;
         last_busy = total;
         g_pace_gpu_ms = gpu / 1e6;
+        drs_rate_follow(g_pace_gpu_ms);
         if (gpu_mode == 2) {
             extern bool framepace_on(void);
             extern uint64_t framepace_period_ns(void);
@@ -509,23 +513,58 @@ void vk_pace_frame(void) {
 // read as GPU time took it down several steps at once. Steadied: the median of the last 9 frames' times (record: a
 // resolved GPU time joins them; the provisional host times only read them). Hold sharp / low: a steady 20 / 40 ms.
 // (0.2.8-slate.10) At Frame rate 40 or 60 the time is also scaled to the frame the game should fit: its resolution
-// aims at its present interval's budget (16.7 ms a vsync: 33 ms in its 30 fps way), and 40 fps needs 25 ms, 60 needs
-// 16.7 - so the GPU time is reported as budget / frame of it, and the game lowers its resolution until a frame fits.
-// (At 60 the counters were capped at 8 ms instead - upstream's Adreno, where frames fit: on the Tab S10 Ultra's Mali
-// the resolution then never came down, a frame took 25-28 ms, and 60 fps stayed at ~30.)
+// aims at its own budget (16.7 ms a vsync of its present interval: 33 ms in its 30 fps way), and 40 fps needs 25 ms, 60
+// needs 16.7 - so the GPU time is reported larger, and the game lowers its resolution until a frame fits. (At 60 the
+// counters were capped at 8 ms instead - upstream's, for an Adreno where frames fit: on the Tab S10 Ultra's Mali the
+// resolution then never came down, a frame took 25-28 ms, and 60 fps stayed at ~30.)
+// (0.2.8-slate.11) The factor follows the GPU's real time a frame (drs_rate_follow, twice a second): it starts at 1,
+// grows 8% while the GPU's frames average over 92% of the frame and shrinks while they're under 75% - so the resolution
+// comes down only as far as the frame rate needs, wherever the game's own budget really is, and stays at the top where
+// frames fit. Between 1 and 3. (Simulated against a model of the game's resolution, budget 33 or 16.7 ms, GPU 10-28 ms
+// at the top: 60 held wherever the lowest resolution allows it; starting at budget / frame, 2, took it lower than
+// needed - 68% of the pixels where 77% held 60.)
+static _Atomic int g_drs_k;  // (thousandths; 0: 1)
 static double drs_rate_scale(void) {
 #ifdef __ANDROID__
     if (g_settings.fps_mode != 2 && g_settings.fps_mode != 3) return 1;
     extern int framepace_current_fps(void);
-    extern int g_present_interval;
     int fps = framepace_current_fps();
     if (fps <= 30) return 1;  // (menus, cutscenes, movies: 30 there)
-    double budget = 16.6667 * (g_present_interval >= 2 ? g_present_interval : 1), want = 1000.0 / fps;
-    return budget > want ? budget / want : 1;
+    int k = atomic_load_explicit(&g_drs_k, memory_order_relaxed);
+    return k > 0 ? k / 1000.0 : 1;
 #else
     return 1;
 #endif
 }
+#ifdef __ANDROID__
+static void drs_rate_follow(double gpu_ms) {
+    static double sum;
+    static int n, last_mode = -1;
+    extern int framepace_current_fps(void);
+    int fps = framepace_current_fps();
+    bool fixed = g_settings.fps_mode == 2 || g_settings.fps_mode == 3;
+    if (g_settings.fps_mode != last_mode) atomic_store(&g_drs_k, 0), last_mode = g_settings.fps_mode;  // (from 1 again)
+    if (!fixed || fps <= 30 || g_settings.drs_mode == 1 || g_settings.drs_mode == 2) { sum = 0, n = 0; return; }
+    if (gpu_ms <= 0 || gpu_ms > 250) return;
+    sum += gpu_ms;
+    if (++n < fps / 2) return;  // (twice a second)
+    double want = 1000.0 / fps, avg = sum / n;
+    sum = 0, n = 0;
+    int k0 = atomic_load(&g_drs_k);
+    double k = k0 > 0 ? k0 / 1000.0 : 1;
+    if (avg > want * 0.92) k *= 1.08;
+    else if (avg < want * 0.75) k /= 1.08;
+    k = k < 1 ? 1 : k > 3 ? 3 : k;
+    int k1 = (int)(k * 1000 + 0.5);
+    atomic_store(&g_drs_k, k1);
+    static double logged;
+    if (fabs(k - logged) >= 0.25 || ((k == 1 || k == 3) && k != logged)) {
+        logged = k;
+        LOG("[dynres] the game's resolution for %d fps: GPU %.1f ms a frame of %.1f, its time reported x%.2f\n", fps, avg,
+            want, k);
+    }
+}
+#endif
 
 static uint64_t drs_filter(const uint64_t *start_entry, uint64_t value, bool record) {
     int mode = g_settings.drs_mode;
@@ -556,10 +595,11 @@ static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *en
 #ifdef __ANDROID__
     static int fast = -1;
     if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") ? atoi(getenv("LARECOMP_FAST_COUNTERS")) : 0;
-    extern bool vk_gpu_is_arm(void);
-    static int arm = -1;  // (Mali: no cap at 60 - drs_rate_scale lets its resolution come down instead)
-    if (arm < 0) arm = vk_gpu_is_arm();
-    if ((!pace_slow && pace_on > 0 && (fast || (g_settings.fps_mode == 2 && !arm))) || fast == 2) {  // (2: with LARECOMP_PACE=0 too, a test)
+    // (Sheikah Slate) not at Frame rate 60 with the frame pacer (1.8.2, 1.9.0): there the counters only feed the game's
+    // resolution, and drs_rate_scale lets it come down as far as 60 needs - capped at 8 ms it stayed at the top whatever
+    // the GPU took (upstream's choice, for an Adreno where frames fit: there the factor goes back to 1 and the top stays)
+    extern bool framepace_on(void);
+    if ((!pace_slow && pace_on > 0 && (fast || (g_settings.fps_mode == 2 && !framepace_on()))) || fast == 2) {  // (2: with LARECOMP_PACE=0 too, a test)
         uint64_t max = start_entry[1] + ns_to_gpu_ticks(PACE_FAST_NS);
         return value > max ? max : value;
     }

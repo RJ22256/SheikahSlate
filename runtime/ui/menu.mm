@@ -523,19 +523,20 @@ static void tab_display(void) {
     opt_section("Display");
 #ifdef __ANDROID__
     {   // (Sheikah Slate: settings.c settings_apply_mode - three sets of the options below, from the tablet's logs)
-        static const char *modes[] = {"Battery", "Performance", "Turbo", "Custom"};
+        static const char *modes[] = {"Battery", "Performance", "Turbo", "Turbo 60", "Custom"};
         int mi = settings_current_mode();
         // (Custom only while the options match none: from it either way goes to a mode, never back to Custom)
-        if (opt_choice("Mode", &mi, modes, mi == MODE_CUSTOM ? 4 : 3, MODE_PERFORMANCE,
-                       "Sets the options below for this tablet, from its performance logs. Battery: 30 fps with the "
-                       "screen at 60 Hz, the game's lowest resolution held and the lighter Snapdragon GSR upscaler - "
-                       "the GPU stays cool and the battery lasts longest. Performance: 30 fps, each frame shown for "
-                       "exactly 4 refreshes of the 120 Hz screen, the game's resolution steadied and AMD FSR 1, the "
-                       "sharpest upscaler - the best image (in the logs: 29-30 fps in the world, the scene at 1440x810 "
-                       "most of the time). Turbo: 40 fps, each frame shown for exactly 3 refreshes of the 120 Hz "
-                       "screen - smoother, the resolution comes down as far as each frame needs, and the tablet runs "
-                       "warmer. All three: a 1080p image, no extra anti-aliasing, Sync lag on. Custom: shown once you "
-                       "change any of them below.") &&
+        if (opt_choice("Mode", &mi, modes, mi == MODE_CUSTOM ? 5 : 4, MODE_PERFORMANCE,
+                       "Sets the options below, made from the Galaxy Tab S10 Ultra's performance logs (they work on "
+                       "phones too). Battery: 30 fps with the screen at 60 Hz, the game's lowest resolution held and the "
+                       "lighter Snapdragon GSR upscaler - the GPU stays cool and the battery lasts longest. Performance: "
+                       "30 fps, each frame shown for exactly 4 refreshes of a 120 Hz screen, the game's resolution "
+                       "steadied and AMD FSR 1, the sharpest upscaler - the best image. Turbo: 40 fps, each frame shown "
+                       "for exactly 3 refreshes - smoother, the resolution lowered as far as each frame needs. Turbo 60: "
+                       "60 fps, 2 refreshes a frame, the resolution lowered as far as 60 needs - the smoothest, the "
+                       "softest image and the most heat; the Tab's GPU may not hold 60 even at the lowest resolution, a "
+                       "Snapdragon phone's can. All of them: a 1080p image, no extra anti-aliasing, Sync lag on. Custom: "
+                       "shown once you change any of them below.") &&
             mi != MODE_CUSTOM) {
             settings_apply_mode(mi);
             android_set_display_refresh(g_settings.display_refresh);

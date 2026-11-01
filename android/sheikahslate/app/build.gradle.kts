@@ -24,8 +24,8 @@ android {
         // (each build installs over the last: same application id, same key, a versionCode never lower. The game code
         // built on the tablet stays valid while android/gamelib_id.expected does - the CI checks it; 0.2.8's generator
         // gave it a new id: built once more on the tablet, or Native Mode)
-        versionCode = 10
-        versionName = "0.2.8-slate.10"  // (upstream BOTWRecompAndroid 0.2.8-beta, Galaxy Tab S10 Ultra port 10)
+        versionCode = 11
+        versionName = "0.2.8-slate.11"  // (upstream BOTWRecompAndroid 0.2.8-beta, Galaxy Tab S10 Ultra port 11)
         ndk {
             abiFilters += "arm64-v8a"
         }

@@ -45,6 +45,21 @@ extern "C" void vk_imgui_backend_shutdown(void) {
 }
 
 // A static RGBA8 image for ImGui (start screen background). Returns the ImTextureID.
+// (Sheikah Slate: each one's image kept, so vk_imgui_texture_free can let it go - Settings > Look changes the background)
+#include <vector>
+struct ImguiTex { uint64_t id; VkImage img; VmaAllocation mem; VkImageView view; };
+static std::vector<ImguiTex> g_imgui_tex;
+extern "C" void vk_imgui_texture_free(uint64_t id) {
+    for (size_t i = 0; i < g_imgui_tex.size(); i++) {
+        if (g_imgui_tex[i].id != id) continue;
+        vkDeviceWaitIdle(g_vk.dev);  // (the frames before may still sample it)
+        ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)id);
+        vkDestroyImageView(g_vk.dev, g_imgui_tex[i].view, NULL);
+        vmaDestroyImage(g_vk.vma, g_imgui_tex[i].img, g_imgui_tex[i].mem);
+        g_imgui_tex.erase(g_imgui_tex.begin() + (long)i);
+        return;
+    }
+}
 extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h) {
     VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.imageType = VK_IMAGE_TYPE_2D;
@@ -75,5 +90,7 @@ extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h) {
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkImageView view;
     if (vkCreateImageView(g_vk.dev, &vi, NULL, &view) != VK_SUCCESS) return 0;
-    return (uint64_t)ImGui_ImplVulkan_AddTexture(vk_default_sampler(true), view, VK_IMAGE_LAYOUT_GENERAL);
+    uint64_t id = (uint64_t)ImGui_ImplVulkan_AddTexture(vk_default_sampler(true), view, VK_IMAGE_LAYOUT_GENERAL);
+    if (id) g_imgui_tex.push_back({id, img, mem, view});
+    return id;
 }

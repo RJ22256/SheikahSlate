@@ -1,6 +1,6 @@
 // Desktop test of Video > Mode (runtime/settings.c): Performance the defaults on the Galaxy Tab S10 Ultra, applied once
 // over an older settings file (and written back with tab_preset), not again over the player's own changes after, and
-// not on another device; Battery, Performance and Turbo each recognised, Custom once an option is changed; 40 fps kept
+// not on another device; Battery, Performance, Turbo and Turbo 60 each recognised, Custom once an option is changed; 40 fps kept
 // in the settings file.
 //   clang -D__ANDROID__ -Iruntime -I<SDL3 include> -I<stub dir with sys/system_properties.h> -o build/test_modes \
 //         tools/test_modes.c runtime/settings.c && build/test_modes
@@ -83,18 +83,18 @@ int main(void) {
 
     run("tab-s10-ultra", "tab_preset = 9\nupscaler = sgsr1\nantialias = smaa\n", got, sizeof got);
     printf("  the player's own changes after it: %s\n", got);
-    expect(strstr(got, "up 3") != NULL && strstr(got, "aa 1") != NULL && strstr(got, "mode 3") != NULL,
+    expect(strstr(got, "up 3") != NULL && strstr(got, "aa 1") != NULL && strstr(got, "mode 4") != NULL,
            "not applied again over the player's changes (Custom)");
 
     run("phone", NULL, got, sizeof got);
     printf("  another device: %s\n", got);
-    expect(strstr(got, "mode 3") != NULL, "not the default on another device");
+    expect(strstr(got, "mode 4") != NULL, "not the default on another device");
 
     run("phone", "frame_rate = auto\n", got, sizeof got);
     expect(!ini_has("tab_preset"), "not applied on another device's settings file");
 
     // each mode applied (in a child, as the menu does after settings_load), recognised, and Custom once changed
-    for (int m = MODE_BATTERY; m <= MODE_TURBO; m++) {
+    for (int m = MODE_BATTERY; m <= MODE_TURBO60; m++) {
         unlink("sheikahslate.ini");
         fflush(stdout);
         pid_t p = fork();
@@ -114,6 +114,8 @@ int main(void) {
         snprintf(what, sizeof what, "mode %d: applied, recognised, Custom once an option changes", m);
         expect(WIFEXITED(st) && WEXITSTATUS(st) == 0, what);
         if (m == MODE_TURBO) expect(ini_has("frame_rate = 40") && ini_has("display_refresh = max"), "Turbo: 40 fps on the highest refresh, saved");
+        if (m == MODE_TURBO60) expect(ini_has("frame_rate = 60") && ini_has("display_refresh = max") && ini_has("upscaler = sgsr1"),
+                                      "Turbo 60: 60 fps on the highest refresh, saved");
         if (m == MODE_BATTERY) expect(ini_has("frame_rate = 30") && ini_has("display_refresh = 60"), "Battery: 30 fps at 60 Hz, saved");
     }
 
