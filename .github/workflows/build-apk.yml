@@ -104,13 +104,17 @@ jobs:
           fi
           echo "::notice title=Game code id::$ID - the game code already built on the tablet stays valid"
 
-      - name: Desktop tests (tablet layout, threaded BC decode, on-tile read shaders, thread sampler, frame pacing)
+      - name: Desktop tests (tablet layout, threaded BC decode, on-tile read shaders, thread sampler, frame pacing, preset)
         run: |
           mkdir -p build
           clang -O1 -Iruntime -o build/test_tablet_layout tools/test_tablet_layout.c -lm
           build/test_tablet_layout
           clang -O1 -Wall -Iruntime/nvn/vulkan -o build/test_display_pacing tools/test_display_pacing.c runtime/nvn/vulkan/display_pacing.c -lm
           build/test_display_pacing
+          mkdir -p build/stub/sys
+          printf '#define PROP_VALUE_MAX 92\nint __system_property_get(const char *, char *);\n' > build/stub/sys/system_properties.h
+          clang -O1 -Wall -D__ANDROID__ -Iruntime -Iandroid/deps/out/include -Ibuild/stub -o build/test_tab_preset tools/test_tab_preset.c runtime/settings.c
+          build/test_tab_preset
           python3 tools/test_bc_threads.py
           sudo apt-get install -y -qq glslang-tools >/dev/null
           python3 tools/test_tile_glsl.py "$(command -v glslangValidator)"

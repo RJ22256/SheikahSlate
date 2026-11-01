@@ -338,12 +338,28 @@ void vk_pace_frame(void) {
     if (follow < 0) follow = getenv("LARECOMP_ADPF_FOLLOW") != NULL;
     {   // LARECOMP_ADPF_GPU=1 (a test): the GPU's time too (API 35+), so its governor would raise its clock for 60 fps
         // as well. Accepted on the Snapdragon 8 Elite (2026-10-16) but nothing measurable changed: off by default.
-        static int no_gpu = -1;
-        if (no_gpu < 0) no_gpu = getenv("LARECOMP_ADPF_GPU") == NULL;
+        // (Sheikah Slate) Arm GPUs - the Tab S10 Ultra's Mali - send it by default, scaled to the frame's own budget:
+        // at 30 fps a GPU frame up to 90% of its 33 ms reads as within the 16.7 ms target, one over it as over - the
+        // governor raises the GPU's clock where frames are about to miss (the tablet's logs: the game's resolution
+        // dipped then, the game waiting on the GPU), not for every frame. LARECOMP_ADPF_GPU=0: never.
+        static int gpu_mode = -1;  // (0 off, 1 the raw time, 2 scaled to the frame's budget)
+        if (gpu_mode < 0) {
+            const char *e = getenv("LARECOMP_ADPF_GPU");
+            extern bool vk_gpu_is_arm(void);
+            gpu_mode = e ? (atoi(e) ? 1 : 0) : vk_gpu_is_arm() ? 2 : 0;
+        }
+        bool no_gpu = gpu_mode == 0;
         static uint64_t last_busy;
         uint64_t total = gpu_busy_total, gpu = total - last_busy;
         last_busy = total;
         g_pace_gpu_ms = gpu / 1e6;
+        if (gpu_mode == 2) {
+            extern bool framepace_on(void);
+            extern uint64_t framepace_period_ns(void);
+            uint64_t period = framepace_on() ? framepace_period_ns() : pace_slow ? 33333333ull : 16666667ull;
+            if (period < 16666667ull) period = 16666667ull;
+            gpu = (uint64_t)((double)gpu * 16666667.0 / (0.9 * (double)period));
+        }
         // (per presented frame, against 60 fps's budget in either mode: a 30 fps frame renders one image too - its GPU
         // time is what a 60 fps frame would take, and halved it looked comfortable: the clock stayed low)
         // The render hint defaults to the established wall-time signal; CPU-only timing is opt-in.

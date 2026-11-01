@@ -96,6 +96,14 @@ void settings_save(void);
 // The menu's RESTORE DEFAULTS: the Video and Audio options back to the defaults (the language, the controls, the touch
 // layout, mods and the one-time questions stay)
 void settings_reset_defaults(void);
+#ifdef __ANDROID__
+// (Sheikah Slate) Video > Graphics preset: the Galaxy Tab S10 Ultra's own settings, from its performance logs
+// (settings.c). On the tablet they are the defaults, and they were applied once over earlier settings on the first
+// start of 0.2.8-slate.9.
+bool settings_on_tab(void);             // the device profile is the Tab S10 Ultra's (SlateDisplay.java)
+void settings_apply_tab_preset(void);
+bool settings_tab_preset_on(void);      // the settings are the preset's now
+#endif
 // The language code to serve the game ("es", "en-US", ...): the setting, or the host locale for LANG_AUTO
 const char *settings_language(void);
 // That code's name for the menu ("Spanish")

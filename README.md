@@ -4,22 +4,24 @@
 
 *Breath of the Wild, recompiled, on the slate in your hands.*
 
-Sheikah Slate is a port of [BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) (0.1.9-beta) made
+Sheikah Slate is a port of [BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) (0.2.8-beta) made
 specifically for the **Samsung Galaxy Tab S10 Ultra** (SM-X920 / SM-X926B / SM-X920N / SM-X926N). Like upstream, it is
-a static recompilation of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions 1.0.0, 1.6.0 and 1.8.2):
-not an emulator. The game's ARM64 code becomes C compiled for the device, and its NVN graphics are translated to Vulkan.
+a static recompilation of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions 1.0.0, 1.6.0, 1.8.2 and
+1.9.0): not an emulator. The game's ARM64 code becomes C compiled for the device (or, in upstream's experimental Native
+Mode, runs as it is), and its NVN graphics are translated to Vulkan. Everything upstream's 0.2.8 has is here - saves
+import and export (a .zip, or an emulator's save folder), the DLC, game files used in place, Sync lag, 60 fps
+cutscenes, eleven menu languages - with the tablet's own work on top.
 
 It installs as its own app (`com.sheikahslate.tab`), so it can sit next to upstream's.
 
 > [!WARNING]
-> **Untested on the hardware it targets.** The changes below were written and checked from the source (compile checks
-> and unit tests on a desktop), not on a Tab S10 Ultra. Upstream was tested on one phone with an Adreno GPU; the Tab's
-> Immortalis-G720 is a Mali GPU and takes the engine's slower, compatible paths. Expect bugs, and please report
-> what you see: [docs/TAB-S10-ULTRA.md](docs/TAB-S10-ULTRA.md) has a test checklist.
+> **Beta.** The tablet work is written and checked from the source and tuned from logs sent from a Tab S10 Ultra
+> (29-30 fps in the world at 0.1.9-slate.8); this build itself hasn't run on one yet. Please report what you see:
+> [docs/TAB-S10-ULTRA.md](docs/TAB-S10-ULTRA.md) has a test checklist.
 
 > [!NOTE]
-> **No game files are included.** You need your own legally obtained dump of *Breath of the Wild* 1.0.0, 1.6.0 or
-> 1.8.2 (`exefs` and `romfs`, extracted). Instructions on how to obtain it will not be provided.
+> **No game files are included.** You need your own legally obtained dump of *Breath of the Wild* 1.0.0, 1.6.0,
+> 1.8.2 or 1.9.0 (`exefs` and `romfs`, extracted). Instructions on how to obtain it will not be provided.
 
 ## What's different from upstream
 
@@ -30,10 +32,14 @@ It installs as its own app (`com.sheikahslate.tab`), so it can sit next to upstr
 | Camera notch | Not handled (on Android 14, the window stopped short of it) | Window drawn under it on every version; on-screen controls move out from under it, also with the tablet turned around |
 | On-screen controls | Sized as % of screen height: on a 14.6" panel, 3 cm buttons 5 cm from the corners | Sized in millimetres on big screens (~14 mm buttons, near the edges); phones unchanged |
 | Refresh rate | Left to One UI | Video > Display refresh rate: Highest (120 Hz), 60 Hz or System |
-| Mali GPU memory path | The guest heap import, never exercised on Android; a refusal left shaders reading zeros for the whole run | Probed at start; a refusal (now or in an earlier run) takes the CPU-copy path from the beginning |
-| Game text on Mali | 64-bit shader address math (Turnip-tested): letters missing or wrong on the Tab | 32-bit shader math automatic on Arm GPUs (upstream's own advice for Mali) |
-| Texture streaming | BC textures decoded on one thread, the one recording the frame | Big levels decoded on 3 worker threads too (same output, tested) |
-| Decal in-place reads | Turnip only, even when set to On | On works on any GPU (experiment on Mali; Automatic stays off) |
+| Graphics settings | Made on an Adreno phone | Video > Graphics preset **Tab S10 Ultra**, from the tablet's own logs: 30 fps paced to the 120 Hz screen, 900p scene steadied, FSR 1 to 1080p (the default on the tablet) |
+| Frame pacing | A frame goes up when the GPU finishes it: 3, 4 or 5 refreshes at 30 fps | Video > Even frame pacing: each frame aimed at a refresh of its own, 4 apart (VK_GOOGLE_display_timing) |
+| Decals on Mali | The pass ends before each decal that reads the G-buffer (a store and reload of every target on a tiler) | Read from the GPU's tile memory (VK_EXT_shader_tile_image): no pass breaks |
+| Render passes on Mali | Each of ~300 passes a frame waits for the whole GPU | Video > Overlap render passes: geometry overlaps the pass before |
+| Game's resolution changes | Every frame's GPU time: a hitch swung it several steps | Video > Game's resolution changes: Steadied (the median of 9 frames), Hold sharp, Hold low |
+| Game text on Mali | 64-bit shader address math by default: letters missing or wrong on the Tab | 32-bit shader math automatic on Arm GPUs |
+| Texture streaming | BC textures decoded on one thread | Big levels decoded on 3 worker threads too (same output, tested) |
+| Performance capture | GPU time per pass | Also the CPU per thread with callers, memory by kind, the heaviest shaders, why passes break (Video > Capture a performance profile) |
 | Driver error text | "Install a Turnip driver" (Adreno only) | Says Mali runs the system driver only |
 | Name, icon | BOTWRecompAndroid, Triforce | Sheikah Slate, an original slate-and-mountains icon |
 
@@ -41,10 +47,14 @@ Details, reasoning and the files involved: [docs/TAB-S10-ULTRA.md](docs/TAB-S10-
 
 ## Installing
 
-1. Build the APK (below) and install it on the tablet. You need about 30 GB free per game version.
+1. Build the APK (below) and install it on the tablet. You need about 30 GB free per game version (or use the game
+   files in place: Game files > Use them in place).
 2. Open **Sheikah Slate**, go to **Set up game files** and choose the folder with your `exefs` and `romfs`. The app
-   copies what it needs and recompiles the game on the tablet (a long wait, the first time).
-3. The Tab's Mali GPU runs Samsung's own Vulkan driver; Turnip driver packages are for Adreno GPUs and won't load.
+   recompiles the game on the tablet (a long wait, the first time and after an update that changes the game code -
+   0.2.8-slate.9 is one). It keeps building with the screen off.
+3. Saves: start screen > Settings > **Saves** - Import saves (a .zip, one exported here or any holding 0, 1, 2... and
+   option.sav), Import from folder (an emulator's save folder), Export saves.
+4. The Tab's Mali GPU runs Samsung's own Vulkan driver; Turnip driver packages are for Adreno GPUs and won't load.
    Keep the tablet's software up to date.
 
 ## Building (developers)

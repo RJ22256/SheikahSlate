@@ -348,6 +348,39 @@ system ignores the asked-for times. `LARECOMP_EVEN_PACING=0/1`, `LARECOMP_NO_DIS
   and the game's code as `botwgame.so!f_<address>` (its own addresses: 0x7000000000 + offset in main).
 - CI also commits the runtime's symbols to the branch `symbols` (`libmain-<commit>.txt`).
 
+## Update 9 (0.2.8-slate.9): upstream 0.2.8 underneath, a graphics preset for the tablet
+
+Upstream's 0.2.8-beta is now the base (a three-way merge from 0.1.9-beta): game version 1.9.0, **saves import and
+export** (start screen > Settings > Saves: a .zip exported here or any holding 0, 1, 2... and option.sav; Import from
+folder takes an emulator's save folder; the saves before are kept beside them), the DLC, game files used in place (no
+16 GB copy), Native Mode (experimental), Sync lag, 60 fps cutscenes, eleven menu languages, the game code build going on
+with the screen off, and upstream's own Mali work - the arena cached with hand flushes and invalidations (the same idea
+as this port's Update 4: upstream's version kept), chained compute dispatches, render targets Mali can compress (AFBC),
+copy-range learning and idle transient chunks handed back (upstream's fix for Mali-G720 crashes after minutes). The
+port's per-frame copy sharing (Update 6, measured useless) is gone; everything else of Updates 1-8 is on top.
+
+**The game code id changes** (0.2.8's generator: 65da5d95e597ba58): the first start builds the game code again, once
+(about an hour on the tablet, screen off is fine) - or Video > Native game code (experimental; upstream hasn't tested
+it with 1.8.2).
+
+### 28. Video > Graphics preset: Tab S10 Ultra (`settings.c` tab_preset_into)
+
+From the logs of Updates 4-8: 30 fps (the GPU took 25-28 ms at the top resolution, ~20 at the lowest: 60 is out of
+reach, 30 held), Display refresh rate Highest with Even frame pacing (4 refreshes a frame), Internal resolution 1x with
+the game's resolution changes Steadied (1440x810 most of the time, half-second dips in busy moments), Output resolution
+Auto (1080 lines on the 1848-line panel), AMD FSR 1 (the sharpest; ~2 ms at 1080 lines, within the frame's room), no
+extra anti-aliasing, overlapping passes and 32-bit shader math automatic, Sync lag on. The defaults on the tablet;
+applied once over earlier settings on the first start of this version (`tab_preset = 9` in sheikahslate.ini); the menu
+shows Custom once any of them is changed, and choosing Tab S10 Ultra puts them all back. Tested on the desktop
+(`tools/test_tab_preset.c`).
+
+### 29. The GPU's time in Android's performance hints (`exec.c` vk_pace_frame)
+
+On Arm GPUs the frame's GPU time now goes into the performance hint session (API 35+), scaled to the frame's own
+budget: at 30 fps a GPU frame within 90% of its 33 ms reads as on target, a longer one as over - so the governor raises
+the GPU's clock where frames are about to miss (where the game lowered its resolution in the logs), not for every frame.
+`LARECOMP_ADPF_GPU=0`: off; `=1`: the raw time (upstream's test).
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep

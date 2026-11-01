@@ -521,6 +521,22 @@ static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
+#ifdef __ANDROID__
+    {   // (Sheikah Slate: settings.c settings_apply_tab_preset - the Galaxy Tab S10 Ultra's, from its logs)
+        static const char *pre[] = {"Tab S10 Ultra", "Custom"};
+        int pi = settings_tab_preset_on() ? 0 : 1;
+        if (opt_choice("Graphics preset", &pi, pre, 2, 0,
+                       "The settings made for this tablet from its performance logs: 30 fps, each frame shown for exactly 4 "
+                       "refreshes of the 120 Hz screen; the Switch's 900p scene (1x) with the game's own resolution changes "
+                       "steadied, scaled to a 1080p image by AMD FSR 1, the sharpest upscaler; no extra anti-aliasing; "
+                       "overlapping render passes, 32-bit shader math and Sync lag on. In the logs: 29-30 fps in the world, "
+                       "the scene at 1440x810 most of the time. Tab S10 Ultra: applies them all at once. Custom: shown once "
+                       "you change any of them below.") && pi == 0) {
+            settings_apply_tab_preset();
+            android_set_display_refresh(g_settings.display_refresh);
+        }
+    }
+#endif
     const char *aspects[] = {"Unlocked", "Original 16:9"};
     opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
                "Unlocked: the view fills the screen, so wider screens show more of Hyrule, and the HUD moves out to its "
