@@ -53,7 +53,7 @@ typedef struct {
                                   // 2's) baked into pipelines (exec.c PipeKey.fx)
     bool eds2;                    // extended dynamic state 2 in use; without it, depth bias and primitive restart are
                                   // pipeline state (exec.c PipeKey.prim_restart)
-#ifdef __ANDROID__
+    // (WSword: on every platform - the PC build leaves the Android-only ones off)
     bool map_placed;              // VK_EXT_map_memory_placed: the guest heap mapped as GPU memory (exec.c vk_heap_place)
     uint64_t placed_align;
     bool exec_stats;              // (Android, LARECOMP_SHADER_STATS=1) the compiler's statistics of each pipeline, logged
@@ -61,7 +61,6 @@ typedef struct {
     bool display_timing;          // VK_GOOGLE_display_timing: when presents went up on screen, and when to (device.c pacing)
     uint32_t api;                 // the device's Vulkan version as used: 1.3, or 1.1 / 1.2 with extensions (device.c)
     bool fp16;                    // shaderFloat16 enabled (WSword: frame generation's FP16 shaders, framegen.cpp)
-#endif
     // window
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;

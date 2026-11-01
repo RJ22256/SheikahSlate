@@ -22,6 +22,10 @@ static inline int unsetenv(const char *k) { return _putenv_s(k, ""); }
 
 static inline int fsync(int fd) { return _commit(fd); }
 
+// (WSword: the log's thread ids - nvn/objects.c; the Windows thread id without windows.h here)
+#include <pthread.h>
+static inline int gettid(void) { return (int)(uintptr_t)pthread_self(); }
+
 #ifndef _CRT_RAND_S
 int __cdecl rand_s(unsigned int *v);  // (declared by stdlib.h only with _CRT_RAND_S)
 #endif

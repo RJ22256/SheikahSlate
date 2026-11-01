@@ -35,9 +35,6 @@ Settings g_settings = {
     .reverb = true,
     .movie_audio = true,
     .motion = true,
-#ifdef __ANDROID__
-    .show_fps = true,  // (the performance overlay, ui/perf_overlay.mm: on until turned off in the menu)
-    .touch_controls = true,
     .overlay_pos = {-1, -1},
     .touch_pos = {{-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1},
                   {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
@@ -55,16 +52,21 @@ Settings g_settings = {
     .fg_flow = 0,  // (Automatic: Lossless Scaling's advice by the image's height - 100% at 1080 lines, 60% at the Tab's 1848)
     .fg_perf = false,
     .event_fps_unlock = false,  // (some events count frames: hle/framepace.c in_event)
+    .sync_lag = true,           // (a few more fps; the CPU's reads of GPU results a frame old: nvn/objects.c nvnSyncWait)
+    .mouse_sens = 1.0f,         // (PC: the mouse as the camera while the game has it; 0 off)
+#ifdef __ANDROID__
+    .show_fps = true,  // (the performance overlay, ui/perf_overlay.mm: on until turned off in the menu)
+    .touch_controls = true,
     .fps_mode = 1,  // (30: the game's own choice dropped the overworld to 20, where the GPU's clocks settled low)
     .res_mode = 1,  // (1x: the Switch's 900p scene, the HUD at the screen's resolution - Match display drew the scene at
                     // 2560x1440 on the POCO F7 Ultra: 22 fps)
 #else
     .show_fps = false,
+    .fps_mode = 0,  // (PC: Auto - 60 fps where the PC keeps up, 30 where it doesn't; the scene at the window's size)
 #endif
 #ifdef __ANDROID__
     .upscaler = UPSCALE_SGSR1,  // (one pass: ~1 ms on the Adreno 830 to 2560x1440, FSR 1's two ~2.7 ms; 40 fps against 38)
     .native_code = false,       // (an experiment: runtime/native.c)
-    .sync_lag = true,           // (a few more fps; the CPU's reads of GPU results a frame old: nvn/objects.c nvnSyncWait)
     .out_lines = OUT_AUTO,      // (POCO F7 Ultra, 3200x1440, 1.8.2's Great Plateau: GPU 22.8 ms a frame at the screen's,
                                 // 18.6 at 1080 lines with a larger scene - the final image's passes over 2.2x the pixels)
 #else
@@ -214,7 +216,6 @@ void settings_reset_defaults(void) {
     g_settings.show_fps = d->show_fps;
     g_settings.motion = d->motion;
     g_settings.motion_source = d->motion_source;
-#ifdef __ANDROID__
     g_settings.touch_controls = d->touch_controls;
     g_settings.overlay_style = d->overlay_style;
     g_settings.fps_mode = d->fps_mode;
@@ -230,10 +231,8 @@ void settings_reset_defaults(void) {
     g_settings.sync_lag = d->sync_lag;
     g_settings.native_code = d->native_code;
     g_settings.files_in_place = d->files_in_place;
-#endif
 }
 
-#ifdef __ANDROID__
 // ---- (Sheikah Slate) Video > Mode, from the Galaxy Tab S10 Ultra's logs (0.1.9-slate.4 to .8; docs/TAB-S10-ULTRA.md):
 // the GPU took 25-28 ms of a frame at the game's top resolution and ~20 at its lowest; the CPU had room.
 //   - Battery: 30 fps on the screen at 60 Hz (each frame up for 2 refreshes), the game's lowest resolution held, the
@@ -253,6 +252,24 @@ bool settings_on_tab(void) {
     return p && !strcmp(p, "tab-s10-ultra");
 }
 static void mode_into(Settings *s, int mode) {
+#ifndef __ANDROID__
+    // (WSword PC) the same four for a PC's GPU: Battery - 30 fps, the game's lowest resolution held, a light upscaler
+    // (a laptop on its battery); Performance - 30 fps, the scene at the window's size; Turbo - 40 fps (3 refreshes of a
+    // 120 Hz monitor a frame); Turbo 60 - 60 fps, the resolution as far down as 60 needs. Even pacing automatic.
+    s->fps_mode = mode == MODE_TURBO60 ? 2 : mode == MODE_TURBO ? 3 : 1;
+    s->display_refresh = 0;
+    s->even_pacing = -1;
+    s->res_mode = mode == MODE_BATTERY ? 1 : RES_MATCH;
+    s->upscaler = mode == MODE_BATTERY ? UPSCALE_SGSR1 : UPSCALE_FSR1;
+    s->out_lines = 0;
+    s->antialias = AA_OFF;
+    s->drs_mode = mode == MODE_BATTERY ? 2 : 0;
+    s->pass_overlap = -1;
+    s->shader_int32 = -1;
+    s->sync_lag = true;
+    s->event_fps_unlock = false;
+    return;
+#endif
     s->fps_mode = mode == MODE_TURBO60 ? 2 : mode == MODE_TURBO ? 3 : 1;
     s->display_refresh = mode == MODE_BATTERY ? 1 : 0;
     s->even_pacing = -1;
@@ -284,7 +301,6 @@ int settings_current_mode(void) {
     }
     return MODE_CUSTOM;
 }
-#endif
 
 void settings_load(void) {
     static bool loaded;
@@ -296,24 +312,13 @@ void settings_load(void) {
     loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) return;
-#ifdef __ANDROID__
     g_tab_preset_rev = 0;  // (a settings file: its own tab_preset line says)
-#endif
-#ifdef __ANDROID__
     char line[640];  // (touch_layout: 24 numbers)
-#else
-    char line[256];
-#endif
     bool tip_key = false, aspect_key = false, output_key = false;
     while (fgets(line, sizeof line, f)) {
         char key[64];
-#ifdef __ANDROID__
         char val[512] = "";  // (a key with nothing after "=": mods_off when every mod is on)
         if (sscanf(line, " %63[^= ] = %511[^\n]", key, val) < 1) continue;
-#else
-        char val[128] = "";
-        if (sscanf(line, " %63[^= ] = %127[^\n]", key, val) < 1) continue;
-#endif
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
@@ -322,11 +327,11 @@ void settings_load(void) {
         else if (!strcmp(key, "show_fps")) g_settings.show_fps = atoi(val) != 0;
         else if (!strcmp(key, "motion")) g_settings.motion = atoi(val) != 0;
         else if (!strcmp(key, "motion_source")) g_settings.motion_source = atoi(val) >= 0 && atoi(val) <= 2 ? atoi(val) : 0;
-#ifdef __ANDROID__
         else if (!strcmp(key, "overlay")) g_settings.overlay_style = !strcmp(val, "compact");
         else if (!strcmp(key, "overlay_pos")) sscanf(val, "%f,%f", &g_settings.overlay_pos[0], &g_settings.overlay_pos[1]);
-#endif
-#ifdef __ANDROID__
+        else if (!strcmp(key, "mouse_camera")) g_settings.mouse_sens = fminf(fmaxf((float)atof(val), 0), 5);
+        else if (!strcmp(key, "mouse_invert_y")) g_settings.mouse_invert_y = atoi(val) != 0;
+        else if (!strcmp(key, "fullscreen_exclusive")) g_settings.fullscreen_exclusive = atoi(val) != 0;
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
         else if (!strcmp(key, "cutscenes_60")) g_settings.event_fps_unlock = atoi(val) != 0;
         else if (!strcmp(key, "frame_rate"))
@@ -372,7 +377,6 @@ void settings_load(void) {
                 while (*q == ',' || *q == ' ') q++;
             }
         }
-#endif
         else if (!strcmp(key, "resolution")) {
             int n = atoi(val);
             g_settings.res_mode = !strcmp(val, "dynamic") ? RES_DYNAMIC : (!strcmp(val, "75%") || !strcmp(val, "67%")) ? RES_Q75 :
@@ -432,12 +436,12 @@ void settings_save(void) {
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "show_fps = %d\n", g_settings.show_fps);
     fprintf(f, "motion = %d\nmotion_source = %d\n", g_settings.motion, g_settings.motion_source);
-#ifdef __ANDROID__
     fprintf(f, "overlay = %s\n", g_settings.overlay_style == 1 ? "compact" : "full");
     fprintf(f, "overlay_pos = %.4f,%.4f\n", g_settings.overlay_pos[0], g_settings.overlay_pos[1]);
+#ifndef __ANDROID__
+    fprintf(f, "mouse_camera = %.2f\nmouse_invert_y = %d\nfullscreen_exclusive = %d\n", g_settings.mouse_sens,
+            g_settings.mouse_invert_y, g_settings.fullscreen_exclusive);
 #endif
-#ifdef __ANDROID__
-    fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
     fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : g_settings.fps_mode == 3 ? "40" : "auto");
     fprintf(f, "display_refresh = %s\n", g_settings.display_refresh == 1 ? "60" : g_settings.display_refresh == 2 ? "system" : "max");
     fprintf(f, "shader_math = %s\n", g_settings.shader_int32 < 0 ? "auto" : g_settings.shader_int32 ? "32" : "64");
@@ -454,8 +458,11 @@ void settings_save(void) {
     }
     if (g_tab_preset_rev) fprintf(f, "tab_preset = %d\n", g_tab_preset_rev);
     fprintf(f, "cutscenes_60 = %d\n", g_settings.event_fps_unlock);
-    fprintf(f, "sync_lag = %d\nnative_code = %d\nfiles_in_place = %d\n", g_settings.sync_lag, g_settings.native_code,
-            g_settings.files_in_place);
+    fprintf(f, "sync_lag = %d\n", g_settings.sync_lag);
+    fprintf(f, "stick_deadzone = %.2f\n", g_settings.stick_deadzone);
+#ifdef __ANDROID__
+    fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
+    fprintf(f, "native_code = %d\nfiles_in_place = %d\n", g_settings.native_code, g_settings.files_in_place);
     static const char *const tri[] = {"auto", "0", "1"};  // (-1 / 0 / 1)
 #define TRI(v) tri[(v) < 0 ? 0 : (v) ? 2 : 1]
     fprintf(f, "gpu_heap = %s\ninplace_reads = %s\nturnip_lrz = %s\nlog_file = %d\ngpu_model = %s\n", TRI(g_settings.gpu_heap),
@@ -464,7 +471,6 @@ void settings_save(void) {
     fprintf(f, "touch_drag_camera = %d\ntouch_drag_sens = %.2f\ntouch_sticks_hidden = %d\ntouch_half_areas = %d\n",
             g_settings.touch_drag_camera, g_settings.touch_drag_sens, g_settings.touch_sticks_hidden,
             g_settings.touch_half_areas);
-    fprintf(f, "stick_deadzone = %.2f\n", g_settings.stick_deadzone);
     fprintf(f, "touch_scale = %.2f\ntouch_opacity = %.2f\ntouch_layout = ", g_settings.touch_scale, g_settings.touch_opacity);
     for (int i = 0; i < TOUCH_NCTL; i++)
         fprintf(f, "%s%.4f,%.4f", i ? "," : "", g_settings.touch_pos[i][0], g_settings.touch_pos[i][1]);

@@ -1,4 +1,4 @@
-// Host OS interface for the Android runtime (runtime/platform/android.c).
+// Host OS interface: runtime/platform/android.c, runtime/platform/windows.c (WSword's PC build, from LAS Recomp's).
 // Compatibility headers below also support isolated development harnesses on the host.
 #pragma once
 #include <stdbool.h>
@@ -40,6 +40,19 @@ int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
+int plat_thread_realtime_check(uint64_t period_ns);  // (the calling thread, after a late wait) 0 the policy holds, 1 it was
+                                                     // gone and is set again, -1 can't tell; only macOS looks
+int plat_cpu_count(void);  // logical cores this process may run on (its affinity mask); 0 if unknown
+void plat_thread_guest(int prio);  // a guest thread's host scheduling class from its Switch priority (lower = more urgent)
+uint64_t plat_thread_cpu_ns(void);  // the calling thread's CPU time so far (user + system; diagnostics)
+// The calling thread is one of the frame's critical threads: on Windows, no power throttling (EcoQoS) for it and, on a
+// hybrid CPU, a preference for the performance cores (selected CPU sets; LARECOMP_PCORE=0: off). Elsewhere a no-op.
+enum { PLAT_PERF_GAME, PLAT_PERF_RENDER, PLAT_PERF_VSYNC };
+#ifdef _WIN32
+void plat_thread_perf_core(int role);
+#else
+static inline void plat_thread_perf_core(int role) { (void)role; }
+#endif
 
 // ---- process
 void plat_init(void);                                // first thing in main()
@@ -48,11 +61,34 @@ void plat_exec(char *const argv[]);  // replace the process (NULL = same command
 #if defined(_WIN32) || defined(__linux__)
 void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)
 #endif
+// The machine, for the log's first "[info]" line (runtime/main.c): nothing that identifies the player (no user name,
+// no paths). Fields left empty / 0 when unknown.
+typedef struct {
+    char os[128];          // "Windows 11 24H2 (x64)"
+    char cpu[128];
+    char cores_detail[48]; // optional, after the core count: "8P + 16E"
+    int cores, threads;    // physical cores, hardware threads
+    uint64_t ram;          // bytes
+    const char *package;   // "zip"; NULL: a build run from its folder
+} PlatSysInfo;
+void plat_system_info(PlatSysInfo *si);
 
 // Child processes (game code generator, game-file extraction). stdout + stderr go to log_path (NULL = /dev/null).
 typedef intptr_t PlatProc;  // 0 = failed to start
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log);
 int plat_proc_wait(PlatProc p, bool block);  // exit code (128+n: stopped by signal n), or -1 while still running (block = false)
+#define PLAT_PROC_SIGNALED 256               // + N: ended by signal N instead of exiting (not on Windows)
+#define PLAT_PROC_FAST_FAIL 512              // Windows: ended by a security check (0xC0000409, e.g. Control Flow Guard)
+#ifdef _WIN32
+// plat_spawn with Control Flow Guard off for the child (the generator: unicorn's longjmp fails CFG's check, LAS #337).
+// *error: 0 = started that way; else why not (then it was started normally, or not at all if that failed too)
+PlatProc plat_spawn_no_cfg(const char *const argv[], const char *log_path, bool append_log, unsigned long *error);
+// dir is synced by OneDrive (under a OneDrive folder, or a cloud file); false on other systems
+bool plat_onedrive_synced(const char *dir);
+// Something the player should know that doesn't stop the game: a warning dialog from its own thread
+void plat_notice(const char *text);
+bool plat_module_name(uint64_t pc, char *out, size_t n);  // the file of the module (exe / library / driver) holding pc
+#endif
 void plat_proc_kill(PlatProc p);             // end it and what it started (then it's gone: no wait)
 bool plat_remove_tree(const char *dir);      // rm -rf
 #ifdef _WIN32

@@ -36,7 +36,8 @@ typedef struct {
     bool show_fps;
     bool motion;          // the phone's (or a controller's) gyroscope as the controller's motion sensor (hle/motion.c)
     int motion_source;    // whose: 0 automatic (a controller's once its gyroscope is alive), 1 the phone's, 2 a controller's
-#ifdef __ANDROID__
+    // (WSword: every field on every platform - the PC build reads the same file; the ones a platform has no use for
+    // keep their defaults there)
     bool touch_controls;  // on-screen controls while no controller is connected (ui/touch_controls.mm)
     int overlay_style;    // Show FPS's overlay (ui/perf_overlay.mm): 0 full, 1 compact (one line)
     float overlay_pos[2]; // its top left, a share of the screen, dragged there with a finger (negative: the corner)
@@ -90,7 +91,10 @@ typedef struct {
     float touch_drag_sens;
     float stick_deadzone;  // a controller's sticks: a round dead zone (share of the travel, 0-0.4), rescaled past it
                            // (hle/input.c): worn sticks that drift. 0: the game's own only
-#endif
+    // (WSword PC) the mouse as the camera (hle/input.c): its motion tilts the right stick while the game has the mouse
+    float mouse_sens;     // 0: off; 1 = default speed
+    bool mouse_invert_y;
+    bool fullscreen_exclusive;  // PC: fullscreen takes the display's own mode (else borderless, at the desktop's)
     int language;        // LANG_AUTO or an index into g_language_codes: the game's text language
     bool aspect_asked;   // the start screen's one-time "authentic 16:9 or unlocked?" question was answered
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
@@ -104,15 +108,13 @@ void settings_save(void);
 // The menu's RESTORE DEFAULTS: the Video and Audio options back to the defaults (the language, the controls, the touch
 // layout, mods and the one-time questions stay)
 void settings_reset_defaults(void);
-#ifdef __ANDROID__
 // (Sheikah Slate) Video > Mode: three sets of the Video options for the Galaxy Tab S10 Ultra, from its performance logs
 // (settings.c mode_into). Performance is the tablet's default (and was applied once over earlier settings on the first
-// start of 0.2.8-slate.9: sheikahslate.ini tab_preset).
+// start of 0.2.8-slate.9: sheikahslate.ini tab_preset). (WSword PC: the same four, made for a PC - settings.c.)
 enum { MODE_BATTERY = 0, MODE_PERFORMANCE = 1, MODE_TURBO = 2, MODE_TURBO60 = 3, MODE_CUSTOM = 4 };
 bool settings_on_tab(void);             // the device profile is the Tab S10 Ultra's (SlateDisplay.java)
 void settings_apply_mode(int mode);
 int settings_current_mode(void);        // the mode the options are now, MODE_CUSTOM if none
-#endif
 // The language code to serve the game ("es", "en-US", ...): the setting, or the host locale for LANG_AUTO
 const char *settings_language(void);
 // That code's name for the menu ("Spanish")

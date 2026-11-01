@@ -15,7 +15,14 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+// (WSword's PC build: LoadLibrary for the instance this backend can make of its own - unused there. Declared here, not
+// through windows.h: its macros rename CreateSemaphore and friends, members of VulkanDeviceFuncs)
+extern "C" __declspec(dllimport) void* __stdcall LoadLibraryA(const char* name);
+extern "C" __declspec(dllimport) void* __stdcall GetProcAddress(void* module, const char* name);
+#else
 #include <dlfcn.h>
+#endif
 #include <vulkan/vulkan_core.h>
 
 using namespace vk;
@@ -26,10 +33,16 @@ namespace {
         static void* handle{nullptr}; // NOLINT (const correctness)
         if (handle) return handle;
 
+#ifdef _WIN32
+        handle = LoadLibraryA("vulkan-1.dll");
+        if (!handle)
+            throw ls::vulkan_error("failed to load vulkan-1.dll");
+#else
         handle = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
         if (!handle) handle = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
         if (!handle)
             throw ls::vulkan_error("failed to load libvulkan.so.1");
+#endif
 
         return handle;
     }
@@ -39,8 +52,12 @@ namespace {
         static PFN_vkGetInstanceProcAddr mpa{nullptr};
         if (mpa) return mpa;
 
+#ifdef _WIN32
+        mpa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(get_vulkan_handle(), "vkGetInstanceProcAddr"));
+#else
         mpa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
             dlsym(get_vulkan_handle(), "vkGetInstanceProcAddr"));
+#endif
         if (!mpa)
             throw ls::vulkan_error("failed to get vkGetInstanceProcAddr symbol");
 

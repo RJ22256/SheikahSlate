@@ -18,7 +18,11 @@
 #include <pthread.h>
 #include <string>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <filesystem>  // (free space: std::filesystem::space)
+#else
 #include <sys/statvfs.h>
+#endif
 #include <unistd.h>
 #include <vector>
 #include <algorithm>
@@ -395,14 +399,23 @@ static bool build_game_code(const std::string &dir) {
     if (!ok) {
         fprintf(stderr, "[launcher] game code: %s\n", why);
         std::string detail = why;
-        struct statvfs fs;  // (free space named only when it is short)
-        if (statvfs(dir.c_str(), &fs) == 0) {
-            double gb = (double)fs.f_bavail * (double)fs.f_frsize / (1024.0 * 1024.0 * 1024.0);
-            if (gb < 2.0) {
-                char sp[96];
-                snprintf(sp, sizeof sp, "; only %.1f GB free on the phone", gb);
-                detail += sp;
-            }
+        double gb = -1;  // (free space named only when it is short)
+#ifdef _WIN32
+        std::error_code ec;
+        std::filesystem::space_info si = std::filesystem::space(dir, ec);
+        if (!ec) gb = (double)si.available / (1024.0 * 1024.0 * 1024.0);
+#else
+        struct statvfs fs;
+        if (statvfs(dir.c_str(), &fs) == 0) gb = (double)fs.f_bavail * (double)fs.f_frsize / (1024.0 * 1024.0 * 1024.0);
+#endif
+        if (gb >= 0 && gb < 2.0) {
+            char sp[96];
+#ifdef _WIN32
+            snprintf(sp, sizeof sp, "; only %.1f GB free on that drive", gb);
+#else
+            snprintf(sp, sizeof sp, "; only %.1f GB free on the phone", gb);
+#endif
+            detail += sp;
         }
         set_failure(FAIL_BUILD);
         set_job_detail(detail);

@@ -204,7 +204,7 @@ static bool find_tools(Tools *t) {
     if (b > s) s = b;
     if (s) *s = 0;
 #ifdef _WIN32
-    if (!rt_resource("sheikahslate.dll.a", "build/sheikahslate.dll.a", t->implib, sizeof t->implib)) return false;
+    if (!rt_resource("WSword.dll.a", "build/win/WSword.dll.a", t->implib, sizeof t->implib)) return false;
     t->zig_rt[0] = 0;
     if (t->zig && rt_resource("zig" SEP "rt" SEP "link.rsp", NULL, t->zig_rt, sizeof t->zig_rt)) {
         char *s = strrchr(t->zig_rt, '/'), *b = strrchr(t->zig_rt, '\\');

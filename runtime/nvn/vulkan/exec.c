@@ -1175,6 +1175,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
     // Chunks idle for 10 s go back to the driver: a burst of copies (hundreds of MB a frame after a load on a Mali, #89)
     // grew the ring for good, and the app's memory with it - 256 MB steps up to the crash in #131. The first free one
     // is always picked, so after a burst the extra chunks stay unpicked.
+    extern uint64_t renderer_present_count(void);
     uint64_t now = renderer_present_count();
     for (int i = nchunks - 1; i >= 0 && nchunks > RING_KEEP; i--) {
         if (i == active || chunks[i].seq > done || now - chunks[i].frame < 300) continue;
