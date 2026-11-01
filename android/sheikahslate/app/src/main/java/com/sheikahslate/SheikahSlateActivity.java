@@ -92,7 +92,7 @@ public class SheikahSlateActivity extends SDLActivity {
     private static native void nativeSaveDone(int result, String detail);
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47,
             REQ_DRIVER_RECOVER = 0x4c48, REQ_SAVE_IN = 0x4c49, REQ_SAVE_OUT = 0x4c4a, REQ_SAVE_IN_TREE = 0x4c4c,
-            REQ_DLC = 0x4c4d, REQ_LOOK_BG = 0x4c4e;
+            REQ_DLC = 0x4c4d, REQ_LOOK_BG = 0x4c4e, REQ_LSFG = 0x4c4f;
     private native String nativeBuildDlc(String[] paths, long[] sizes);
     private static native void nativeDlcDone(int result, String detail);
     private static SheikahSlateActivity self;
@@ -439,6 +439,12 @@ public class SheikahSlateActivity extends SDLActivity {
             Uri u = result == Activity.RESULT_OK && data != null ? data.getData() : null;
             if (u == null) nativeLookDone(LOOK_CANCELLED, "");
             else new Thread(() -> setBackground(u), "look").start();
+            return;
+        }
+        if (req == REQ_LSFG) {
+            Uri u = result == Activity.RESULT_OK && data != null ? data.getData() : null;
+            if (u == null) nativeLsfgDone(LSFG_CANCELLED, "");
+            else new Thread(() -> copyLosslessDll(u), "lsfg").start();
             return;
         }
         if (req == REQ_LOG) {
@@ -902,6 +908,52 @@ public class SheikahSlateActivity extends SDLActivity {
         } catch (Exception | OutOfMemoryError e) {
             Log.e(TAG, "look: background", e);
             nativeLookDone(LOOK_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    // ---- (WSword) the start screen's Settings > Lossless Scaling: the player's own Lossless.dll (Lossless Scaling's, from
+    // its Steam folder) for frame generation (runtime/nvn/vulkan/device.c fg_present, framegen.cpp). Any file can be
+    // picked - a .dll has no MIME type Android agrees on; the copy goes to files/lsfg/Lossless.dll.part, and the native
+    // side checks it holds the frame generation shaders before putting it in place (nativeLsfgDone). None ships with
+    // the app.
+    private static native void nativeLsfgDone(int result, String detail);
+    private static final int LSFG_COPIED = 0, LSFG_CANCELLED = 4, LSFG_FAILED = 5;
+
+    public static void pickLosslessDll() {
+        self.runOnUiThread(() -> {
+            try {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("*/*");
+                self.startActivityForResult(i, REQ_LSFG);
+            } catch (Exception e) {
+                Log.e(TAG, "lsfg: file picker", e);
+                nativeLsfgDone(LSFG_FAILED, e.toString());
+            }
+        });
+    }
+
+    private void copyLosslessDll(Uri u) {
+        try {
+            File dir = new File(getFilesDir(), "lsfg");
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("can't make " + dir);
+            File tmp = new File(dir, "Lossless.dll.part");
+            long n = 0;
+            try (InputStream in = getContentResolver().openInputStream(u); FileOutputStream o = new FileOutputStream(tmp)) {
+                if (in == null) throw new IOException("can't open the file");
+                byte[] buf = new byte[1 << 16];
+                for (int r; (r = in.read(buf)) > 0; ) {
+                    o.write(buf, 0, r);
+                    n += r;
+                    if (n > (512L << 20)) throw new IOException("over 512 MB: not Lossless.dll");
+                }
+            }
+            Log.i(TAG, "lsfg: copied " + n / 1024 + " KB");
+            nativeLsfgDone(LSFG_COPIED, tmp.getAbsolutePath());  // (checked there, then renamed)
+        } catch (Exception | OutOfMemoryError e) {
+            Log.e(TAG, "lsfg: copy", e);
+            new File(new File(getFilesDir(), "lsfg"), "Lossless.dll.part").delete();
+            nativeLsfgDone(LSFG_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
         }
     }
 

@@ -60,6 +60,7 @@ typedef struct {
     bool tile_image;              // VK_EXT_shader_tile_image in use: on-tile reads of a pass's own targets (exec.c tile reads)
     bool display_timing;          // VK_GOOGLE_display_timing: when presents went up on screen, and when to (device.c pacing)
     uint32_t api;                 // the device's Vulkan version as used: 1.3, or 1.1 / 1.2 with extensions (device.c)
+    bool fp16;                    // shaderFloat16 enabled (WSword: frame generation's FP16 shaders, framegen.cpp)
 #endif
     // window
     VkSurfaceKHR surface;

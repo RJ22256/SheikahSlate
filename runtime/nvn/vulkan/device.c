@@ -20,6 +20,13 @@
 
 VkG g_vk;
 static SDL_Window *window;
+#ifdef __ANDROID__
+// (WSword) frame generation with the player's Lossless.dll: the section "frame generation" below
+const char *vk_fg_dll_path(void);
+static int g_sc_fg;       // frames generated per real one the swapchain was made for (FIFO, more images); 0 none
+static int g_fg_mult = 1; // presents per real frame now (the pacing's period): 1 + the generated ones
+static int fg_swapchain_want(void);
+#endif
 static atomic_bool ui_ready;
 static VkDebugUtilsMessengerEXT messenger;
 
@@ -574,6 +581,11 @@ static void create_device(void) {
     // features the backend relies on (all present on current desktop drivers)
     VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
 #ifdef __ANDROID__
+    // (WSword) frame generation's features (fg_present): for a player who has it on or has added a Lossless.dll
+    struct stat fg_st;
+    bool fg_maybe = g_settings.framegen > 0 || stat(vk_fg_dll_path(), &fg_st) == 0;
+#endif
+#ifdef __ANDROID__
     VkPhysicalDeviceVulkan13Features h13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan12Features h12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &h13};
     VkPhysicalDeviceVulkan11Features h11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &h12};
@@ -627,6 +639,7 @@ static void create_device(void) {
             h11.storageBuffer16BitAccess = q_b16.storageBuffer16BitAccess;
             h12.timelineSemaphore = q_tl.timelineSemaphore;
             h12.shaderInt8 = q_i8.shaderInt8;
+            h12.shaderFloat16 = q_i8.shaderFloat16;
             h12.storageBuffer8BitAccess = q_b8.storageBuffer8BitAccess;
             h12.uniformAndStorageBuffer8BitAccess = q_b8.uniformAndStorageBuffer8BitAccess;
             h12.scalarBlockLayout = q_sbl.scalarBlockLayout;
@@ -707,6 +720,9 @@ static void create_device(void) {
     {   // Adreno has no uniformAndStorageBuffer8BitAccess, and no shader uses 8-bit uniform buffers
         // (docs/las/ANDROID-PORT.md, Fase 0): the 8-bit features only when the driver has them
         f12.shaderInt8 = h12.shaderInt8;
+        // (WSword: frame generation's FP16 shaders, framegen.cpp - where the driver has it; nothing else declares it)
+        g_vk.fp16 = h12.shaderFloat16 && fg_maybe;
+        f12.shaderFloat16 = g_vk.fp16;
         f12.uniformAndStorageBuffer8BitAccess = h12.uniformAndStorageBuffer8BitAccess;
         f12.storageBuffer8BitAccess = h12.storageBuffer8BitAccess;
         // nor 16-bit storage: no translated or built-in shader declares it, and the Adreno 610 under Turnip lacks it
@@ -738,7 +754,8 @@ static void create_device(void) {
     VkPhysicalDeviceTimelineSemaphoreFeatures e_tl = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
                                                       .timelineSemaphore = VK_TRUE};
     VkPhysicalDeviceShaderFloat16Int8Features e_i8 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
-                                                      .shaderInt8 = h12.shaderInt8, .pNext = &e_tl};
+                                                      .shaderFloat16 = g_vk.fp16, .shaderInt8 = h12.shaderInt8,
+                                                      .pNext = &e_tl};
     VkPhysicalDevice8BitStorageFeatures e_b8 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
                                                 .storageBuffer8BitAccess = h12.storageBuffer8BitAccess,
                                                 .uniformAndStorageBuffer8BitAccess = h12.uniformAndStorageBuffer8BitAccess,
@@ -787,6 +804,16 @@ static void create_device(void) {
     b->vertexPipelineStoresAndAtomics = h->vertexPipelineStoresAndAtomics;
     b->robustBufferAccess = h->robustBufferAccess;  // guest shaders index cbufs freely: keep OOB reads harmless
     b->shaderClipDistance = h->shaderClipDistance;
+#ifdef __ANDROID__
+    // (WSword: frame generation's compute shaders write R8 / RGBA16F storage images - lsfg-vk's own device asks for
+    // nothing, desktop drivers don't check; where the driver has them, so a driver that does check takes them too.
+    // Only for a player who uses it: the setting on, or a Lossless.dll added)
+    if (fg_maybe) {
+        b->shaderStorageImageExtendedFormats = h->shaderStorageImageExtendedFormats;
+        b->shaderStorageImageWriteWithoutFormat = h->shaderStorageImageWriteWithoutFormat;
+        b->shaderStorageImageReadWithoutFormat = h->shaderStorageImageReadWithoutFormat;
+    }
+#endif
 #ifdef __ANDROID__
     if (!h->shaderInt64) LOG("[vk] no shaderInt64: translating shader address/carry math to 32-bit words\n");
 #else
@@ -923,6 +950,11 @@ static VkPresentModeKHR present_mode(void) {
     // a throttled / captured / busy compositor slowed the whole game (4-21 fps with the GPU mostly idle; mailbox:
     // 60). No tearing. LARECOMP_VK_PRESENT=fifo|immediate|mailbox to choose.
     const char *e = getenv("LARECOMP_VK_PRESENT");
+#ifdef __ANDROID__
+    // (WSword) FIFO with frame generation: each generated frame is a present of its own, aimed at its own refresh -
+    // under MAILBOX the next one could replace it before it went up
+    if (g_sc_fg && !e) return VK_PRESENT_MODE_FIFO_KHR;
+#endif
     VkPresentModeKHR want = !e || !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
@@ -984,9 +1016,11 @@ static bool dp_before_present(VkPresentTimeGOOGLE *pt) {
     extern int framepace_current_fps(void);
     extern bool framepace_on(void);
     int fps = framepace_current_fps();
-    bool aim = even_pacing_on() && framepace_on() && fps > 0;
+    // (WSword: with frame generation every present is aimed - even pacing or not - at fps x presents per real frame:
+    // otherwise the generated frames went up together with the real one, at the next refreshes)
+    bool aim = (even_pacing_on() || (g_vk.display_timing && g_fg_mult > 1)) && framepace_on() && fps > 0;
     pt->presentID = g_present_id;
-    pt->desiredPresentTime = dp_desired(&g_dp, g_present_id, plat_now_ns(), aim ? 1e9 / fps : 0, aim);
+    pt->desiredPresentTime = dp_desired(&g_dp, g_present_id, plat_now_ns(), aim ? 1e9 / ((double)fps * g_fg_mult) : 0, aim);
     g_dp_aiming = aim && g_dp.n > 0;
     return true;
 }
@@ -1077,6 +1111,11 @@ static void create_swapchain(void) {
     for (uint32_t i = 0; i < nf; i++)
         if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; break; }
     uint32_t count = caps.minImageCount + 1;
+#ifdef __ANDROID__
+    // (WSword) frame generation presents its frames together with the real one: an image for each, so none of them waits
+    // for one to come free - the render thread also translates the game's next frame
+    count += (uint32_t)g_sc_fg;
+#endif
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;  // (asked for: the driver may make more, up to VK_MAX_SWAP_IMAGES)
     if (count < caps.minImageCount) count = caps.minImageCount;
@@ -1176,8 +1215,10 @@ static bool android_surface_ready(void) {  // false: no window to draw into now
 // ================================================================== frames (start screen and game)
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
 #define FRAMES 3
-static VkSemaphore acquire_sem[FRAMES], done_sem[VK_MAX_SWAP_IMAGES];
-static uint64_t slot_seq[FRAMES];
+// (WSword: a ring of 8 for frame generation's presents - frames in flight stays FRAMES without it, vk_frame_begin)
+#define FRAME_RING 8
+static VkSemaphore acquire_sem[FRAME_RING], done_sem[VK_MAX_SWAP_IMAGES];
+static uint64_t slot_seq[FRAME_RING];
 static int slot;
 
 static VkSemaphore binary_semaphore(void) {
@@ -1212,18 +1253,38 @@ bool vk_frame_begin(const float clear[4]) {
 #ifdef __ANDROID__
     if (!android_surface_ready()) return false;
 #endif
+#ifdef __ANDROID__
+    {
+        int fgw = fg_swapchain_want();
+        if (fgw != g_sc_fg) {
+            g_sc_fg = fgw;
+            if (g_vk.swapchain) {
+                LOG("[framegen] swapchain made again: %s\n", fgw ? "FIFO, an image more for each generated frame" : "as without it");
+                recreate_swapchain();
+            }
+        }
+    }
+#endif
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
     if (!g_vk.swapchain) return false;
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
     if (trace) LOG("[vk] frame begin %dx%d (swapchain %ux%u)\n", w, h, g_vk.sc_extent.width, g_vk.sc_extent.height);
-    slot = (slot + 1) % FRAMES;
+    slot = (slot + 1) % FRAME_RING;
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
 #ifdef __ANDROID__
     bool timing = vk_timing_trace_on();
     uint64_t trace_start = timing ? SDL_GetTicksNS() : 0;
 #endif
-    vk_wait_seq(slot_seq[slot]);
+    {   // the present FRAMES ago done (its slot's semaphore and command buffers free); with frame generation, the real
+        // frame and its generated ones in flight on top
+        int depth = FRAMES;
+#ifdef __ANDROID__
+        depth += g_sc_fg;
+#endif
+        if (depth > FRAME_RING) depth = FRAME_RING;
+        vk_wait_seq(slot_seq[(slot + FRAME_RING - depth) % FRAME_RING]);
+    }
 #ifdef __ANDROID__
     if (timing) vk_timing_trace_wait(VK_TIMING_SLOT, SDL_GetTicksNS() - trace_start);
     trace_start = timing ? SDL_GetTicksNS() : 0;
@@ -1358,6 +1419,203 @@ void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) 
     SDL_DestroySurface(s);
 }
 
+// ================================================================== frame generation (WSword)
+// Lossless Scaling's frame generation from the player's own Lossless.dll (Settings > Lossless Scaling on the start screen
+// copies it to files/lsfg/), through lsfg-vk's backend (framegen.cpp, third_party/lsfg-vk) on this device and queue.
+// Each real frame: the game's image is copied into the backend's source image for it, that submission signals the
+// backend's timeline semaphore, the backend's passes make the frames between the frame before and this one, and each of
+// those is presented - drawn as the game's image is, the overlay drawn again on top - before this frame itself. Video >
+// Frame generation 2x / 3x / 4x: 1-3 frames between two real ones. The presents are aimed at fps x that many per second
+// (dp_before_present), on a FIFO swapchain with an image more for each (create_swapchain). Paused while the menu is
+// open (the game behind it doesn't move much; the menu itself isn't generated). A failure (no DLL, a driver that can't
+// build the shaders) stops it with its reason on the Video page, until the setting changes.
+#ifdef __ANDROID__
+#include "framegen.h"
+void vk_submit_timeline(VkSemaphore wait, uint64_t wait_value, VkSemaphore signal, uint64_t signal_value);
+void vk_present_draw_view(VkCommandBuffer cb, VkImageView view, uint32_t w, uint32_t h, float vx, float vy, float vw, float vh,
+                          const float pv[8]);
+void vk_full_barrier(VkCommandBuffer cb);
+void vk_gp_note(VkCommandBuffer cb, const char *what);
+void renderer_submit(void);
+bool vk_frame_begin(const float clear[4]);
+void vk_frame_end(const char *shot_path);
+
+const char *vk_fg_dll_path(void) {
+    static char p[600];
+    if (!p[0]) {
+        const char *in = SDL_GetAndroidInternalStoragePath();
+        snprintf(p, sizeof p, "%s/lsfg/Lossless.dll", in ? in : ".");
+    }
+    return p;
+}
+
+static struct {
+    int failed_for;           // the setting it stopped at (0: not stopped); err: why
+    char err[400];
+    bool open;                // a context: im, for these
+    FgImages im;
+    int gen, flow;
+    bool perf;
+    bool placed;              // the last real frame's placement in the window
+    float vx, vy, vw, vh, pv[8];
+    uint64_t last_frame;      // the real frame last given to the backend (total_frames + 1; 0 none)
+    uint64_t made, shown, skipped, t_log;  // (the [framegen] line every 10 s)
+} fg;
+static uint64_t fg_total_frames(void);
+
+static int fg_setting(void) {
+    static int env = -2;  // LARECOMP_FRAMEGEN=0..3: instead of the setting
+    if (env == -2) { const char *e = getenv("LARECOMP_FRAMEGEN"); env = e ? atoi(e) : -1; }
+    int v = env >= 0 ? env : g_settings.framegen;
+    return v >= 1 && v <= FG_MAX_GENERATED ? v : 0;
+}
+
+static int fg_swapchain_want(void) {
+    int g = fg_setting();
+    return g && fg.failed_for != g ? g : 0;
+}
+
+static void fg_stop(int gen, const char *why) {
+    snprintf(fg.err, sizeof fg.err, "%s", why);
+    fg.failed_for = gen;
+    LOG("[framegen] stopped: %s\n", why);
+    if (fg.open) fg_close();
+    fg.open = false;
+    g_fg_mult = 1;
+}
+
+// (Video > Frame generation's status line, ui/menu.mm)
+void vk_fg_status(char *out, size_t n) {
+    struct stat st;
+    int g = fg_setting();
+    if (stat(vk_fg_dll_path(), &st) != 0)
+        snprintf(out, n, "No Lossless.dll added yet: start screen > Settings > Lossless Scaling.");
+    else if (!g)
+        snprintf(out, n, "Off. Lossless.dll is added.");
+    else if (fg.failed_for == g)
+        snprintf(out, n, "Stopped: %s", fg.err);
+    else if (fg.open)
+        snprintf(out, n, "On: %dx at %ux%u, %s shaders. Paused while this menu is open.", g + 1, fg.im.width, fg.im.height,
+                 fg_low_precision() ? "FP16" : "full-precision");
+    else
+        snprintf(out, n, "Starts with the game's next frame.");
+}
+
+static void fg_place(float vx, float vy, float vw, float vh, const float pv[8]) {
+    fg.vx = vx, fg.vy = vy, fg.vw = vw, fg.vh = vh;
+    memcpy(fg.pv, pv, sizeof fg.pv);
+    fg.placed = true;
+}
+
+// The game's image b of this real frame into the backend, and the frames before it presented. Returns how many.
+static int fg_present(TexBackend *b) {
+    int gen = fg_setting();
+    if (!gen) {
+        if (fg.open) { fg_close(); fg.open = false; LOG("[framegen] off\n"); }
+        fg.failed_for = 0;
+        g_fg_mult = 1;
+        return 0;
+    }
+    if (fg.failed_for == gen) return 0;
+    fg.failed_for = 0;
+    uint64_t frame = fg_total_frames() + 1;
+    bool paused = menu_is_open() || !b || !b->image || b->layers != 1 || b->samples != 1 ||
+                  (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || b->width < 64 || b->height < 64;
+    if (paused) { g_fg_mult = 1; fg.skipped++; return 0; }
+    char err[400];
+    if (!fg_ready()) {
+        struct stat st;
+        if (stat(vk_fg_dll_path(), &st) != 0) {
+            fg_stop(gen, "no Lossless.dll - add yours on the start screen: Settings > Lossless Scaling");
+            return 0;
+        }
+        const char *cache = NULL;
+        char cp[640];
+        const char *in = SDL_GetAndroidInternalStoragePath();
+        if (in) snprintf(cp, sizeof cp, "%s/lsfg/pipeline_cache.bin", in), cache = cp;
+        FgDevice d = {.instance = g_vk.inst, .phys = g_vk.phys, .dev = g_vk.dev, .qfam = g_vk.qfam, .queue = g_vk.queue,
+                      .gipa = vkGetInstanceProcAddr, .fp16 = g_vk.fp16, .cache_path = cache};
+        uint64_t t0 = SDL_GetTicksNS();
+        if (fg_init(&d, vk_fg_dll_path(), !getenv("LARECOMP_FG_FP32"), err, sizeof err)) { fg_stop(gen, err); return 0; }
+        LOG("[framegen] started: Lossless.dll's %s shaders on %s (%.0f ms)\n", fg_low_precision() ? "FP16" : "full-precision",
+            g_vk.props.deviceName, (SDL_GetTicksNS() - t0) / 1e6);
+    }
+    if (!fg.open || fg.gen != gen || fg.im.width != b->width || fg.im.height != b->height || fg.flow != g_settings.fg_flow ||
+        fg.perf != g_settings.fg_perf) {
+        fg.open = false;
+        uint64_t t0 = SDL_GetTicksNS();
+        int flow = g_settings.fg_flow < 25 ? 25 : g_settings.fg_flow > 100 ? 100 : g_settings.fg_flow;
+        if (fg_open(gen, b->width, b->height, flow / 100.0f, g_settings.fg_perf, &fg.im, err, sizeof err)) {
+            fg_stop(gen, err);
+            return 0;
+        }
+        fg.open = true, fg.gen = gen, fg.flow = g_settings.fg_flow, fg.perf = g_settings.fg_perf;
+        LOG("[framegen] %dx at %ux%u (game image format %d), flow scale %d%%%s (%.0f ms)\n", gen + 1, b->width, b->height,
+            b->format, flow, fg.perf ? ", performance mode" : "", (SDL_GetTicksNS() - t0) / 1e6);
+    }
+    // the copy: the same bytes (an sRGB image's too: the backend works on them as they are, as the present shows them),
+    // a blit where the format differs
+    bool same = b->format == VK_FORMAT_R8G8B8A8_UNORM || b->format == VK_FORMAT_R8G8B8A8_SRGB;
+    if (!same) {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
+        if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
+            snprintf(err, sizeof err, "the game's image (format %d) can't be copied for it on this GPU", b->format);
+            fg_stop(gen, err);
+            return 0;
+        }
+    }
+    uint64_t sig = fg_next_signal(), index = fg_frame_index();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkImage dst = fg.im.source[index % 2];
+    if (same) {
+        VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                          .extent = {b->width, b->height, 1}};
+        vkCmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    } else {
+        VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int32_t)b->width, (int32_t)b->height, 1}},
+                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {(int32_t)b->width, (int32_t)b->height, 1}}};
+        vkCmdBlitImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
+    }
+    vk_full_barrier(cb);
+    vk_submit_timeline(VK_NULL_HANDLE, 0, fg.im.sync, sig);
+    renderer_submit();
+    if (fg_schedule(err, sizeof err)) { fg_stop(gen, err); return 0; }
+    g_fg_mult = gen + 1;
+    fg.made += (uint64_t)gen;
+    // nothing to show for the first frame, nor after a gap (the menu, a skipped frame): the frame before isn't the one
+    // the image before this one shows
+    bool follows = fg.last_frame && fg.last_frame + 1 == frame;
+    fg.last_frame = frame;
+    if (!index || !follows || !fg.placed) { fg.skipped++; return 0; }
+    static const float black[4] = {0, 0, 0, 1};
+    int shown = 0;
+    for (int j = 0; j < gen && j < fg.im.ndest; j++) {
+        // (the present passes' own images - Video > Anti-aliasing's: the present before may still be reading them)
+        vk_full_barrier(vk_cmd());
+        if (!vk_frame_begin(black)) break;
+        VkCommandBuffer c = vk_cmd();
+        vk_gp_note(c, "present: a generated frame");
+        vk_present_draw_view(c, fg.im.dest_view[j], fg.im.width, fg.im.height, fg.vx, fg.vy, fg.vw, fg.vh, fg.pv);
+        menu_render_again((void *)c);
+        vk_submit_timeline(fg.im.sync, sig + 1 + (uint64_t)j, VK_NULL_HANDLE, 0);
+        vk_frame_end(NULL);
+        shown++;
+    }
+    fg.shown += (uint64_t)shown;
+    if (shown) vk_full_barrier(vk_cmd());  // (and the real frame's after them)
+    uint64_t now = SDL_GetTicksNS();
+    if (now - fg.t_log >= 10000000000ull) {
+        if (fg.t_log)
+            LOG("[framegen] %dx: %llu frames made, %llu shown, %llu real frames without (first / after the menu / a gap)\n",
+                gen + 1, (unsigned long long)fg.made, (unsigned long long)fg.shown, (unsigned long long)fg.skipped);
+        fg.t_log = now, fg.made = fg.shown = fg.skipped = 0;
+    }
+    return shown;
+}
+#endif
+
 // ================================================================== game presentation (metal.m backend_present)
 // Draws the game's image into the window with the widescreen crop, then the overlay menu.
 extern void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh, const float pv[8]);
@@ -1367,6 +1625,9 @@ uint64_t renderer_present_count(void);
 void renderer_save_texture_tex(TexBackend *b, const char *path);
 
 static uint64_t frames, total_frames, g_frame_counter;
+#ifdef __ANDROID__
+static uint64_t fg_total_frames(void) { return total_frames; }
+#endif
 static long g_gpuprof_req_at;  // (vk_gpuprof_request: the next capture's frame, 0 none)
 static int g_gpuprof_req_left;
 #ifdef __ANDROID__
@@ -1442,6 +1703,9 @@ void backend_present(NvnTexture *t) {
     extern void vk_frame_check(NvnTexture *t, TexBackend *b);  // (exec.c: frames unlike the steady ones, logged)
     vk_frame_check(t, b);
     vk_end_pass();
+#ifdef __ANDROID__
+    fg_present(b);  // (WSword: frame generation's frames before this one, when it is on)
+#endif
     static const float black[4] = {0, 0, 0, 1};
     uint64_t t0 = SDL_GetTicksNS();
     bool have = vk_frame_begin(black);
@@ -1495,6 +1759,9 @@ void backend_present(NvnTexture *t) {
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
+#ifdef __ANDROID__
+        fg_place((float)vx, (float)vy, (float)vw, (float)vh, pv);  // (frame generation's frames before the next one)
+#endif
         extern void vk_gp_note(VkCommandBuffer cb, const char *what);  // (LARECOMP_GPUPROF_AT: the present's own rows)
         vk_gp_note(cb, "present: the image into the window");
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);

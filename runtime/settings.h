@@ -60,6 +60,12 @@ typedef struct {
                           // its own, the same number of refreshes apart (4 at 30 fps on 120 Hz) - not the first refresh
                           // after the GPU finishes it. -1 Automatic (on where the system reports present times), 1 on,
                           // 0 off (frames go up as soon as they're ready, as before). ini: even_pacing = auto | on | off
+    int framegen;         // Video > Frame generation (WSword; vulkan/device.c fg_present, framegen.cpp - the player's own
+                          // Lossless.dll): frames made between two real ones, 0 off, 1 2x, 2 3x, 3 4x.
+                          // ini: frame_generation = off | 2x | 3x | 4x
+    int fg_flow;          // Video > Flow scale: the resolution motion is found at, percent of the image's (25-100).
+                          // ini: fg_flow_scale
+    bool fg_perf;         // Video > Performance mode: Lossless Scaling's lighter passes. ini: fg_performance
     bool native_code;     // Android: the game's own code on the CPU, no build of it (runtime/native.c); off by default
     bool files_in_place;  // Android: a setup reads the picked romfs/ where it is, no copy (services/fs.c); off by default
     bool sync_lag;        // Android: the game's next frame overlaps the GPU's last (nvn/objects.c nvnSyncWait); on by default

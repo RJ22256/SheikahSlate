@@ -529,6 +529,9 @@ static bool toggle(const char *label, bool *v) {
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);  // (vulkan/textures.c: the 3D scene's)
 extern "C" void renderer_get_scale(float *sx, float *sy);        // (the final image's)
 extern "C" int input_pad_family(void);  // runtime/hle/input.c
+#ifdef __ANDROID__
+extern "C" void vk_fg_status(char *out, size_t n);  // (WSword: vulkan/device.c, frame generation's state)
+#endif
 extern "C" double output_scale_dynamic_factor(void);
 #ifdef __ANDROID__
 extern "C" void android_set_display_refresh(int how);  // (platform/android.c: Video > Display refresh rate)
@@ -641,6 +644,30 @@ static void tab_display(void) {
                        "more delay. Automatic: on where the system reports when frames reach the screen (Android does). "
                        "Off: as soon as ready, as before. Applies at once."))
             g_settings.even_pacing = ei == 0 ? -1 : ei == 1 ? 1 : 0;
+    }
+    {   // (WSword: settings.h framegen / fg_flow / fg_perf - vulkan/device.c fg_present, the player's own Lossless.dll;
+        // each change applies with the game's next frame)
+        opt_section("Frame generation");
+        char st[480], fd[1400];
+        vk_fg_status(st, sizeof st);
+        snprintf(fd, sizeof fd, "%s\n\n%s",
+                 tr("Lossless Scaling's frame generation, from your own copy of Lossless.dll: frames made between the game's "
+                    "real ones, so motion looks smoother. On a 120 Hz screen: 2x at 30 or 60 fps (60 or 120 shown), 3x at 40 "
+                    "(120), 4x at 30 (120). It adds about half a real frame of delay and takes GPU time from the game (its "
+                    "resolution may come down a little). Fast motion and the screen's edges can show smearing. Paused while "
+                    "this menu is open; the menus, the FPS counter and the touch controls are drawn on every frame, never "
+                    "generated. Add Lossless.dll on the start screen: Settings > Lossless Scaling."),
+                 tr(st));
+        static const char *fgn[] = {"Off", "2x", "3x", "4x"};
+        opt_choice("Frame generation", &g_settings.framegen, fgn, 4, 0, fd, false);
+        if (!g_settings.framegen) opt_disable_next();
+        opt_int("Flow scale", &g_settings.fg_flow, 25, 100, 5, 75, "%d%%",
+                "The resolution motion is found at, as a share of the game's image. Lower: less GPU time, motion found less "
+                "finely (thin things can wobble). Lossless Scaling suggests 75% for a 1440p image and 50% for 4K.");
+        if (!g_settings.framegen) opt_disable_next();
+        opt_toggle("Performance mode", &g_settings.fg_perf, false,
+                   "Lossless Scaling's lighter passes: much less GPU time, slightly less accurate in-between frames. Try it "
+                   "if the game's own frame rate drops with frame generation on.");
     }
 #endif
 
@@ -1384,6 +1411,7 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
 void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     const double tw = target.width, th = target.height;
 #else
+static bool g_drew;  // (the last menu_render left draw data: menu_render_again draws it again)
 void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     const double tw = target_w, th = target_h;
 #endif
@@ -1396,6 +1424,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #endif
     if (!open && !kbd && !g_settings.show_fps && !touch) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
+#ifndef __APPLE__
+        g_drew = false;
+#endif
         return;
     }
 #ifdef __APPLE__
@@ -1533,5 +1564,17 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     [enc endEncoding];
 #else
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cmd);  // inside the window image's rendering
+    g_drew = true;
 #endif
 }
+
+#ifndef __APPLE__
+// (WSword, frame generation: device.c fg_present) the overlay of the last menu_render again, into a generated frame -
+// the FPS counter and touch controls stay on every frame, drawn as they are, not generated
+void menu_render_again(void *cmd) {
+    if (!g_drew || !g_inited) return;
+    ImGui::SetCurrentContext(g_ctx);
+    ImDrawData *dd = ImGui::GetDrawData();
+    if (dd && dd->Valid) ImGui_ImplVulkan_RenderDrawData(dd, (VkCommandBuffer)cmd);
+}
+#endif

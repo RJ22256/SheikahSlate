@@ -955,12 +955,21 @@ void vk_gpuprof_report(void) {
     gp_n = 0;
 }
 
+// (WSword, frame generation: device.c fg_present) a timeline value the next submission waits for and one it signals,
+// on another timeline semaphore than the renderer's own - lsfg-vk's (framegen.h). Taken by that submission.
+static VkSemaphore x_wait_sem, x_sig_sem;
+static uint64_t x_wait_val, x_sig_val;
+void vk_submit_timeline(VkSemaphore wait, uint64_t wait_value, VkSemaphore signal, uint64_t signal_value) {
+    x_wait_sem = wait, x_wait_val = wait_value;
+    x_sig_sem = signal, x_sig_val = signal_value;
+}
+
 // Submit the pending work (if any). wait/signal: binary semaphores for presentation (may be null).
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra) {
     (void)extra;
     vk_end_pass();
     Sub *s = sub();
-    if (!s->main_begun && !s->upload_begun && !wait && !signal) return;
+    if (!s->main_begun && !s->upload_begun && !wait && !signal && !x_wait_sem && !x_sig_sem) return;
     VkCommandBufferSubmitInfo cbs[2];
     int n = 0;
     vc_flush();
@@ -985,15 +994,26 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     if (s->ts) vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, prof_qp, (uint32_t)cur_sub * 2 + 1);
     VK_CHECK(vkEndCommandBuffer(s->main));
     cbs[n++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->main};
-    VkSemaphoreSubmitInfo sig[2] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_vk.timeline,
-                                     .value = submit_seq + 1, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT},
-                                    {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = signal,
-                                     .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
-    VkSemaphoreSubmitInfo wt = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
-                                .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT};
+    VkSemaphoreSubmitInfo sig[3] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_vk.timeline,
+                                     .value = submit_seq + 1, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
+    uint32_t nsig = 1, nwt = 0;
+    if (x_sig_sem)  // (frame generation: the game's image is in lsfg-vk's source image)
+        sig[nsig++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = x_sig_sem,
+                                              .value = x_sig_val, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    if (signal)
+        sig[nsig++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = signal,
+                                              .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkSemaphoreSubmitInfo wt[2];
+    if (wait)
+        wt[nwt++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
+                                            .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT};
+    if (x_wait_sem)  // (frame generation: a generated frame, before anything reads it)
+        wt[nwt++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = x_wait_sem,
+                                            .value = x_wait_val, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    x_wait_sem = x_sig_sem = VK_NULL_HANDLE;
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = (uint32_t)n, .pCommandBufferInfos = cbs,
-                        .signalSemaphoreInfoCount = signal ? 2 : 1, .pSignalSemaphoreInfos = sig,
-                        .waitSemaphoreInfoCount = wait ? 1 : 0, .pWaitSemaphoreInfos = &wt};
+                        .signalSemaphoreInfoCount = nsig, .pSignalSemaphoreInfos = sig,
+                        .waitSemaphoreInfoCount = nwt, .pWaitSemaphoreInfos = wt};
     {
         PROF_T0();
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
@@ -7915,14 +7935,14 @@ static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *src
 
 // The view the present samples: the game image, or its anti-aliased / upscaled version. ow x oh: the whole image's
 // size in the window (its crop is drawn into the viewport).
-static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, double oh_d) {
-    VkImageView v = raw_view(b);
+// (WSword: an image's view and size - the game's, or a generated frame's, device.c fg_present)
+static VkImageView post_process(VkCommandBuffer cb, VkImageView v, uint32_t bw, uint32_t bh, double ow_d, double oh_d) {
     bool smaa = g_settings.antialias == AA_SMAA, fxaa = g_settings.antialias == AA_FXAA;
     uint32_t ow = (uint32_t)lround(ow_d), oh = (uint32_t)lround(oh_d);
     if (ow > 16384) ow = 16384;
     if (oh > 16384) oh = 16384;
     bool fsr = (g_settings.upscaler == UPSCALE_FSR1 || g_settings.upscaler == UPSCALE_SGSR1) &&
-               (ow > b->width + 1 || oh > b->height + 1);  // (an upscale only)
+               (ow > bw + 1 || oh > bh + 1);  // (an upscale only)
     // The final image (scene already upscaled, and the HUD) below the window - Output resolution 1080p / Auto on a
     // 1440-line screen: the present's own bilinear sampling, whichever upscaler is chosen. FSR 1's two passes ran here
     // again over the whole window (~3 ms of the Adreno 830's frame at 3200x1440), and SGSR 1's one took 1.9 ms against
@@ -7937,15 +7957,15 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     if (pmode == UPSCALE_BILINEAR) fsr = false;
     if (!smaa && !fxaa && !fsr) return v;
     gp_mark(cb, "present: %s%s %ux%u -> %ux%u", smaa ? "smaa " : fxaa ? "fxaa " : "", !fsr ? "" : up == UPSCALE_SGSR1 ? "sgsr1" : "easu+rcas",
-            b->width, b->height, ow, oh);
+            bw, bh, ow, oh);
     extern void vk_frame_suspend(void);
     extern void vk_frame_resume(void);
     vk_frame_suspend();
     if (smaa) {  // SMAA 1x: luma edges -> blending weights -> neighbourhood blending
-        float w = (float)b->width, h = (float)b->height;
+        float w = (float)bw, h = (float)bh;
         float m[8] = {1.0f / w, 1.0f / h, w, h};
-        TexBackend *edges = post_image(0, b->width, b->height, VK_FORMAT_R8G8B8A8_UNORM), *weights = post_image(1, b->width, b->height, VK_FORMAT_R8G8B8A8_UNORM);
-        TexBackend *out = post_image(2, b->width, b->height, VK_FORMAT_R8G8B8A8_UNORM);
+        TexBackend *edges = post_image(0, bw, bh, VK_FORMAT_R8G8B8A8_UNORM), *weights = post_image(1, bw, bh, VK_FORMAT_R8G8B8A8_UNORM);
+        TexBackend *out = post_image(2, bw, bh, VK_FORMAT_R8G8B8A8_UNORM);
         VkImageView in[3] = {v};
         post_pass(cb, "smaa_edge.frag", in, 1, edges, m, true);
         VkImageView wi[3] = {post_view(edges), smaa_lut(0), smaa_lut(1)};
@@ -7954,22 +7974,22 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         post_pass(cb, "smaa_blend.frag", bi, 2, out, m, false);
         v = post_view(out);
     } else if (fxaa) {  // FXAA (shaders.c fxaa.frag): one pass
-        float w = (float)b->width, h = (float)b->height;
+        float w = (float)bw, h = (float)bh;
         float m[8] = {1.0f / w, 1.0f / h, w, h};
-        TexBackend *out = post_image(2, b->width, b->height, VK_FORMAT_R8G8B8A8_UNORM);
+        TexBackend *out = post_image(2, bw, bh, VK_FORMAT_R8G8B8A8_UNORM);
         VkImageView in[3] = {v};
         post_pass(cb, "fxaa.frag", in, 1, out, m, false);
         v = post_view(out);
     }
     if (fsr && up == UPSCALE_SGSR1) {
-        float iw = (float)b->width, ih = (float)b->height;
+        float iw = (float)bw, ih = (float)bh;
         TexBackend *o = post_image(3, ow, oh, VK_FORMAT_R8G8B8A8_UNORM);
         float ps[8] = {1.0f / iw, 1.0f / ih, iw, ih, (float)ow, (float)oh};
         VkImageView si[3] = {v};
         post_pass(cb, "sgsr1.frag", si, 1, o, ps, false);
         v = post_view(o);
     } else if (fsr) {
-        float iw = (float)b->width, ih = (float)b->height;
+        float iw = (float)bw, ih = (float)bh;
         TexBackend *e = post_image(3, ow, oh, VK_FORMAT_R8G8B8A8_UNORM), *r = post_image(4, ow, oh, VK_FORMAT_R8G8B8A8_UNORM);
         float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
         VkImageView ei[3] = {v};
@@ -7984,10 +8004,10 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     {
         static uint32_t piw, pih, pow_, poh;
         static int psm = -1, pfs = -1;
-        if (b->width != piw || b->height != pih || ow != pow_ || oh != poh || g_settings.antialias != psm || fsr != pfs)
-            LOG("[post] %ux%u%s%s -> %ux%u\n", b->width, b->height, smaa ? " smaa" : fxaa ? " fxaa" : "",
+        if (bw != piw || bh != pih || ow != pow_ || oh != poh || g_settings.antialias != psm || fsr != pfs)
+            LOG("[post] %ux%u%s%s -> %ux%u\n", bw, bh, smaa ? " smaa" : fxaa ? " fxaa" : "",
                 !fsr ? "" : up == UPSCALE_SGSR1 ? " sgsr1" : " fsr1", ow, oh);
-        piw = b->width; pih = b->height; pow_ = ow; poh = oh; psm = g_settings.antialias; pfs = fsr;
+        piw = bw; pih = bh; pow_ = ow; poh = oh; psm = g_settings.antialias; pfs = fsr;
     }
     return v;
 }
@@ -8060,9 +8080,9 @@ static void scene_upscale(Prog *pr, CmdRec *r) {
 }
 
 // Inside the window image's rendering (device.c vk_frame_begin): the game image into (vx, vy, vw, vh).
-void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh, const float pv[8]) {
-    if (!b || !b->image || (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT)) return;
-    VkImageView src = post_process(cb, b, pv[6] > 0 ? vw / pv[6] : vw, pv[7] > 0 ? vh / pv[7] : vh);
+static void present_draw(VkCommandBuffer cb, VkImageView in, uint32_t bw, uint32_t bh, float vx, float vy, float vw, float vh,
+                         const float pv[8]) {
+    VkImageView src = post_process(cb, in, bw, bh, pv[6] > 0 ? vw / pv[6] : vw, pv[7] > 0 ? vh / pv[7] : vh);
     VkPipeline p = present_pipeline(g_vk.sc_format);
     VkDescriptorSet ds = vk_alloc_set(present_set_layout);
     VkDescriptorImageInfo ii = {vk_default_sampler(true), src, VK_IMAGE_LAYOUT_GENERAL};
@@ -8078,6 +8098,15 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
     vkCmdDraw(cb, 3, 1, 0, 0);
     VkViewport full = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     vkCmdSetViewport(cb, 0, 1, &full);
+}
+void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh, const float pv[8]) {
+    if (!b || !b->image || (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT)) return;
+    present_draw(cb, raw_view(b), b->width, b->height, vx, vy, vw, vh, pv);
+}
+// (WSword, frame generation) a generated frame (view: GENERAL layout, w x h like the game's image) drawn as the game's is
+void vk_present_draw_view(VkCommandBuffer cb, VkImageView view, uint32_t w, uint32_t h, float vx, float vy, float vw, float vh,
+                          const float pv[8]) {
+    present_draw(cb, view, w, h, vx, vy, vw, vh, pv);
 }
 
 // (Sheikah Slate: the performance capture, device.c) where the GPU memory goes - on a phone or tablet it is the

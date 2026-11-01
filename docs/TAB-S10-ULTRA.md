@@ -522,6 +522,61 @@ glass card beside the rows. The gold cut-corner frames, diamonds and the eye are
 Baloo 2's letter height there (x0.72), the menu language's other letters merged at 90% of it. Up / Down move along the
 rail, Right into the page, L / R switch pages as before.
 
+## Update 15 (0.2.8-slate.15): frame generation with your own Lossless.dll
+
+### 42. Video > Frame generation (`device.c` fg_present, `framegen.cpp`, `third_party/lsfg-vk`)
+
+Lossless Scaling's frame generation (LSFG), with the player's own `Lossless.dll`. None is included with WSword.
+
+**Adding the DLL.** Start screen > Settings > **Lossless Scaling** > Choose Lossless.dll:
+- The file is copied to `files/lsfg/`.
+- It is kept only if it holds every frame generation shader this version uses: the full-precision set, the FP16 set, or both (`fg_check_dll`).
+- *Remove Lossless.dll* deletes the copy.
+
+**Running it.** The engine is the backend of lsfg-vk, by PancakeTAS and contributors:
+- It reads the shaders' SPIR-V straight out of the DLL's resources.
+- It runs them as compute passes on WSword's own device and queue: no second device and no shared memory.
+- It is the last GPL-3.0 version (PR #544, `f4f7444`, on `8b0da26`). Later versions are CC BY-NC-ND, which forbids modified copies. `third_party/lsfg-vk/README.WSword.md` lists WSword's changes.
+
+**Each real frame, while it is on:**
+
+1. The game's final image is copied, byte for byte, into the backend's source image for this frame (`source[n % 2]`).
+2. That submission signals the backend's timeline semaphore.
+3. The backend's passes make 1–3 frames between the frame before and this one.
+4. Each of those frames is presented first:
+   - drawn as the game's image is (same placement, crop and post passes);
+   - with the overlay drawn again on top (`menu_render_again`), so the FPS counter and touch controls are never generated;
+   - waiting on the GPU for its own semaphore value.
+5. Then the real frame is presented.
+
+**Presents.**
+- Every present is aimed at fps × (1 + the generated frames) per second through `VK_GOOGLE_display_timing`, whether or not Even frame pacing is on.
+- The swapchain is FIFO, with one more image per generated frame, so the presents in a row don't wait for each other.
+- The ring of frames in flight grows by the same number. Without frame generation everything is as before (MAILBOX, 3 frames in flight).
+
+**Choices on a 120 Hz screen:**
+
+| Setting | Frame rate | Shown |
+|---|---|---|
+| 2x | 30 or 60 fps | 60 or 120 |
+| 3x | 40 fps | 120 |
+| 4x | 30 fps | 120 |
+
+**Other settings.**
+- *Flow scale* (25–100%, default 75%): the resolution motion is found at.
+- *Performance mode*: Lossless Scaling's lighter passes.
+- FP16 shaders are used where the GPU has `shaderFloat16`. That feature, and the storage-image formats the shaders write, are enabled only for a player who has the setting on or has added a DLL.
+
+**Costs and limits.**
+- **Delay:** about half a real frame at 2×, because the frames in between need the next real one.
+- **GPU time:** the game's resolution may come down a little, because the GPU time it measures includes frame generation.
+- **Menu:** frame generation is paused while the in-game menu is open.
+- **Failures:** if it can't start (no DLL, a format the GPU can't copy, a driver that can't build the shaders), it stops with the reason on the Video page and the game carries on. It tries again once the setting changes.
+
+**Untested GPU:** the Mali-G720 is untried with this engine. Adreno with Turnip is what lsfg-vk's Android users run.
+
+**Log lines:** `[framegen]`. `LARECOMP_FRAMEGEN=0..3` overrides the setting; `LARECOMP_FG_FP32=1` forces full precision.
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep
@@ -549,6 +604,16 @@ On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log 
 9. **Look.** Settings > Look > Choose background: the start screen shows the picture at once; Original background puts
    the artwork back. App icon: tap a picture, Use it - the app starts again, and the app list shows the new icon (put
    it back on the home screen if it went).
+10. **Frame generation.**
+    1. Start screen > Settings > Lossless Scaling > Choose Lossless.dll. Expect "Lossless.dll added".
+    2. In game, Video > Frame generation 2x at Frame rate 30.
+    3. Check the log:
+       - `[framegen] started: Lossless.dll's FP16 shaders ...`
+       - `[framegen] 2x at ...`
+       - every 10 s, `[framegen] 2x: N frames made, N shown`
+    4. Check what you see: motion smoother than plain 30 fps; the FPS counter steady, not smeared.
+    5. Open the menu: the status says Paused. Close it: frame generation picks up again.
+    6. If the Video page says Stopped, send the log.
 
 Switches for testing (adb, as upstream's `android/run_boot.sh`):
 

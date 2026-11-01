@@ -123,6 +123,55 @@ int main(void) {
     printf("  40 fps in the settings file: %s\n", got);
     expect(strstr(got, "fps 3") != NULL, "frame_rate = 40 read back as 40 fps");
 
+    // (WSword) frame generation: read back, kept by the modes (a mode isn't about it), clamped, saved
+    for (int m = MODE_BATTERY; m <= MODE_TURBO60; m++) {
+        FILE *f = fopen("sheikahslate.ini", "w");
+        fputs("tab_preset = 9\nframe_generation = 3x\nfg_flow_scale = 60\nfg_performance = 1\n", f);
+        fclose(f);
+        fflush(stdout);
+        pid_t p = fork();
+        if (!p) {
+            setenv("LARECOMP_DEVICE_PROFILE", "tab-s10-ultra", 1);
+            settings_load();
+            int ok = g_settings.framegen == 2 && g_settings.fg_flow == 60 && g_settings.fg_perf;
+            settings_apply_mode(m);
+            ok = ok && g_settings.framegen == 2 && g_settings.fg_flow == 60 && g_settings.fg_perf && settings_current_mode() == m;
+            settings_save();
+            _exit(ok ? 0 : 1);
+        }
+        int st;
+        waitpid(p, &st, 0);
+        char what[96];
+        snprintf(what, sizeof what, "frame generation 3x read back and kept by mode %d", m);
+        expect(WIFEXITED(st) && WEXITSTATUS(st) == 0, what);
+    }
+    expect(ini_has("frame_generation = 3x") && ini_has("fg_flow_scale = 60") && ini_has("fg_performance = 1"),
+           "frame generation saved");
+    {
+        FILE *f = fopen("sheikahslate.ini", "w");
+        fputs("tab_preset = 9\nframe_generation = 9x\nfg_flow_scale = 5\n", f);
+        fclose(f);
+        pid_t p = fork();
+        if (!p) {
+            settings_load();
+            _exit(g_settings.framegen == 0 && g_settings.fg_flow == 25 ? 0 : 1);
+        }
+        int st;
+        waitpid(p, &st, 0);
+        expect(WIFEXITED(st) && WEXITSTATUS(st) == 0, "an unknown frame generation is off, the flow scale clamped to 25%");
+    }
+    {
+        unlink("sheikahslate.ini");
+        pid_t p = fork();
+        if (!p) {
+            settings_load();
+            _exit(g_settings.framegen == 0 && g_settings.fg_flow == 75 && !g_settings.fg_perf ? 0 : 1);
+        }
+        int st;
+        waitpid(p, &st, 0);
+        expect(WIFEXITED(st) && WEXITSTATUS(st) == 0, "frame generation off by default (flow scale 75%)");
+    }
+
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("modes: all checks passed\n");
     return 0;

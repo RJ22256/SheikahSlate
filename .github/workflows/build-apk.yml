@@ -104,7 +104,7 @@ jobs:
           fi
           echo "::notice title=Game code id::$ID - the game code already built on the tablet stays valid"
 
-      - name: Desktop tests (tablet layout, threaded BC decode, on-tile read shaders, thread sampler, frame pacing, modes)
+      - name: Desktop tests (tablet layout, threaded BC decode, on-tile read shaders, thread sampler, frame pacing, modes, Lossless.dll check)
         run: |
           mkdir -p build
           clang -O1 -Iruntime -o build/test_tablet_layout tools/test_tablet_layout.c -lm
@@ -115,6 +115,7 @@ jobs:
           printf '#define PROP_VALUE_MAX 92\nint __system_property_get(const char *, char *);\n' > build/stub/sys/system_properties.h
           clang -O1 -Wall -D__ANDROID__ -Iruntime -Iandroid/deps/out/include -Ibuild/stub -o build/test_modes tools/test_modes.c runtime/settings.c
           build/test_modes
+          sh tools/test_lsfg_dll.sh android/deps/out/include  # (WSword: frame generation's backend builds; its DLL check)
           python3 tools/test_bc_threads.py
           sudo apt-get install -y -qq glslang-tools >/dev/null
           python3 tools/test_tile_glsl.py "$(command -v glslangValidator)"

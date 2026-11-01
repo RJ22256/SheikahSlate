@@ -43,6 +43,19 @@ set(IMGUI ${R}/third_party/imgui)
 set(IMGUI_SRC ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp
     ${IMGUI}/backends/imgui_impl_sdl3.cpp ${IMGUI}/backends/imgui_impl_vulkan.cpp)
 
+# Frame generation with the player's own Lossless.dll (runtime/nvn/vulkan/framegen.cpp): lsfg-vk's backend, its last
+# GPL-3.0 version (third_party/lsfg-vk/README.WSword.md), as a static library on the renderer's own device. C++20, as
+# upstream builds it; Vulkan through the function pointers it is given (no prototypes, no loader of its own).
+set(LSFG ${R}/third_party/lsfg-vk)
+file(GLOB_RECURSE LSFG_SRC CONFIGURE_DEPENDS ${LSFG}/lsfg-vk-common/src/*.cpp ${LSFG}/lsfg-vk-backend/src/*.cpp)
+add_library(lsfgvk STATIC ${LSFG_SRC})
+target_include_directories(lsfgvk PUBLIC ${LSFG}/lsfg-vk-backend/include ${DEPS}/include
+                           PRIVATE ${LSFG}/lsfg-vk-common/include ${LSFG}/lsfg-vk-backend/src)
+target_compile_definitions(lsfgvk PRIVATE VK_NO_PROTOTYPES)
+target_compile_options(lsfgvk PRIVATE -O2 -g -fexceptions -frtti -Wno-unknown-warning-option -Wno-unused-parameter
+    $<$<COMPILE_LANGUAGE:CXX>:-std=c++20>)
+set_target_properties(lsfgvk PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 add_library(main SHARED ${RT_SRC} ${R}/runtime/platform/android.c ${VK_SRC} ${UI_SRC} ${IMGUI_SRC}
             ${DEPS}/volk/volk.c ${R}/android/common/guest_window.c ${R}/runtime/native_gate.S)
 # the UI sources are plain C++ apart from __APPLE__ blocks (compiled as C++ on Android)
@@ -64,6 +77,6 @@ endif()
 # game thread's time
 target_compile_options(main PRIVATE -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Wno-format  # (as on Linux: %llx for uint64_t)
     $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)
-target_link_libraries(main PRIVATE SDL3 shaderc_shared adrenotools android log dl m)
+target_link_libraries(main PRIVATE SDL3 shaderc_shared adrenotools lsfgvk android log dl m)
 # (runtime/hle.h, ipc.h, main.c: tables in named sections found through __start_ / __stop_ symbols)
 target_link_options(main PRIVATE -Wl,-z,nostart-stop-gc)

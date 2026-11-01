@@ -510,6 +510,9 @@ done:
 // on as on the desktop with the game code (runtime/gamebuild.c, on the phone itself). The Vulkan driver is
 // picked the same way (a Turnip .zip, copied to the drivers folder the activity loads from at start).
 #include <jni.h>
+#include <errno.h>
+#include "../nvn/vulkan/framegen.h"  // (WSword: fg_check_dll - Settings > Lossless Scaling)
+extern "C" const char *vk_fg_dll_path(void);  // (vulkan/device.c)
 std::atomic<bool> g_android_imported{false};
 static std::string g_driver_msg;
 static bool g_driver_restart;  // (the message asks for a restart: a Restart now button beside it)
@@ -704,6 +707,45 @@ extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nat
     }
     pthread_mutex_lock(&g_lock);
     g_look_msg = msg, g_look_failed = result >= 5, g_look_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+
+// (WSword) Settings > Lossless Scaling (SheikahSlateActivity pickLosslessDll): the picked file, copied - put in place as
+// files/lsfg/Lossless.dll once it is checked to hold the frame generation shaders (vulkan/framegen.cpp fg_check_dll)
+static std::string g_lsfg_msg;  // (g_lock)
+static bool g_lsfg_failed, g_lsfg_busy;
+
+extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeLsfgDone(JNIEnv *env, jclass,
+                                                                                                    jint result, jstring detail) {
+    const char *t = env->GetStringUTFChars(detail, NULL);
+    std::string d = t ? t : "";
+    if (t) env->ReleaseStringUTFChars(detail, t);
+    char msg[800];
+    bool failed = false;
+    if (result == 0) {
+        bool fp16 = false;
+        char err[400] = "";
+        if (fg_check_dll(d.c_str(), &fp16, err, sizeof err) != 0) {
+            unlink(d.c_str());
+            failed = true;
+            snprintf(msg, sizeof msg, tr("That isn't a Lossless.dll WSword can use: %s"), err);
+        } else if (rename(d.c_str(), vk_fg_dll_path()) != 0) {
+            failed = true;
+            snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+            unlink(d.c_str());
+        } else {
+            fprintf(stderr, "[framegen] Lossless.dll added (FP16 shaders %s)\n", fp16 ? "there too" : "not there");
+            snprintf(msg, sizeof msg, "%s", tr("Lossless.dll added: its frame generation shaders are there. Turn it on in "
+                                               "the game: Settings > Video > Frame generation."));
+        }
+    } else if (result == 4) {
+        msg[0] = 0;
+    } else {
+        failed = true;
+        snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str());
+    }
+    pthread_mutex_lock(&g_lock);
+    g_lsfg_msg = msg, g_lsfg_failed = failed, g_lsfg_busy = false;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -2269,6 +2311,48 @@ static void prelaunch_tab(float sc) {
             if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
             else ImGui::Text("%s", msg.c_str());
         }
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("Lossless Scaling");  // (WSword: frame generation from the player's own Lossless.dll - vulkan/device.c)
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_lsfg_msg;
+        bool failed = g_lsfg_failed, busy = g_lsfg_busy;
+        pthread_mutex_unlock(&g_lock);
+        struct stat st;
+        bool have = stat(vk_fg_dll_path(), &st) == 0;
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("Frame generation from Lossless Scaling, with your own copy of its Lossless.dll - on "
+                                     "your PC, in Lossless Scaling's folder (Steam: Lossless Scaling > Manage > Browse local "
+                                     "files). It isn't included with WSword. WSword keeps a copy of it; then turn it on in "
+                                     "the game: Settings > Video > Frame generation."));
+        if (have) ImGui::Text(tr("Lossless.dll: added (%.1f MB)"), st.st_size / 1048576.0);
+        else ImGui::Text("%s", tr("Lossless.dll: not added"));
+        if (busy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr(have ? "Choose another Lossless.dll" : "Choose Lossless.dll"))) {
+            pthread_mutex_lock(&g_lock);
+            g_lsfg_busy = true, g_lsfg_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickLosslessDll");  // (then nativeLsfgDone)
+        }
+        if (have) {
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Remove Lossless.dll"))) {
+                unlink(vk_fg_dll_path());
+                pthread_mutex_lock(&g_lock);
+                g_lsfg_msg = tr("Lossless.dll removed: frame generation is off until you add it again."), g_lsfg_failed = false;
+                pthread_mutex_unlock(&g_lock);
+            }
+        }
+        if (busy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::TextDisabled("%s", tr("Frame generation code: lsfg-vk by PancakeTAS and contributors (GPL-3.0). WSword isn't "
+                                     "made by or affiliated with Lossless Scaling's developers."));
         ImGui::PopTextWrapPos();
     }
 #endif
