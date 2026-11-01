@@ -220,7 +220,7 @@ jobs:
           LE=$("$BT/aapt2" dump xmltree --file AndroidManifest.xml "$APK" | python3 tools/check_launcher_entries.py) || { echo "::error::$LE"; exit 1; }
           note "Launcher entries" "$LE"
           RS=$("$BT/aapt2" dump resources "$APK")
-          for n in "" _midnight _dawn _ancient _forest; do
+          for n in "" _slate _midnight _dawn _ancient _forest; do
             echo "$RS" | grep -qE "mipmap/ic_launcher$n( |$)" || { echo "::error::no icon mipmap/ic_launcher$n"; exit 1; }
           done
 

@@ -9,7 +9,7 @@ import re
 import sys
 
 ORIGINAL = "com.sheikahslate.SheikahSlateActivity"
-OTHERS = ["com.sheikahslate.IconMidnight", "com.sheikahslate.IconDawn", "com.sheikahslate.IconAncient",
+OTHERS = ["com.sheikahslate.IconSlate", "com.sheikahslate.IconMidnight", "com.sheikahslate.IconDawn", "com.sheikahslate.IconAncient",
           "com.sheikahslate.IconForest"]
 GAME = "com.sheikahslate.GameActivity"
 

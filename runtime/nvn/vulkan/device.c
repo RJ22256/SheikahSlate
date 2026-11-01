@@ -1919,6 +1919,9 @@ static void host_import_probe(void) {
 }
 
 // An Arm GPU (Mali / Immortalis: the Galaxy Tab S10 Ultra's Immortalis-G720)
+// (Sheikah Slate: the start screen's panel names the GPU)
+const char *vk_gpu_name(void) { return g_vk.props.deviceName; }
+
 bool vk_gpu_is_arm(void) {
     return g_vk.props.vendorID == 0x13B5 || strstr(g_vk.props.deviceName, "Mali") || strstr(g_vk.props.deviceName, "Immortalis");
 }

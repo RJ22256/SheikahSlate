@@ -64,13 +64,28 @@
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
         </activity>
-        <!-- the original icon - the name the activity had before 0.2.8-slate.12, so a home screen icon from before stays -->
+        <!-- the app's own icon (the player's picture since 0.2.8-slate.13) - the name the activity had before
+             0.2.8-slate.12, so a home screen icon from before stays -->
         <activity-alias
             android:name=".SheikahSlateActivity"
             android:targetActivity=".GameActivity"
             android:icon="@mipmap/ic_launcher"
             android:label="Sheikah Slate"
             android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- the app icon's long-press shortcuts (res/xml/shortcuts.xml) -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity-alias>
+        <activity-alias
+            android:name=".IconSlate"
+            android:targetActivity=".GameActivity"
+            android:icon="@mipmap/ic_launcher_slate"
+            android:label="Sheikah Slate"
+            android:enabled="false"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

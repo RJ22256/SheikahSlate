@@ -24,8 +24,8 @@ android {
         // (each build installs over the last: same application id, same key, a versionCode never lower. The game code
         // built on the tablet stays valid while android/gamelib_id.expected does - the CI checks it; 0.2.8's generator
         // gave it a new id: built once more on the tablet, or Native Mode)
-        versionCode = 12
-        versionName = "0.2.8-slate.12"  // (upstream BOTWRecompAndroid 0.2.8-beta, Galaxy Tab S10 Ultra port 12)
+        versionCode = 13
+        versionName = "0.2.8-slate.13"  // (upstream BOTWRecompAndroid 0.2.8-beta, Galaxy Tab S10 Ultra port 13)
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -93,13 +93,17 @@ android {
 val prepareSheikahSlate by tasks.registering {
     val smaa = repo.resolve("third_party/smaa/SMAA.hlsl")
     val font = repo.resolve("third_party/fonts/Baloo2/Baloo2-SemiBold.ttf")
-    val icon = repo.resolve("assets/artwork/sheikah-slate-icon-v1.png")  // (Sheikah Slate: an original icon, tools/make_icon.py)
+    val interFonts = listOf("Inter-Bold.otf", "Inter-Medium.otf").map { repo.resolve("third_party/fonts/Inter/$it") }  // (the Glass Slate start screen)
+    // (Sheikah Slate) the app's icon: the player's own picture since 0.2.8-slate.13 (assets/artwork/app-icons/
+    // app-icon-sword.png); the original slate design (tools/make_icon.py) is one of the others, "Slate"
+    val icon = repo.resolve("assets/artwork/app-icons/app-icon-sword.png")
     val background = repo.resolve("assets/artwork/great-plateau-background-v2.png")
     val touchSkin = repo.resolve("assets/artwork/sheikah-touch-atlas-v1.png")
     val appIcons = repo.resolve("assets/artwork/app-icons")  // (tools/make_app_icons.py)
-    val appIconNames = listOf("midnight", "dawn", "ancient", "forest")
+    val appIconNames = listOf("slate", "midnight", "dawn", "ancient", "forest")
     val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so", "libswscale.so")
     inputs.files(smaa, font, icon, background, touchSkin)
+    inputs.files(interFonts)
     inputs.dir(appIcons)
     inputs.files(libs.map { deps.resolve("lib/$it") }.filter { it.exists() })
     if (deps.resolve("gen").exists()) inputs.dir(deps.resolve("gen"))  // (the game code's builder, below)
@@ -120,6 +124,7 @@ val prepareSheikahSlate by tasks.registering {
         for (lib in libs)  // (FFmpeg's only once android/deps/build_ffmpeg.sh made them)
             if (deps.resolve("lib/$lib").exists()) deps.resolve("lib/$lib").copyTo(out.resolve("jniLibs/arm64-v8a/$lib"), overwrite = true)
         font.copyTo(out.resolve("assets/res/Baloo2-SemiBold.ttf"), overwrite = true)
+        for (f in interFonts) f.copyTo(out.resolve("assets/res/${f.name}"), overwrite = true)
         deps.resolve("fonts/DejaVuSans.ttf").copyTo(out.resolve("assets/res/DejaVuSans.ttf"), overwrite = true)
         icon.copyTo(out.resolve("assets/res/icon.png"), overwrite = true)
         background.copyTo(out.resolve("assets/res/launcher-background.png"), overwrite = true)

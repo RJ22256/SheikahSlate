@@ -789,7 +789,8 @@ public class SheikahSlateActivity extends SDLActivity {
     // of the activity-aliases in AndroidManifest.xml (APP_ICONS, in Look's order), one enabled at a time.
     private static native void nativeLookDone(int result, String detail);
     private static final int LOOK_BG_SET = 0, LOOK_CANCELLED = 4, LOOK_FAILED = 5;
-    private static final String[] APP_ICONS = {"SheikahSlateActivity", "IconMidnight", "IconDawn", "IconAncient", "IconForest"};
+    private static final String[] APP_ICONS = {"SheikahSlateActivity", "IconSlate", "IconMidnight", "IconDawn", "IconAncient",
+                                               "IconForest"};
     private static final String OLD_PHOTO_ICON = "own_icon";  // (0.2.8-slate.11's home screen icon with a picture)
 
     public static void pickBackground() { pickImage(REQ_LOOK_BG); }

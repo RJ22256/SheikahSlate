@@ -479,6 +479,29 @@ list. The long-press shortcuts follow every icon (they name `GameActivity`), and
 added, now opens `GameActivity` too. The Choose icon picture button is gone. CI fails the build without the launcher
 entry, the aliases or their icons. A picture of your own as the real icon has to be built into the APK.
 
+## Update 13 (0.2.8-slate.13): the Glass Slate start screen, the player's own icon
+
+### 38. The Glass Slate start screen (`launcher.mm` glass_main)
+
+Concept A of the UI concepts, built in on Android: a glass panel down the left over the background - the app's icon in
+use and its name, the game's and the app's version, PLAY, Saves (opens Settings > Prelaunch, where they are), Mods
+(Settings > Mods), Settings, Set up game files while it's needed, Quit; under them the game files' state, the GPU and
+its driver (a custom one by its folder's name) and how to reach the menu in game. At the top right: the display's
+refresh rate, Even frame pacing, the battery and its temperature. At the lower right a card: the last save's time
+(the newest `game_data.sav` of this version), Resume (Start without one), and Video > Mode's four modes a tap away -
+the one in use outlined, Custom when the options match none, Turbo and Turbo 60 off for 1.0.0 / 1.6.0. Laid out in
+units of an 800-line screen, kept clear of a camera cutout (the window's safe area), every item reachable with a
+controller (PLAY focused first). Typeface: Inter Bold and Medium (OFL, `third_party/fonts/Inter`; the concept's
+display face couldn't be fetched here). The first PLAY's questions and the game's start are as before; the desktop
+start screen is unchanged.
+
+### 39. The app's icon is the player's picture
+
+The player's picture (an overgrown sword with flowers) is the app's icon - `assets/artwork/app-icons/app-icon-sword.png`,
+cut to its drawing and centred on a white rounded square - as the default launcher entry, so the update changes the
+icon on the home screen without a step. The original slate design is one of the others in Settings > Look > App icon
+("Slate", alias `IconSlate`), now six: Sword, Slate, Midnight, Dawn, Ancient, Forest.
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep

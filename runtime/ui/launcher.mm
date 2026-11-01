@@ -65,6 +65,10 @@ bool vk_imgui_backend_init(void);
 void vk_imgui_backend_shutdown(void);
 uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
 void vk_imgui_texture_free(uint64_t id);
+const char *vk_gpu_name(void);
+#endif
+#ifdef __ANDROID__
+void android_set_display_refresh(int how);  // (platform/android.c: Video > Display refresh rate)
 #endif
 }
 #ifdef __APPLE__
@@ -1212,9 +1216,15 @@ static void load_background(GpuDevice dev) {
 }
 
 #ifdef __ANDROID__
-// Settings > Look's app icons' pictures (freed with the start screen's ImGui backend, when a game starts)
-static uint64_t g_icon_tex[5];
+// Settings > Look's app icons (SheikahSlateActivity APP_ICONS, in its order) and their pictures (freed with the start
+// screen's ImGui backend, when a game starts); g_icon_current: the one in use (SheikahSlateActivity.appIcon)
+static const char *const k_icon_names[] = {"Sword", "Slate", "Midnight", "Dawn", "Ancient", "Forest"};
+static const char *const k_icon_files[] = {"icon.png", "app-icon-slate.png", "app-icon-midnight.png", "app-icon-dawn.png",
+                                           "app-icon-ancient.png", "app-icon-forest.png"};
+#define N_ICONS 6
+static uint64_t g_icon_tex[N_ICONS];
 static bool g_icon_tex_loaded;
+static int g_icon_current = -1;
 // A shipped PNG (rt_resource) as an ImGui texture, 0 if missing: Settings > Look's app icons
 static uint64_t load_png_texture(const char *name) {
     char path[1100];
@@ -1234,6 +1244,9 @@ static uint64_t load_png_texture(const char *name) {
 
 // ------------------------------------------------------------------ screen
 static ImFont *g_font_title, *g_font_menu, *g_font_small;
+#ifdef __ANDROID__
+static ImFont *g_glass_bold, *g_glass_text;  // (the Glass Slate start screen: Inter Bold / Medium, OFL - third_party/fonts/Inter)
+#endif
 enum Page { MAIN, SETTINGS, SETUP };  // SETTINGS: the in-game menu's tabs (runtime/ui/menu.mm)
 static int g_refocus = MAIN;  // back on the main page: select the item of the page we came from (controllers)
 
@@ -1418,6 +1431,327 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     ImGui::PopFont();
     return clicked;
 }
+
+#ifdef __ANDROID__
+// ------------------------------------------------------------------ the Glass Slate start screen
+// (Sheikah Slate, 0.2.8-slate.13: concept A of the UI concepts, the player's choice) A glass panel down the left over
+// the background: the app's icon in use and its name, the game's and the app's version, PLAY, Saves (Settings >
+// Prelaunch), Mods (Settings > Mods), Settings, Set up game files while it's needed, Quit, and under them the game
+// files' state and the GPU with its driver. At the top right: the display's refresh rate, Even frame pacing, the
+// battery. At the lower right a card: the last save's time, Resume, and Video > Mode's four modes a tap away
+// (settings.c settings_apply_mode). Units of a 800-line screen (u), clear of the camera cutout (the window's safe
+// area); every item reachable with a controller (ImGui's navigation) and focused on PLAY first.
+enum GlassAction { GA_NONE, GA_PLAY, GA_SAVES, GA_MODS, GA_SETTINGS, GA_SETUP, GA_QUIT };
+
+// The newest game_data.sav of this version's save (save_0/<slot>/), as "2026-11-01 03:12"; "" without one. Every 2 s.
+static std::string glass_last_saved() {
+    static double at = -10;
+    static std::string text;
+    double now = ImGui::GetTime();
+    if (now - at < 2) return text;
+    at = now;
+    char r[1024];
+    time_t newest = 0;
+    if (rt_version_root(rt_game_version(), r, sizeof r)) {
+        std::string dir = std::string(r) + "/save/save_0";
+        if (DIR *d = opendir(dir.c_str())) {
+            while (struct dirent *e = readdir(d)) {
+                if (e->d_name[0] == '.') continue;
+                struct stat st;
+                std::string f = dir + "/" + e->d_name + "/game_data.sav";
+                if (stat(f.c_str(), &st) == 0 && st.st_mtime > newest) newest = st.st_mtime;
+            }
+            closedir(d);
+        }
+    }
+    text.clear();
+    if (newest) {
+        char buf[64];
+        struct tm tmv;
+        localtime_r(&newest, &tmv);
+        strftime(buf, sizeof buf, "%Y-%m-%d %H:%M", &tmv);
+        text = buf;
+    }
+    return text;
+}
+
+static void glass_icon(ImDrawList *dl, int kind, ImVec2 c, float r, ImU32 col, float w) {
+    switch (kind) {
+    case GA_PLAY:
+        dl->AddTriangleFilled(ImVec2(c.x - r * 0.55f, c.y - r * 0.8f), ImVec2(c.x + r * 0.85f, c.y),
+                              ImVec2(c.x - r * 0.55f, c.y + r * 0.8f), col);
+        break;
+    case GA_SAVES:  // a disk: its body, the label, the shutter
+        dl->AddRect(ImVec2(c.x - r * 0.8f, c.y - r * 0.8f), ImVec2(c.x + r * 0.8f, c.y + r * 0.8f), col, r * 0.15f, 0, w);
+        dl->AddRect(ImVec2(c.x - r * 0.45f, c.y - r * 0.8f), ImVec2(c.x + r * 0.35f, c.y - r * 0.2f), col, 0, 0, w);
+        dl->AddRect(ImVec2(c.x - r * 0.45f, c.y + r * 0.15f), ImVec2(c.x + r * 0.45f, c.y + r * 0.8f), col, 0, 0, w);
+        break;
+    case GA_MODS: {  // a box
+        ImVec2 t(c.x, c.y - r * 0.9f), rt(c.x + r * 0.8f, c.y - r * 0.45f), rb(c.x + r * 0.8f, c.y + r * 0.45f),
+            b(c.x, c.y + r * 0.9f), lb(c.x - r * 0.8f, c.y + r * 0.45f), lt(c.x - r * 0.8f, c.y - r * 0.45f);
+        ImVec2 hex[6] = {t, rt, rb, b, lb, lt};
+        dl->AddPolyline(hex, 6, col, ImDrawFlags_Closed, w);
+        dl->AddLine(lt, c, col, w);
+        dl->AddLine(rt, c, col, w);
+        dl->AddLine(c, b, col, w);
+        break;
+    }
+    case GA_SETTINGS:  // a gear: a hub, a ring, eight teeth
+        dl->AddCircle(c, r * 0.3f, col, 0, w);
+        dl->AddCircle(c, r * 0.66f, col, 0, w);
+        for (int i = 0; i < 8; i++) {
+            float a = i * IM_PI / 4;
+            dl->AddLine(ImVec2(c.x + cosf(a) * r * 0.66f, c.y + sinf(a) * r * 0.66f),
+                        ImVec2(c.x + cosf(a) * r * 0.98f, c.y + sinf(a) * r * 0.98f), col, w * 1.4f);
+        }
+        break;
+    case GA_SETUP: {  // a folder
+        ImVec2 f[6] = {ImVec2(c.x - r * 0.9f, c.y - r * 0.6f), ImVec2(c.x - r * 0.25f, c.y - r * 0.6f),
+                       ImVec2(c.x - r * 0.05f, c.y - r * 0.35f), ImVec2(c.x + r * 0.9f, c.y - r * 0.35f),
+                       ImVec2(c.x + r * 0.9f, c.y + r * 0.7f), ImVec2(c.x - r * 0.9f, c.y + r * 0.7f)};
+        dl->AddPolyline(f, 6, col, ImDrawFlags_Closed, w);
+        break;
+    }
+    case GA_QUIT:  // a door, and an arrow out of it
+        dl->AddLine(ImVec2(c.x - r * 0.1f, c.y - r * 0.85f), ImVec2(c.x - r * 0.85f, c.y - r * 0.85f), col, w);
+        dl->AddLine(ImVec2(c.x - r * 0.85f, c.y - r * 0.85f), ImVec2(c.x - r * 0.85f, c.y + r * 0.85f), col, w);
+        dl->AddLine(ImVec2(c.x - r * 0.85f, c.y + r * 0.85f), ImVec2(c.x - r * 0.1f, c.y + r * 0.85f), col, w);
+        dl->AddLine(ImVec2(c.x - r * 0.35f, c.y), ImVec2(c.x + r * 0.9f, c.y), col, w);
+        dl->AddLine(ImVec2(c.x + r * 0.45f, c.y - r * 0.45f), ImVec2(c.x + r * 0.9f, c.y), col, w);
+        dl->AddLine(ImVec2(c.x + r * 0.45f, c.y + r * 0.45f), ImVec2(c.x + r * 0.9f, c.y), col, w);
+        break;
+    }
+}
+
+static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, bool busy) {
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetWindowPos();
+    float u = ds.y / 800.0f;
+    float sl = 0, sr = 0;  // (the camera cutout's side, if the screen has one there)
+    {
+        SDL_Rect sa;
+        int ww = 0, wh = 0;
+        if (SDL_GetWindowSafeArea(win, &sa) && SDL_GetWindowSize(win, &ww, &wh) && ww > 0) {
+            float k = ds.x / ww;
+            sl = sa.x * k, sr = (ww - sa.x - sa.w) * k;
+        }
+    }
+    ImFont *fb = g_glass_bold ? g_glass_bold : g_font_title, *ft = g_glass_text ? g_glass_text : g_font_menu;
+    auto P = [&](float x, float y) { return ImVec2(o.x + x, o.y + y); };
+    auto text = [&](ImFont *f, float size, float x, float y, ImU32 col, const char *t, float wrap = 0) {
+        dl->AddText(f, size, P(x, y), col, t, NULL, wrap);
+    };
+    auto tw = [&](ImFont *f, float size, const char *t) { return f->CalcTextSizeA(size, FLT_MAX, 0, t).x; };
+    const ImU32 ink = IM_COL32(234, 242, 250, 255), muted = IM_COL32(159, 179, 200, 255), cyan = IM_COL32(94, 230, 245, 255),
+                line = IM_COL32(46, 110, 134, 255), field = IM_COL32(15, 30, 51, 255), edge = IM_COL32(35, 65, 95, 255),
+                label = IM_COL32(143, 217, 230, 255);
+    int action = GA_NONE;
+    bool ready = status.empty();
+    // a button: an invisible ImGui button (touch, mouse, controller) drawn as the design's - 0 the cyan PLAY, 1 a glass
+    // one, 2 the card's amber; framed while focused or hovered
+    auto button = [&](const char *id, int kind, const char *lbl, float bx, float by, float bwid, float bh, int style,
+                      bool enabled, bool focus) {
+        ImGui::SetCursorScreenPos(P(bx, by));
+        if (focus) ImGui::SetKeyboardFocusHere();
+        ImGui::BeginDisabled(!enabled);
+        ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+        bool clicked = ImGui::InvisibleButton(id, ImVec2(bwid, bh), ImGuiButtonFlags_EnableNav);
+        ImGui::PopStyleColor();
+        bool hot = enabled && (ImGui::IsItemFocused() || ImGui::IsItemHovered());
+        bool down = enabled && ImGui::IsItemActive();
+        ImGui::EndDisabled();
+        ImU32 fill, fg, bord = 0;
+        if (style == 0) {
+            fill = !enabled ? IM_COL32(52, 70, 88, 255) : down ? IM_COL32(70, 205, 222, 255) : cyan;
+            fg = enabled ? IM_COL32(4, 33, 43, 255) : IM_COL32(150, 165, 180, 255);
+        } else if (style == 2) {
+            fill = !enabled ? IM_COL32(80, 70, 52, 255) : down ? IM_COL32(222, 165, 75, 255) : IM_COL32(242, 184, 91, 255);
+            fg = enabled ? IM_COL32(43, 26, 2, 255) : IM_COL32(170, 160, 140, 255);
+        } else {
+            fill = down ? IM_COL32(26, 52, 82, 255) : hot ? IM_COL32(20, 40, 66, 255) : field;
+            fg = enabled ? ink : IM_COL32(120, 135, 150, 255);
+            bord = edge;
+        }
+        float rr = (style == 0 ? 14 : 12) * u;
+        dl->AddRectFilled(P(bx, by), P(bx + bwid, by + bh), fill, rr);
+        if (hot)
+            dl->AddRect(P(bx - 3 * u, by - 3 * u), P(bx + bwid + 3 * u, by + bh + 3 * u), style == 1 ? cyan : ink, rr + 3 * u, 0,
+                        2.5f * u);
+        else if (bord)
+            dl->AddRect(P(bx, by), P(bx + bwid, by + bh), bord, rr, 0, 1.2f * u);
+        ImFont *f = style == 0 ? fb : ft;
+        float fs = style == 0 ? 24 * u : 18 * u, lx = bx + (kind >= 0 ? 58 * u : 0);
+        if (kind >= 0) glass_icon(dl, kind, P(bx + 32 * u, by + bh * 0.5f), (style == 0 ? 11 : 10) * u, fg, 2 * u);
+        if (kind < 0) lx = bx + (bwid - tw(f, fs, lbl)) * 0.5f;
+        text(f, fs, lx, by + (bh - fs * 1.21f) * 0.5f, fg, lbl);
+        return clicked && enabled;
+    };
+
+    // ---- the panel
+    float pw = 392 * u + sl, pad = 40 * u + sl, bw = pw - pad - 40 * u;
+    dl->AddRectFilled(P(0, 0), P(pw, ds.y), IM_COL32(9, 19, 34, 228));
+    dl->AddLine(P(pw, 0), P(pw, ds.y), line, 1.5f * u);
+    float y = 52 * u, logo = 46 * u;
+    if (g_icon_current < 0) g_icon_current = android_call_ret_int("appIcon", 0);
+    if (!g_icon_tex_loaded) {
+        g_icon_tex_loaded = true;
+        for (int k = 0; k < N_ICONS; k++) g_icon_tex[k] = load_png_texture(k_icon_files[k]);
+    }
+    int ci = g_icon_current >= 0 && g_icon_current < N_ICONS ? g_icon_current : 0;
+    float tx = pad;
+    if (g_icon_tex[ci]) {
+        dl->AddImageRounded((ImTextureID)g_icon_tex[ci], P(pad, y), P(pad + logo, y + logo), ImVec2(0, 0), ImVec2(1, 1),
+                            IM_COL32_WHITE, logo * 0.22f);
+        tx = pad + logo + 14 * u;
+    }
+    {
+        const char *name = "Sheikah Slate";
+        float tsz = 36 * u, avail = pw - 20 * u - tx, w0 = tw(fb, tsz, name);
+        if (w0 > avail) tsz *= avail / w0;
+        text(fb, tsz, tx, y + (logo - tsz * 1.21f) * 0.5f, ink, name);
+    }
+    y += logo + 14 * u;
+    {
+        std::string ver = app_version();
+        char sub[256];
+        snprintf(sub, sizeof sub, "%s %s  \xc2\xb7  %s %s", tr("Game"), version_name(rt_game_version()), tr("App"),
+                 ver.empty() ? "?" : ver.c_str());
+        text(ft, 15 * u, pad, y, muted, sub);
+    }
+    y += 44 * u;
+    static bool focused_once;
+    bool first = !focused_once;
+    focused_once = true;
+    if (button("##play", GA_PLAY, tr("PLAY"), pad, y, bw, 64 * u, 0, ready, first)) action = GA_PLAY;
+    y += 64 * u + 12 * u;
+    struct Item { const char *id; int kind; const char *lbl; bool show, enabled; int refocus; };
+    Item items[] = {{"##saves", GA_SAVES, "Saves", true, true, -1},
+                    {"##mods", GA_MODS, "Mods", true, true, -1},
+                    {"##settings", GA_SETTINGS, "Settings", true, true, SETTINGS},
+                    {"##setup", GA_SETUP, "Set up game files", !ready || busy, !busy, SETUP},
+                    {"##quit", GA_QUIT, "Quit", true, true, -1}};
+    for (const Item &it : items) {
+        if (!it.show) continue;
+        bool foc = g_refocus == it.refocus;
+        if (foc) g_refocus = MAIN;
+        if (button(it.id, it.kind, tr(it.lbl), pad, y, bw, 52 * u, 1, it.enabled, foc)) action = it.kind;
+        y += 52 * u + 10 * u;
+    }
+    {   // under them: the game files, the GPU and its driver, how to reach the menu in game
+        float ly = ds.y - 40 * u - 3 * 24 * u;
+        if (ready) {
+            float cu = 15 * u;  // (a drawn check mark: the font may have no ✓)
+            ImU32 g = IM_COL32(120, 226, 140, 255);
+            dl->AddLine(P(pad + cu * 0.1f, ly + cu * 0.62f), P(pad + cu * 0.38f, ly + cu * 0.9f), g, cu * 0.14f);
+            dl->AddLine(P(pad + cu * 0.38f, ly + cu * 0.9f), P(pad + cu * 0.9f, ly + cu * 0.3f), g, cu * 0.14f);
+            text(ft, 15 * u, pad + cu * 1.3f, ly, g, tr("Game files ready."));
+        } else {
+            char msg[512];
+            snprintf(msg, sizeof msg, "!  %s", tr(busy ? "Setting up the game files..." : status.c_str()));
+            text(ft, 15 * u, pad, ly, IM_COL32(255, 184, 102, 255), msg, bw + 40 * u);
+        }
+        const char *drv = getenv("LARECOMP_VK_DRIVER");
+        std::string driver = tr("system driver");
+        if (drv && *drv) {  // (a custom one: its folder's name, drivers/<name>/lib...so)
+            std::string p = drv;
+            size_t e = p.rfind('/');
+            size_t b = e != std::string::npos && e > 0 ? p.rfind('/', e - 1) : std::string::npos;
+            driver = b != std::string::npos ? p.substr(b + 1, e - b - 1) : p;
+        }
+        std::string gpu = std::string(vk_gpu_name()) + "  \xc2\xb7  " + driver;
+        text(ft, 14 * u, pad, ly + 24 * u, muted, gpu.c_str(), bw + 40 * u);
+        text(ft, 14 * u, pad, ly + 48 * u, muted, tr("In game, the back button opens the menu."), bw + 40 * u);
+    }
+
+    // ---- the chips at the top right: the refresh rate, Even frame pacing, the battery
+    {
+        static PlatDeviceStats st;
+        static double st_at = -10;
+        if (ImGui::GetTime() - st_at > 2) st_at = ImGui::GetTime(), plat_device_stats(&st);
+        std::vector<std::string> chips;
+        const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
+        char b[96];
+        if (dm && dm->refresh_rate > 1) snprintf(b, sizeof b, "%d Hz", (int)lroundf(dm->refresh_rate)), chips.push_back(b);
+        chips.push_back(tr(g_settings.even_pacing == 0 ? "Even pacing off" : "Even pacing on"));
+        if (st.batt_pct >= 0) {
+            if (st.batt_temp_c > 0) snprintf(b, sizeof b, "%.0f%%  \xc2\xb7  %.0f\xc2\xb0" "C", st.batt_pct, st.batt_temp_c);
+            else snprintf(b, sizeof b, "%.0f%%", st.batt_pct);
+            chips.push_back(b);
+        }
+        float x = ds.x - 28 * u - sr, cy = 28 * u, h = 36 * u, fs = 14 * u;
+        for (int i = (int)chips.size() - 1; i >= 0; i--) {
+            float w = tw(ft, fs, chips[i].c_str()) + 28 * u;
+            x -= w;
+            dl->AddRectFilled(P(x, cy), P(x + w, cy + h), IM_COL32(10, 22, 40, 225), h * 0.5f);
+            dl->AddRect(P(x, cy), P(x + w, cy + h), IM_COL32(42, 74, 110, 255), h * 0.5f, 0, 1.2f * u);
+            text(ft, fs, x + 14 * u, cy + (h - fs * 1.21f) * 0.5f, IM_COL32(207, 227, 241, 255), chips[i].c_str());
+            x -= 10 * u;
+        }
+    }
+
+    // ---- the card: the last save, Resume, the modes
+    {
+        float cw = fminf(760 * u, ds.x - pw - 80 * u - sr), ch = 300 * u;
+        float cx = ds.x - 40 * u - sr - cw, cy = ds.y - 76 * u - ch;
+        dl->AddRectFilled(P(cx, cy), P(cx + cw, cy + ch), IM_COL32(10, 22, 40, 238), 22 * u);
+        dl->AddRect(P(cx, cy), P(cx + cw, cy + ch), line, 22 * u, 0, 1.5f * u);
+        float x = cx + 28 * u, yy = cy + 28 * u, inner = cw - 56 * u;
+        std::string last = glass_last_saved();
+        text(ft, 13 * u, x, yy, label, tr("CONTINUE"));
+        text(fb, 28 * u, x, yy + 20 * u, ink, tr(last.empty() ? "A new journey" : "Your journey"));
+        char sub[160];
+        if (last.empty()) snprintf(sub, sizeof sub, "%s", tr("No save yet: PLAY starts a new game."));
+        else snprintf(sub, sizeof sub, tr("Last saved %s"), last.c_str());
+        text(ft, 15 * u, x, yy + 58 * u, muted, sub, inner - 190 * u);
+        if (button("##resume", -1, tr(last.empty() ? "Start" : "Resume"), cx + cw - 28 * u - 170 * u, yy + 14 * u, 170 * u,
+                   52 * u, 2, ready, false))
+            action = GA_PLAY;
+        yy += 104 * u;
+        text(ft, 13 * u, x, yy, label, tr("MODE"));
+        yy += 22 * u;
+        static const char *names[] = {"Battery", "Performance", "Turbo", "Turbo 60"};
+        static const char *subs[] = {"30 fps  \xc2\xb7  60 Hz", "30 fps  \xc2\xb7  sharpest", "40 fps", "60 fps"};
+        static const char *blurbs[] = {
+            "Coolest and longest: the game's lowest resolution held, the lighter upscaler.",
+            "Each frame shown for exactly 4 refreshes at 120 Hz, AMD FSR 1: the best image.",
+            "Each frame shown for exactly 3 refreshes; the resolution comes down as far as a frame needs.",
+            "The smoothest: the resolution lowered as far as 60 needs; the most heat."};
+        int cur = settings_current_mode();
+        bool sixty = rt_game_version() >= 182;  // (1.0.0 and 1.6.0 run at 30)
+        float gap = 10 * u, mw = (inner - 3 * gap) / 4, mh = 64 * u;
+        for (int i = 0; i < 4; i++) {
+            float mx = x + i * (mw + gap);
+            bool enabled = sixty || i < MODE_TURBO;
+            ImGui::SetCursorScreenPos(P(mx, yy));
+            ImGui::BeginDisabled(!enabled);
+            ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+            ImGui::PushID(i);
+            bool clicked = ImGui::InvisibleButton("##mode", ImVec2(mw, mh), ImGuiButtonFlags_EnableNav);
+            ImGui::PopID();
+            ImGui::PopStyleColor();
+            bool hot = enabled && (ImGui::IsItemFocused() || ImGui::IsItemHovered());
+            ImGui::EndDisabled();
+            bool sel = cur == i;
+            dl->AddRectFilled(P(mx, yy), P(mx + mw, yy + mh), sel ? IM_COL32(18, 51, 73, 255) : field, 12 * u);
+            dl->AddRect(P(mx, yy), P(mx + mw, yy + mh), sel ? cyan : edge, 12 * u, 0, (sel ? 2.2f : 1.2f) * u);
+            if (hot) dl->AddRect(P(mx - 3 * u, yy - 3 * u), P(mx + mw + 3 * u, yy + mh + 3 * u), ink, 15 * u, 0, 2 * u);
+            ImU32 c1 = enabled ? ink : IM_COL32(110, 125, 140, 255), c2 = enabled ? muted : IM_COL32(100, 112, 125, 255);
+            text(ft, 16 * u, mx + 14 * u, yy + 12 * u, c1, tr(names[i]), mw - 20 * u);
+            text(ft, 13 * u, mx + 14 * u, yy + 36 * u, c2, subs[i], mw - 20 * u);
+            if (clicked && enabled && !sel) {
+                settings_apply_mode(i);
+                android_set_display_refresh(g_settings.display_refresh);
+                settings_save();
+                cur = i;
+            }
+        }
+        yy += mh + 12 * u;
+        text(ft, 14 * u, x, yy, muted,
+             tr(cur >= 0 && cur < 4 ? blurbs[cur] : "Custom: your own settings (Settings \xe2\x80\xba Video)."), inner);
+    }
+    return action;
+}
+#endif
 
 // Controllers, as in the in-game menu (runtime/ui/menu.mm): read straight from SDL, Nintendo layout - the right face
 // button (A) confirms, the bottom one (B) goes back; d-pad / left stick move. (ImGui's own SDL gamepad handling is
@@ -1890,14 +2224,13 @@ static void prelaunch_tab(float sc) {
         ImGui::Spacing();
         {   // the app's icon (SheikahSlateActivity setAppIcon: AndroidManifest.xml's activity-aliases, the real launcher
             // icon) - a picture each, the one in use framed in gold; one chosen asks first: the app starts again
-            static const char *names[] = {"Original", "Midnight", "Dawn", "Ancient", "Forest"};
-            static const char *files[] = {"icon.png", "app-icon-midnight.png", "app-icon-dawn.png", "app-icon-ancient.png",
-                                          "app-icon-forest.png"};
+            const char *const *names = k_icon_names;
             uint64_t *tex = g_icon_tex;
-            static int current = -1, pending = -1;
+            static int pending = -1;
+            int &current = g_icon_current;
             if (!g_icon_tex_loaded) {
                 g_icon_tex_loaded = true;
-                for (int k = 0; k < 5; k++) tex[k] = load_png_texture(files[k]);
+                for (int k = 0; k < N_ICONS; k++) tex[k] = load_png_texture(k_icon_files[k]);
             }
             if (current < 0) current = android_call_ret_int("appIcon", 0);
             ImGui::TextDisabled("%s", tr("The app's icon, on the home screen and in the app list. Sheikah Slate starts "
@@ -1906,7 +2239,7 @@ static void prelaunch_tab(float sc) {
             ImGui::Text(tr("App icon: %s"), tr(names[pending >= 0 ? pending : current]));
             float side = 92 * sc;
             ImDrawList *dl = ImGui::GetWindowDrawList();
-            for (int k = 0; k < 5; k++) {
+            for (int k = 0; k < N_ICONS; k++) {
                 if (k) ImGui::SameLine(0, 18 * sc);
                 ImGui::PushID(k);
                 bool chosen = tex[k] ? ImGui::ImageButton("##icon", (ImTextureID)tex[k], ImVec2(side, side))
@@ -2011,10 +2344,26 @@ extern "C" void launcher_run(const char *root) {
         g_font_title = io.Fonts->AddFontFromFileTTF(p, 92 * (b2 ? 2.3f : 1), NULL, ranges);
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
+#ifdef __ANDROID__
+    g_glass_bold = g_glass_text = NULL;
+    {   // the Glass Slate start screen's: drawn at their sizes (a little under these), the menu language's letters merged
+        char ib[1024], im[1024];
+        if (rt_resource("Inter-Bold.otf", "third_party/fonts/Inter/Inter-Bold.otf", ib, sizeof ib) &&
+            rt_resource("Inter-Medium.otf", "third_party/fonts/Inter/Inter-Medium.otf", im, sizeof im)) {
+            g_glass_bold = io.Fonts->AddFontFromFileTTF(ib, 96, NULL, ranges);
+            i18n_merge_fonts(io.Fonts, 96);
+            g_glass_text = io.Fonts->AddFontFromFileTTF(im, 48, NULL, ranges);
+            i18n_merge_fonts(io.Fonts, 48);
+        }
+    }
+#endif
     if (!io.Fonts->Build()) {  // (a font ImGui couldn't read left the atlas empty: its upload crashed - ImGui's own font)
         fprintf(stderr, "[ui] the start screen's fonts didn't build: ImGui's default font instead\n");
         io.Fonts->Clear();
         g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
+#ifdef __ANDROID__
+        g_glass_bold = g_glass_text = NULL;
+#endif
     }
     ImGuiStyle &st = ImGui::GetStyle();
     st.Colors[ImGuiCol_Header] = ImVec4(0, 0, 0, 0);
@@ -2187,7 +2536,11 @@ extern "C" void launcher_run(const char *root) {
                 bg->AddRectFilledMultiColor(ImVec2(0, 0), ds, IM_COL32(18, 34, 40, 255), IM_COL32(40, 70, 64, 255),
                                             IM_COL32(12, 20, 24, 255), IM_COL32(8, 12, 16, 255));
             }
-            {  // a shadow banner fading in from the left behind the menu, and one from the right behind the version
+            bool glass = false;  // (Android's main page: the Glass Slate start screen, glass_main - its own panel and card)
+#ifdef __ANDROID__
+            glass = page == MAIN;
+#endif
+            if (!glass) {  // a shadow banner fading in from the left behind the menu, and one from the right behind the version
                 const float stops[][2] = {{0.0f, 225}, {0.3f, 215}, {0.44f, 165}, {0.55f, 95}, {0.64f, 35}, {0.74f, 0}};
                 for (int i = 0; i + 1 < (int)(sizeof stops / sizeof stops[0]); i++) {
                     ImU32 a = IM_COL32(6, 10, 34, (int)stops[i][1]), b = IM_COL32(6, 10, 34, (int)stops[i + 1][1]);
@@ -2210,7 +2563,7 @@ extern "C" void launcher_run(const char *root) {
             float x0 = 90 * s;
             ImGui::SetCursorPos(ImVec2(x0, 120 * s));
             ImGui::PushFont(g_font_title);
-            if (page == MAIN) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
+            if (page == MAIN && !glass) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
                 const char *t = "Sheikah Slate";
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 232, 120, 255),
@@ -2219,7 +2572,7 @@ extern "C" void launcher_run(const char *root) {
             }
             ImGui::PopFont();
 #ifdef __ANDROID__
-            if (page == MAIN) {  // "Android" under the title, after the Android robot's head (Google, CC BY 3.0), in its green
+            if (page == MAIN && !glass) {  // "Android" under the title, after the Android robot's head (Google, CC BY 3.0), in its green
                 ImDrawList *dl = ImGui::GetWindowDrawList();
                 ImGui::PushFont(g_font_menu);
                 float fs = ImGui::GetFontSize();
@@ -2256,6 +2609,31 @@ extern "C" void launcher_run(const char *root) {
             bool typing = typed_before || ui_text_busy();
 
             if (page == MAIN) {
+#ifdef __ANDROID__
+                int a = glass_main(ds, win, status, busy);
+                if (a == GA_PLAY) {  // first PLAY ever: the aspect ratio question, then how to reach our menu, then the game
+                    if (!g_settings.aspect_asked) ImGui::OpenPopup("##aspect");
+                    else if (!g_settings.menu_tip_seen) ImGui::OpenPopup("##menutip");
+                    else play = true;
+                } else if (a == GA_SAVES || a == GA_MODS || a == GA_SETTINGS) {  // (Saves: Settings > Prelaunch)
+                    static bool opened;
+                    menu_tabs_focus(!opened);
+                    opened = true;
+                    if (a == GA_SAVES) g_tab_request_ext = -1;
+                    if (a == GA_MODS) g_tab_request_ext = 10;
+                    page = SETTINGS;
+                } else if (a == GA_SETUP) {
+                    page = SETUP;
+                } else if (a == GA_QUIT) {
+                    exit(0);
+                }
+                if (g_tip_test) ImGui::OpenPopup(g_settings.aspect_asked ? "##menutip" : "##aspect"), g_tip_test = false;
+                if (aspect_prompt(s)) {
+                    if (g_settings.menu_tip_seen) play = true;
+                    else ImGui::OpenPopup("##menutip");
+                }
+                if (menu_tip(s)) play = true;
+#else
                 {  // the four items close together, the block anchored where QUIT always was (the gap to the status
                    // line stays)
                     ImGui::PushFont(g_font_menu);
@@ -2308,6 +2686,7 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::SetCursorPosX(x0);
                 if (menu_item("QUIT", true)) exit(0);
                 g_menu_gap = 0.35f;
+#endif
             } else if (page == SETTINGS) {
                 // the in-game menu's tabs (runtime/ui/menu.mm), in a window like the in-game one; tabs that need a
                 // loaded game say so
@@ -2605,8 +2984,9 @@ extern "C" void launcher_run(const char *root) {
                             IM_COL32(236, 194, 84, 255), t.c_str());
             }
 
-            // status (lower left) and version (lower right) - not under the Settings / Game Files windows
-            if (page == MAIN) {
+            // status (lower left) and version (lower right) - not under the Settings / Game Files windows (nor the Glass
+            // Slate screen's: its panel says it)
+            if (page == MAIN && !glass) {
             ImGui::PushFont(g_font_small);
             ImGui::SetCursorPos(ImVec2(x0, ds.y - 118 * s));
             if (status.empty()) {
