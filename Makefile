@@ -9,7 +9,7 @@ DEPS     ?=
 WINCROSS ?=
 CC       := $(WINCROSS)clang
 CXX      := $(WINCROSS)clang++
-AR       := $(if $(WINCROSS),$(WINCROSS)ar,llvm-ar)
+AR       := $(WINCROSS)ar  # (MSYS2: binutils' ar - clang's COFF objects)
 WINDRES  ?= $(if $(WINCROSS),$(WINCROSS)windres,windres)
 NO_FFMPEG ?=
 IMGUI    := third_party/imgui
@@ -26,6 +26,8 @@ GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools
                 tools/gamelib_entry.c runtime/hle/hle_symbols.txt runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS) --simd c') | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-16)
 
+# the Android app's versionName: the start screen's "App" version and the zip's name
+VERSION  := $(shell sed -n 's/^.*versionName = "\([^"]*\)".*/\1/p' android/sheikahslate/app/build.gradle.kts)
 OSFLAGS  := -D_WIN32_WINNT=0x0A00 -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S \
             -DWIN32_LEAN_AND_MEAN -DNOMINMAX $(if $(RELEASE),-DLARECOMP_ZIP_BUILD) $(if $(NO_FFMPEG),-DLARECOMP_NO_FFMPEG)
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
@@ -89,7 +91,7 @@ $(B)/rt/%.o: runtime/%.cpp $(RT_HDRS)
 # the UI sources are plain C++ apart from __APPLE__ blocks
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
 	@mkdir -p $(dir $@)
-	$(CXX) -x c++ $(CXXFLAGS) -c $< -o $@
+	$(CXX) -x c++ $(CXXFLAGS) -DWSWORD_VERSION='"$(VERSION)"' -c $< -o $@
 
 # SMAA (third_party/smaa, MIT): the reference shader as a C string for runtime/nvn/smaa_data.c; non-ASCII bytes in its
 # comments as '?', CRLF as LF (as the Android build's Gradle task does)
@@ -119,8 +121,6 @@ $(LSFG_LIB): $(LSFG_OBJ)
 
 # Runtime objects only (no link): a quick compile check
 objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ) $(LSFG_LIB)
-
-VERSION  := $(shell sed -n 's/^.*versionName = "\([^"]*\)".*/\1/p' android/sheikahslate/app/build.gradle.kts)
 
 # build/dist/WSword-<version>-windows.zip, top folder "WSword/": the exe and its import library, the generator helper
 # (botwgen/), the compiler for the player's PC (zig/: tools/fetch_zig.sh, slimmed by tools/zig_slim.sh), the headers
