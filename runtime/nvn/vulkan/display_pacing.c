@@ -79,8 +79,11 @@ uint64_t dp_desired(DPace *p, uint32_t id, uint64_t now_ns, double period_ns, bo
             p->late++;
             p->tight_n = 0;
             if (++p->late_run >= DP_RUN) p->anchored = false;
-        } else if (slot - now > (n + 0.5) * p->refresh) {
-            p->ahead++;  // (more than a frame ahead of its present: a new grid from the next frame shown)
+        } else if (slot - now > (n * (p->burst_n > 1 ? p->burst_n + p->burst_pos : 1) + 0.5) * p->refresh) {
+            // (more than a frame ahead of its present: a new grid from the next frame shown. WSword, frame generation:
+            // a group's presents come together, a real frame's time apart - a frame there is the real one's, and the
+            // k-th after the first is k slots further on)
+            p->ahead++;
             p->anchored = false;
         } else {
             desired = (uint64_t)(slot - 0.5 * p->refresh);
@@ -91,6 +94,8 @@ uint64_t dp_desired(DPace *p, uint32_t id, uint64_t now_ns, double period_ns, bo
     p->sent[s].id = id;
     p->sent[s].gen = p->gen;
     p->sent[s].desired = desired;
+    p->sent[s].pos = (uint8_t)(p->burst_pos > 0 ? p->burst_pos : 0);
+    p->sent[s].group = (uint8_t)(p->burst_n > 1 ? p->burst_n : 1);
     return desired;
 }
 
@@ -116,14 +121,33 @@ void dp_feedback(DPace *p, uint32_t id, uint64_t actual, uint64_t earliest) {
     p->last_id = id;
     p->last_t = actual;
     if (!p->n || R <= 0) return;
-    if (!p->anchored) { regrid(p, id, actual); return; }
     unsigned s = id % DP_SENT;
+    // (WSword, frame generation) a group - the generated frames and the real one, presented together - is judged by its
+    // first present alone: it has the least time to be ready (each later one's slot is a frame further on, its GPU work a
+    // few milliseconds). The others' on-time records kept the grid where the first one was late every time.
+    bool group = p->sent[s].id == id && p->sent[s].group > 1;
+    if (group && p->sent[s].pos > 0) return;
+    if (!p->anchored) { regrid(p, id, actual); return; }
     if (p->sent[s].id != id || p->sent[s].gen != p->gen || !p->sent[s].desired) return;  // (not aimed with this grid)
     double slot = (double)p->sent[s].desired + 0.5 * R, err = (double)actual - slot - p->bias;
+    if (group) {
+        // no offsets learnt from groups: a first present late each time is its GPU work, not how the system reports
+        // (an offset there put the generated frame a refresh late for good, its real one on time). Two in a row late (or
+        // early): a new grid from it; the earlier-by-a-refresh step below as for single frames.
+        if (fabs(err) >= 0.5 * R) {
+            if (err > 0) p->late++;
+            else p->early++;
+            p->tight_n = 0;
+            if (p->nrun && (p->run_err[0] > 0) != (err > 0)) p->nrun = 0;
+            p->run_err[p->nrun++] = err;
+            if (p->nrun >= 2) regrid(p, id, actual);
+            return;
+        }
+    }
     if (fabs(err) < 0.5 * R) {
         p->on_time++;
         p->anchor_id = id, p->anchor_t = (double)actual - p->bias;  // (onto the display's real time)
-        p->bias += err * 0.05;  // (an offset, followed within the half refresh)
+        if (!group) p->bias += err * 0.05;  // (an offset, followed within the half refresh)
         p->late_run = p->nrun = 0;
         if (earliest && earliest <= actual) {
             double spare = (double)(actual - earliest);

@@ -22,13 +22,17 @@ typedef struct {
     int late_run;           // frames in a row presented after their slot had gone by (dp_desired)
     int nrun;               // aimed frames in a row shown half a refresh or more off their slot, the same way: how far
     double run_err[4];
+    int burst_pos;          // (WSword, frame generation) the next present's place in its frame's group - the generated
+    int burst_n;            // frames, then the real one, presented together - and the group's size (0 / 1: no groups). A
+                            // group is judged by its first present (the least time to be ready); slots up to burst_pos
+                            // frames ahead are a later one's own
     double bias;            // a steady offset between when the system says frames went up and when they were asked for
     int tight_n;            // aimed frames in a row on their slots, and of them the least spare (could have gone up
     double tight_min;       // that much earlier: the system's earliest time): a refresh or more over 300 - a slot earlier
     bool have_last;
     uint32_t last_id;
     uint64_t last_t;
-    struct { uint32_t id, gen; uint64_t desired; } sent[DP_SENT];  // the last frames' requests, by id
+    struct { uint32_t id, gen; uint64_t desired; uint8_t pos, group; } sent[DP_SENT];  // the last frames' requests, by id
     // since dp_stats_take:
     uint32_t shown[9];      // frames by how long the one before stayed up: [k] k refreshes (1..7), [8] longer, [0] other
     uint32_t aimed, on_time, late, early, regrids, ahead, missing, tightened, offsets;

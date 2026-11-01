@@ -16,6 +16,8 @@ extern "C" {
 #include "../settings.h"
 uint64_t vk_cum_wait_ns(void);  // vulkan/exec.c
 const char *vk_gpu_desc(void);  // vulkan/device.c
+uint64_t vk_present_total(void);  // (WSword: vulkan/device.c - presents made, real and generated)
+int vk_fg_multiplier(void);       // (presents per real frame with frame generation; 1 without)
 }
 
 #define FT_N 120  // frame times in the graph
@@ -58,17 +60,22 @@ void perf_overlay_draw(ImVec2 display, float scale) {
     static uint64_t next_ns, t0, wait0;
     static int frames;
     static float fps, avg_ms, max_ms, wait_pct;
+    static float shown_fps;  // (WSword: with frame generation, the frames presented - real and generated - a second)
+    static uint64_t presents0;
     static PlatDeviceStats ds;
     frames++;
     if (now >= next_ns) {
         uint64_t w = vk_cum_wait_ns();
+        uint64_t pr = vk_present_total();
         if (t0) {
             double dt = (now - t0) / 1e9;
             fps = (float)(frames / dt);
+            shown_fps = (float)((pr - presents0) / dt);
             wait_pct = (float)((w - wait0) / 1e9 / dt * 100.0);
             if (wait_pct > 100) wait_pct = 100;
         }
         wait0 = w;
+        presents0 = pr;
         frames = 0;
         t0 = now;
         next_ns = now + 500000000ull;
@@ -79,6 +86,8 @@ void perf_overlay_draw(ImVec2 display, float scale) {
         plat_device_stats(&ds);
     }
 
+    // (frame generation presenting its frames: the presents' rate beside the game's)
+    bool fg = vk_fg_multiplier() > 1 && shown_fps > fps * 1.2f;
     place(display, scale);
     ImGui::SetNextWindowBgAlpha(0.55f);
     if (g_settings.overlay_style == 1) {  // compact: one line - FPS, the app's RAM, the SoC's and the battery's temperature
@@ -86,6 +95,10 @@ void perf_overlay_draw(ImVec2 display, float scale) {
                                          ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
         ImGui::SetWindowFontScale(0.62f);
         ImGui::TextColored(grade(fps, 55, 28), "FPS %.0f", fps);
+        if (fg) {
+            ImGui::SameLine(0, 0);
+            ImGui::TextColored(ImVec4(0.56f, 0.85f, 0.90f, 1), " > %.0f", shown_fps);
+        }
         ImGui::SameLine();
         ImGui::Text("  RAM %u MB", ds.rss_mb);
         if (ds.soc_temp_c > 0) {
@@ -107,6 +120,9 @@ void perf_overlay_draw(ImVec2 display, float scale) {
     ImGui::TextColored(grade(fps, 55, 28), "%.0f FPS", fps);
     ImGui::SameLine();
     ImGui::TextDisabled("%.1f ms", fps > 0 ? 1000.0f / fps : 0.0f);
+    if (fg) {  // (WSword: frame generation's frames on top - the game's own rate stays the line above)
+        ImGui::TextColored(ImVec4(0.56f, 0.85f, 0.90f, 1), "%.0f with frame generation %dx", shown_fps, vk_fg_multiplier());
+    }
     float graph[FT_N];  // (oldest first)
     for (int i = 0; i < nft; i++) graph[i] = ft[(head - nft + i + FT_N) % FT_N];
     ImGui::PushStyleColor(ImGuiCol_PlotLines, grade(fps, 55, 28));

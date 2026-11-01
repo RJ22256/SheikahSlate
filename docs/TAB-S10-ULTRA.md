@@ -577,6 +577,42 @@ Lossless Scaling's frame generation (LSFG), with the player's own `Lossless.dll`
 
 **Log lines:** `[framegen]`. `LARECOMP_FRAMEGEN=0..3` overrides the setting; `LARECOMP_FG_FP32=1` forces full precision.
 
+## Update 16 (0.2.8-slate.16): frame generation's frames evenly on screen
+
+### 43. A frame's group of presents paced as one (`display_pacing.c`, `device.c` fg_present)
+
+**What went wrong on the Galaxy S25 (slate.15).** Frame generation ran (`[framegen] started: Lossless.dll's FP16 shaders`), but it didn't look any smoother. At 2x and 30 fps the stats line read:
+
+> on screen 4x 42% (1x 26.6%, 3x 26.6%), … not shown …
+
+So each generated frame was either:
+- up for **one** refresh, with its real frame then up for three; or
+- never shown at all, overtaken by its real frame at the same refresh.
+
+**Why.** Even pacing judged every present on its own:
+- **The real frame kept the grid in place.** The generated frame needs the most GPU work before its slot, so it was the one that came late. But the real frame, a slot after it, was on time, and that on-time record held the grid where it was.
+- **Lateness was taken for an offset.** The generated frame's one-refresh lateness, the same every frame, was learnt as a reporting offset ("offset 8.3 ms").
+- **The group looked too far ahead.** Presents that come together looked more than a frame ahead of their slots, so the grid was dropped and started again: "regrids 121, ahead 119".
+
+**The fix.** `fg_present` tells the pacer each present's place in its frame's group (`burst_pos`, `burst_n`). Then:
+- **Judged by the first present.** The grid follows only the group's first present, the one with the least time to be ready. The group is never read as an offset; two late first presents in a row start a new grid from it.
+- **"Ahead" measured per group.** A frame is too far ahead only when it's more than a real frame's time ahead, plus its place in the group.
+- **The menus are unchanged.** Pacing without frame generation behaves exactly as before.
+
+**Simulation** (`tools/test_display_pacing.c`, new cases): with each generated frame taking 3 ms of GPU time, the slate.15 behaviour reproduces the S25's mix. With the fix:
+
+| Case | Up for | Overtaken |
+|---|---|---|
+| 30 fps × 2 | 2 refreshes each, 100% | none |
+| 30 × 4, 40 × 3, 60 × 2 | 1 refresh each, 100% | none |
+
+**Also in this update:**
+- **The overlay** shows the frames presented per second with frame generation, beside the game's own rate:
+  - compact: `FPS 30 > 60`
+  - full: "60 with frame generation 2x"
+- **The `[framegen]` line** is logged every 10 s even while frame generation is paused.
+- **A content check in the log.** After the 240th generated frame shown, then every 3600, `[framegen] check` compares the middle of a generated frame with the real frames before and after it. A frame that is black, or a copy of one of the two, is named as such.
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep
@@ -613,7 +649,10 @@ On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log 
        - every 10 s, `[framegen] 2x: N frames made, N shown`
     4. Check what you see: motion smoother than plain 30 fps; the FPS counter steady, not smeared.
     5. Open the menu: the status says Paused. Close it: frame generation picks up again.
-    6. If the Video page says Stopped, send the log.
+    6. With the overlay on: "30 FPS" and "60 with frame generation 2x" (compact: `FPS 30 > 60`). The stats line reads
+       "on screen 2x" near 100% (4x at 30 fps x 4: "1x"). `[framegen] check` gives two differences of about half "those
+       two" for a moving picture.
+    7. If the Video page says Stopped, send the log.
 
 Switches for testing (adb, as upstream's `android/run_boot.sh`):
 

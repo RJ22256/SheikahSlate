@@ -25,6 +25,8 @@ static SDL_Window *window;
 const char *vk_fg_dll_path(void);
 static int g_sc_fg;       // frames generated per real one the swapchain was made for (FIFO, more images); 0 none
 static int g_fg_mult = 1; // presents per real frame now (the pacing's period): 1 + the generated ones
+static int g_fg_pos, g_fg_group = 1;  // the next present's place in its frame's group and the group's size (pacing)
+static uint64_t g_present_total;      // presents made, real and generated (the overlay: vk_present_total)
 static int fg_swapchain_want(void);
 #endif
 static atomic_bool ui_ready;
@@ -1020,6 +1022,10 @@ static bool dp_before_present(VkPresentTimeGOOGLE *pt) {
     // otherwise the generated frames went up together with the real one, at the next refreshes)
     bool aim = (even_pacing_on() || (g_vk.display_timing && g_fg_mult > 1)) && framepace_on() && fps > 0;
     pt->presentID = g_present_id;
+    // (frame generation: a frame's generated presents and then its own come together - display_pacing.c judges the group
+    // by its first; the next present is a plain one unless fg_present says otherwise)
+    g_dp.burst_pos = g_fg_pos, g_dp.burst_n = g_fg_group;
+    g_fg_pos = 0, g_fg_group = 1;
     pt->desiredPresentTime = dp_desired(&g_dp, g_present_id, plat_now_ns(), aim ? 1e9 / ((double)fps * g_fg_mult) : 0, aim);
     g_dp_aiming = aim && g_dp.n > 0;
     return true;
@@ -1389,7 +1395,7 @@ void vk_frame_end(const char *shot_path) {
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
 #ifdef __ANDROID__
     if (trace_start) vk_timing_trace_wait(VK_TIMING_PRESENT, SDL_GetTicksNS() - trace_start);
-    if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) dp_after_present();
+    if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) dp_after_present(), g_present_total++;
     if (r == VK_ERROR_OUT_OF_DATE_KHR) recreate_swapchain();  // (SUBOPTIMAL: every frame of an unrotated swapchain)
     else if (r == VK_ERROR_SURFACE_LOST_KHR) surface_lost = true;
 #else
@@ -1460,6 +1466,7 @@ static struct {
     float vx, vy, vw, vh, pv[8];
     uint64_t last_frame;      // the real frame last given to the backend (total_frames + 1; 0 none)
     uint64_t made, shown, skipped, t_log;  // (the [framegen] line every 10 s)
+    uint64_t shown_all, next_check;        // (fg_check: a generated frame against the two it is between)
 } fg;
 static uint64_t fg_total_frames(void);
 
@@ -1484,6 +1491,10 @@ static void fg_stop(int gen, const char *why) {
     g_fg_mult = 1;
 }
 
+// (the performance overlay, ui/perf_overlay.mm: frames on screen with frame generation)
+uint64_t vk_present_total(void) { return g_present_total; }
+int vk_fg_multiplier(void) { return g_fg_mult; }
+
 // (Video > Frame generation's status line, ui/menu.mm)
 void vk_fg_status(char *out, size_t n) {
     struct stat st;
@@ -1507,6 +1518,43 @@ static void fg_place(float vx, float vy, float vw, float vh, const float pv[8]) 
     fg.placed = true;
 }
 
+// Now and then (the 240th frame shown, then every 3600): the middle of the first generated frame against the real
+// frames before and after it, read back - "[framegen] check" in the log. A generated frame like neither of them but
+// between (each difference about half the two frames'), not black, not one of them: the passes work on this GPU.
+static void fg_check(uint64_t index) {
+    const uint32_t S = 128;
+    uint32_t w = fg.im.width < S ? fg.im.width : S, h = fg.im.height < S ? fg.im.height : S;
+    int32_t x = (int32_t)((fg.im.width - w) / 2), y = (int32_t)((fg.im.height - h) / 2);
+    uint64_t one = (uint64_t)w * h * 4;
+    VkSpan rb = vk_readback(one * 3);
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkImage im[3] = {fg.im.source[(index + 1) % 2], fg.im.dest[0], fg.im.source[index % 2]};  // (before, generated, after)
+    for (int i = 0; i < 3; i++) {
+        VkBufferImageCopy rg = {.bufferOffset = rb.off + one * (uint64_t)i, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .imageOffset = {x, y, 0}, .imageExtent = {w, h, 1}};
+        vkCmdCopyImageToBuffer(cb, im[i], VK_IMAGE_LAYOUT_GENERAL, rb.buf, 1, &rg);
+    }
+    vk_full_barrier(cb);
+    uint64_t seq = vk_pending_seq();
+    renderer_submit();
+    vk_wait_seq(seq);
+    vk_readback_ready(rb.off + one * 3);
+    const uint8_t *p = rb.ptr;
+    double d_prev = 0, d_next = 0, d_pn = 0, lum = 0;
+    for (uint64_t i = 0; i < (uint64_t)w * h; i++) {
+        for (int c = 0; c < 3; c++) {
+            int a = p[i * 4 + c], g = p[one + i * 4 + c], n = p[2 * one + i * 4 + c];
+            d_prev += abs(g - a), d_next += abs(g - n), d_pn += abs(a - n);
+            lum += g;
+        }
+    }
+    double k = 3.0 * w * h;
+    LOG("[framegen] check: the middle %ux%u of a generated frame against the real one before / after it: differs by %.2f "
+        "/ %.2f (those two by %.2f), its brightness %.1f of 255%s\n", w, h, d_prev / k, d_next / k, d_pn / k, lum / k,
+        lum / k < 1 ? " - black" : d_pn / k > 1 && (d_prev / k < 0.05 || d_next / k < 0.05) ? " - a copy of one of them" : "");
+}
+
 // The game's image b of this real frame into the backend, and the frames before it presented. Returns how many.
 static int fg_present(TexBackend *b) {
     int gen = fg_setting();
@@ -1519,6 +1567,16 @@ static int fg_present(TexBackend *b) {
     if (fg.failed_for == gen) return 0;
     fg.failed_for = 0;
     uint64_t frame = fg_total_frames() + 1;
+    {   // (every 10 s: what it did - the stats line's "on screen" says how they went up)
+        uint64_t now = SDL_GetTicksNS();
+        if (now - fg.t_log >= 10000000000ull) {
+            if (fg.t_log)
+                LOG("[framegen] %dx: %llu frames made, %llu shown; %llu real frames without (paused for the menu, the first "
+                    "after a pause or a gap)\n", gen + 1, (unsigned long long)fg.made, (unsigned long long)fg.shown,
+                    (unsigned long long)fg.skipped);
+            fg.t_log = now, fg.made = fg.shown = fg.skipped = 0;
+        }
+    }
     bool paused = menu_is_open() || !b || !b->image || b->layers != 1 || b->samples != 1 ||
                   (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || b->width < 64 || b->height < 64;
     if (paused) { g_fg_mult = 1; fg.skipped++; return 0; }
@@ -1595,6 +1653,7 @@ static int fg_present(TexBackend *b) {
         // (the present passes' own images - Video > Anti-aliasing's: the present before may still be reading them)
         vk_full_barrier(vk_cmd());
         if (!vk_frame_begin(black)) break;
+        g_fg_pos = j, g_fg_group = gen + 1;  // (dp_before_present: this group's j-th)
         VkCommandBuffer c = vk_cmd();
         vk_gp_note(c, "present: a generated frame");
         vk_present_draw_view(c, fg.im.dest_view[j], fg.im.width, fg.im.height, fg.vx, fg.vy, fg.vw, fg.vh, fg.pv);
@@ -1604,13 +1663,15 @@ static int fg_present(TexBackend *b) {
         shown++;
     }
     fg.shown += (uint64_t)shown;
-    if (shown) vk_full_barrier(vk_cmd());  // (and the real frame's after them)
-    uint64_t now = SDL_GetTicksNS();
-    if (now - fg.t_log >= 10000000000ull) {
-        if (fg.t_log)
-            LOG("[framegen] %dx: %llu frames made, %llu shown, %llu real frames without (first / after the menu / a gap)\n",
-                gen + 1, (unsigned long long)fg.made, (unsigned long long)fg.shown, (unsigned long long)fg.skipped);
-        fg.t_log = now, fg.made = fg.shown = fg.skipped = 0;
+    fg.shown_all += (uint64_t)shown;
+    if (shown) {
+        if (!fg.next_check) fg.next_check = 240;
+        if (fg.shown_all >= fg.next_check) {
+            fg_check(index);
+            fg.next_check = fg.shown_all + 3600;
+        }
+        vk_full_barrier(vk_cmd());  // (and the real frame's after them)
+        g_fg_pos = shown, g_fg_group = gen + 1;  // (the real frame: its group's last)
     }
     return shown;
 }

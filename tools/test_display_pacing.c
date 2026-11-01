@@ -98,6 +98,58 @@ static void run(const Sim *s, Result *res) {
     }
 }
 
+// (WSword) Frame generation: each game frame's `m` presents come together - the frames generated between the frame
+// before and this one (each ready fg_ms after the one before it, on the GPU) and then this frame itself - asked for
+// fps x m per second, burst_pos telling dp_desired a present's place in its group. The compositor as in run(); m = 1 is
+// the plain case.
+static void run_burst(const Sim *s, int m, double fg_ms, Result *res) {
+    memset(res, 0, sizeof *res);
+    dp_reset(&res->p, s->nominal);
+    double grid = 1e9;
+    int next_feedback = 1, prev_id = 0, id = 0;
+    for (int i = 1; i <= s->frames && id + m < MAXF; i++) {
+        double fp = 1e9 / (s->fps > 0 ? s->fps : 30);
+        double period = s->pace ? dp_locked_period(res->p.refresh, fp) : fp;
+        if (i > 1) grid += period;
+        double q = grid + s->render_lo + urand() * (s->render_hi - s->render_lo);
+        double g = q + s->gpu_lo + urand() * (s->gpu_hi - s->gpu_lo);
+        for (int j = 0; j < m; j++) {
+            id++;
+            double qj = q + j * 0.3e6, gj = g + (j + 1) * fg_ms * 1e6;  // (the presents' calls: a fraction of a ms apart)
+            while (next_feedback < id && avail_at[next_feedback] <= qj) {
+                dp_feedback(&res->p, (uint32_t)next_feedback, (uint64_t)shown_at[next_feedback],
+                            s->no_earliest ? 0 : (uint64_t)earliest_at[next_feedback]);
+                next_feedback++;
+            }
+            res->p.burst_pos = j, res->p.burst_n = m;
+            uint64_t desired = dp_desired(&res->p, (uint32_t)id, (uint64_t)qj, fp / m, s->pace);
+            double ready = gj + 0.5e6;
+            if (desired && desired > ready) ready = (double)desired;
+            double R = s->true_refresh;
+            double v = s->phase + ceil((ready - s->phase) / R) * R;
+            earliest_at[id] = s->phase + ceil((gj + 0.5e6 - s->phase) / R) * R;
+            if (prev_id && shown_at[prev_id] >= v) shown_at[prev_id] = 0;
+            shown_at[id] = v;
+            avail_at[id] = v + 3 * R;
+            res->total++;
+            res->latency_sum += v - grid;
+            prev_id = id;
+        }
+    }
+    double last = 0;
+    for (int k = 31 * m; k <= id; k++) {
+        if (!shown_at[k]) { res->dropped++; continue; }
+        if (last) {
+            double d = (shown_at[k] - last) / s->true_refresh;
+            int kk = (int)(d + 0.5);
+            if (fabs(d - kk) > 0.25) res->hist[0]++;
+            else res->hist[kk < 9 ? kk : 9]++;
+        }
+        last = shown_at[k];
+        res->shown++;
+    }
+}
+
 static double share(const Result *r, int k) {
     int t = 0;
     for (int i = 0; i < 10; i++) t += r->hist[i];
@@ -105,8 +157,8 @@ static double share(const Result *r, int k) {
 }
 
 static void report(const char *name, const Sim *s, const Result *r) {
-    printf("%-34s %s: 3x %4.1f%% 4x %5.1f%% 5x %4.1f%% 2x %4.1f%% 6x+ %4.1f%% uneven %d, dropped %d, latency %.1f ms, refresh %.4f ms\n",
-           name, s->pace ? "paced  " : "unpaced", 100 * share(r, 3), 100 * share(r, 4), 100 * share(r, 5), 100 * share(r, 2),
+    printf("%-34s %s: 3x %4.1f%% 4x %5.1f%% 5x %4.1f%% 2x %5.1f%% 1x %5.1f%% 6x+ %4.1f%% uneven %d, dropped %d, latency %.1f ms, refresh %.4f ms\n",
+           name, s->pace ? "paced  " : "unpaced", 100 * share(r, 3), 100 * share(r, 4), 100 * share(r, 5), 100 * share(r, 2), 100 * share(r, 1),
            100 * (share(r, 6) + share(r, 7) + share(r, 8) + share(r, 9)), r->hist[0], r->dropped, r->latency_sum / r->total / 1e6,
            r->p.refresh / 1e6);
 }
@@ -215,6 +267,36 @@ int main(void) {
             report(names[k], &s, &r);
             expect(share(&r, 4) >= 0.97, "an offset in the reported times: 97% at 4 refreshes");
             expect(r.latency_sum / r.total < 50e6, "an offset in the reported times: latency stays under 50 ms");
+        }
+    }
+
+    // 6c. (WSword) Frame generation's presents in groups: 30 fps x 2 = 60 on 120 Hz (each up 2 refreshes), x 4 = 120
+    // (1 each), 40 x 3 = 120, 60 x 2 = 120; a generated frame 3 ms of GPU each. Unpaced, the generated frame went up a
+    // refresh before its real one, then that one for 3 (the S25's log, 0.2.8-slate.15).
+    {
+        struct { double fps; int m; const char *name; } fg[] = {{30, 2, "120 Hz, 30 fps x 2 (frame gen)"},
+                                                                 {30, 4, "120 Hz, 30 fps x 4 (frame gen)"},
+                                                                 {40, 3, "120 Hz, 40 fps x 3 (frame gen)"},
+                                                                 {60, 2, "120 Hz, 60 fps x 2 (frame gen)"}};
+        for (int k = 0; k < 4; k++) {
+            s = base;
+            s.fps = fg[k].fps;
+            if (fg[k].fps > 30) s.render_lo = 6e6, s.render_hi = 9e6, s.gpu_lo = 1e6, s.gpu_hi = 4e6;
+            int each = (int)(120 / fg[k].fps / fg[k].m + 0.5);
+            s.pace = false;
+            run_burst(&s, fg[k].m, 3, &r);
+            report(fg[k].name, &s, &r);
+            double unpaced = share(&r, each);
+            s.pace = true;
+            run_burst(&s, fg[k].m, 3, &r);
+            report(fg[k].name, &s, &r);
+            char what[120];
+            snprintf(what, sizeof what, "%s paced: 95%% up for %d refresh(es) each", fg[k].name, each);
+            expect(share(&r, each) >= 0.95, what);
+            snprintf(what, sizeof what, "%s paced: better than unpaced", fg[k].name);
+            expect(share(&r, each) > unpaced, what);
+            snprintf(what, sizeof what, "%s paced: at most 1%% overtaken", fg[k].name);
+            expect(r.dropped <= r.total / 100, what);
         }
     }
 
