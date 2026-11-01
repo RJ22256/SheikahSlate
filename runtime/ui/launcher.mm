@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #include <vector>
 #include <algorithm>
@@ -185,32 +186,53 @@ static int main_version(const std::string &main_path) {
     return n == 8 ? game_version_of_build(id) : 0;
 }
 
-static const char *version_name(int v) { return v == 182 ? "1.8.2" : v == 160 ? "1.6.0" : "1.0.0"; }
+static const char *version_name(int v) { return v == 190 ? "1.9.0" : v == 182 ? "1.8.2" : v == 160 ? "1.6.0" : "1.0.0"; }
+
+// The player's romfs/ the files of root use in place (root/romfs.link: main.c reads it too), "" when they're copied
+static std::string romfs_link_target(const std::string &root) {
+    FILE *f = fopen((root + "/romfs.link").c_str(), "rb");
+    if (!f) return "";
+    char t[1024];
+    size_t n = fread(t, 1, sizeof t - 1, f);
+    fclose(f);
+    while (n && (t[n - 1] == '\n' || t[n - 1] == '\r')) n--;
+    return std::string(t, n);
+}
 
 // The copied game files alone ("" = there), without the game code built from them: of a version this app runs, the
 // one whose folder root is (runtime/paths.h)
 static std::string check_copied_files(const std::string &root) {
     int v = main_version(root + "/exefs/main"), want = rt_game_dir_version(root.c_str());
     if (v < 0) return "No game files";
-    if (!v || (want && v != want)) return "Wrong game version (needs v1.0.0, v1.6.0 or v1.8.2)";
+    if (!v || (want && v != want)) return "Wrong game version (needs v1.0.0, v1.6.0, v1.8.2 or v1.9.0)";
     // (the game reads its data through romfs.bin alone: on Android it's built straight from the picked folder, and romfs/
     // holds only the movies, opened by path)
+    std::string linked = romfs_link_target(root);
+    struct stat lst;
+    if (!linked.empty() && stat(linked.c_str(), &lst) == 0 && S_ISREG(lst.st_mode)) {  // (in place: the player's romfs.bin)
+        char bad[128];
+        return romfs_image_ok(linked.c_str(), bad, sizeof bad) ? "" : "The game files folder was moved or can't be read";
+    }
+    if (!linked.empty())  // (used in place: the player's own romfs/, runtime/services/fs.c)
+        return file_exists(linked + "/System/Version.txt") ? "" : "The game files folder was moved or can't be read";
     if (!file_exists(root + "/romfs.bin")) return "Game data missing";
     char why[128];  // (a copy cut short: the game would abort at start, runtime/romfs_build.c)
     if (!romfs_image_ok((root + "/romfs.bin").c_str(), why, sizeof why)) return "Game data incomplete: set up the game files again";
     return "";
 }
 
+extern "C" bool native_wanted(void);  // (Native game code: nothing to build - runtime/native.c)
+
 // "" = ready to play, else what is wrong
 static std::string check_game_files(const std::string &root) {
     std::string why = check_copied_files(root);
-    if (why.empty() && !gamelib_present(root.c_str())) return "The game code needs building";
+    if (why.empty() && !native_wanted() && !gamelib_present(root.c_str())) return "The game code needs building";
     return why;
 }
 
 // The game versions this app runs, and which of them are set up (their copied files there; checked again once a second)
-static const int k_versions[] = {100, 160, 182};
-enum { N_VERSIONS = 3 };
+static const int k_versions[] = {100, 160, 182, 190};
+enum { N_VERSIONS = 4 };
 static bool version_set_up(int i) {
     static bool set_up[N_VERSIONS];
     static double next;
@@ -270,10 +292,30 @@ static void set_failure(int k) {
         "Choose the folder that holds the game files.",
         "Choose the folder that holds the game files.",
         "Make sure there's about 30 GB free and try again.",
-        "Sheikah Slate runs versions 1.0.0, 1.6.0 and 1.8.2 of the game.",
+        "Sheikah Slate runs versions 1.0.0, 1.6.0, 1.8.2 and 1.9.0 of the game.",
         "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
-        "Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub."};
+        "Try again: the build goes on where it stopped. If it keeps failing, report it on GitHub with the log."};
     if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
+}
+
+// The romfs/ found against the exefs/ beside it (romfs_check_set): false = it doesn't go with it, the failure set (the
+// versions only in its detail: the hints are translated whole)
+static bool romfs_check_result(int r, const char *why, int nfiles, const char *version_txt) {
+    if (r == ROMFS_SET_OTHER_VERSION) {
+        set_job("Wrong version of the game", true,
+                "The game data (romfs) and the game code (exefs) are from different versions. Choose a folder where both "
+                "come from the same version.");
+    } else if (r == ROMFS_SET_MISSING) {
+        set_failure(FAIL_MISSING);
+    } else if (r == ROMFS_SET_DAMAGED) {  // (a romfs.bin brought ready-made, romfs_check_image)
+        set_job("Game data incomplete: copy romfs.bin again whole", true,
+                "The romfs.bin in that folder can't be read whole. Copy it again from where it was made, or make it again.");
+    } else {
+        if (nfiles >= 0) fprintf(stderr, "[launcher] romfs: %d files, Version.txt %.16s\n", nfiles, version_txt[0] ? version_txt : "-");
+        return true;
+    }
+    set_job_detail(why);
+    return false;
 }
 
 static bool is_dir(const std::string &p) {
@@ -311,8 +353,17 @@ static unsigned long long g_phase_base;
 static std::atomic<float> g_build_frac{-1};  // -1: not building
 static bool g_copy_skipped;                  // (only the game code to build: the bar is all of that)
 static void setup_progress(uint64_t done, uint64_t) { g_done = g_phase_base + done; }
+#ifdef __ANDROID__
+static void android_call(const char *method);
+static void android_call_int(const char *method, int v);
+#endif
 static void build_progress(double f, const char *step) {
     g_build_frac = (float)f;
+#ifdef __ANDROID__
+    static int pct = -1;  // (the foreground service's notification, a whole percent at a time)
+    int p = (int)(f * 100);
+    if (p != pct) pct = p, android_call_int("buildServiceProgress", p);
+#endif
     static const char *last;
     if (step != last) last = step, set_job(step);
 }
@@ -324,14 +375,32 @@ static float extract_progress(void) {
 
 // Builds the game code from the copied files in dir (a few minutes); false = failed (the job line says so)
 static bool build_game_code(const std::string &dir) {
+    if (native_wanted()) return true;  // (the game's own code runs as it is)
     int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
     GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1};
     char why[256] = "";
     g_build_frac = 0;
+#ifdef __ANDROID__
+    android_call("buildServiceStart");  // (BuildService: on with the screen off or the app in the background)
+#endif
     bool ok = gamebuild_run(dir.c_str(), &o, why, sizeof why);
+#ifdef __ANDROID__
+    android_call("buildServiceStop");
+#endif
     if (!ok) {
         fprintf(stderr, "[launcher] game code: %s\n", why);
+        std::string detail = why;
+        struct statvfs fs;  // (free space named only when it is short)
+        if (statvfs(dir.c_str(), &fs) == 0) {
+            double gb = (double)fs.f_bavail * (double)fs.f_frsize / (1024.0 * 1024.0 * 1024.0);
+            if (gb < 2.0) {
+                char sp[96];
+                snprintf(sp, sizeof sp, "; only %.1f GB free on the phone", gb);
+                detail += sp;
+            }
+        }
         set_failure(FAIL_BUILD);
+        set_job_detail(detail);
     }
     return ok;
 }
@@ -374,6 +443,9 @@ static void *extract_thread(void *) {
         int v = main_version(exefs + "/main");
         char vr[1024];
         if (v <= 0 || !rt_version_root(v, vr, sizeof vr)) { set_failure(FAIL_VERSION); goto done; }
+        char why[256] = "";
+        int r = romfs_check_dir(v, romfs.c_str(), why, sizeof why);
+        if (!romfs_check_result(r, why, -1, "")) goto done;  // (before an earlier setup is removed)
         mkdir(vr, 0755);
         dest = std::string(vr) + "/extracted";
     }
@@ -386,7 +458,7 @@ static void *extract_thread(void *) {
             set_failure(FAIL_NOT_FOUND);
             goto done;
         }
-        rt_remove_game_files(dest.c_str());  // (an earlier or interrupted setup's; removes the folder too)
+        rt_remove_game_files_for_setup(dest.c_str());  // (an earlier or interrupted setup's; its compiled objects stay)
         mkdir(dest.c_str(), 0755);
         unsigned long long rbytes = romfs_dir_bytes(romfs.c_str());
         g_total = 2 * rbytes;
@@ -449,10 +521,62 @@ static void android_call(const char *method) {  // a static method of the activi
     env->DeleteLocalRef(act);
 }
 
+static void android_call_int(const char *method, int v) {  // (one int argument)
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, method, "(I)V");
+    if (m) env->CallStaticVoidMethod(c, m, (jint)v);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+}
+
+// A content:// URI the SDL dialog picked (Import fonts): its name, and a copy of it at an absolute path
+// (SheikahSlateActivity documentName / copyDocument)
+static std::string android_document_name(const std::string &uri) {
+    std::string v;
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return v;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, "documentName", "(Ljava/lang/String;)Ljava/lang/String;");
+    jstring u = env->NewStringUTF(uri.c_str());
+    jstring s = m ? (jstring)env->CallStaticObjectMethod(c, m, u) : NULL;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); s = NULL; }
+    if (s) {
+        const char *t = env->GetStringUTFChars(s, NULL);
+        if (t) v = t, env->ReleaseStringUTFChars(s, t);
+        env->DeleteLocalRef(s);
+    }
+    env->DeleteLocalRef(u);
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+    return v;
+}
+
+static bool android_copy_document(const std::string &uri, const std::string &dst) {
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return false;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, "copyDocument", "(Ljava/lang/String;Ljava/lang/String;)Z");
+    jstring u = env->NewStringUTF(uri.c_str()), d = env->NewStringUTF(dst.c_str());
+    bool ok = m && env->CallStaticBooleanMethod(c, m, u, d);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); ok = false; }
+    env->DeleteLocalRef(u);
+    env->DeleteLocalRef(d);
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+    return ok;
+}
+
 // The log file (Driver compatibility; runtime/platform/android.c): written to a folder the player picks
 // (SheikahSlateActivity pickLogFolder / openLog), where a file manager can open it - Android/data/ is out of its reach
 extern "C" void android_log_file(bool on);
 extern "C" bool vk_adreno_8xx(const char *name);  // (Driver compatibility's Automatic: runtime/nvn/vulkan/device.c)
+extern "C" bool vk_turnip_heap_on(int setting);
 extern "C" bool vk_lrz_at_start(void);
 extern "C" const char *vk_gpu_name(void);
 extern "C" const char *vk_driver_rejected(void);  // (runtime/nvn/vulkan/android_driver.c)
@@ -461,6 +585,28 @@ extern "C" bool vk_driver_is_turnip(void);
 extern "C" const char *vk_gpu_desc(void);  // ("Adreno (TM) 830 - Turnip")
 static std::string g_log_folder;  // its name ("Download/SheikahSlate"), "" with none
 static bool g_log_folder_read;
+
+static std::string app_version() {  // SheikahSlateActivity.appVersion, asked once ("0.2.0-beta")
+    static std::string v;
+    static bool read;
+    if (read) return v;
+    read = true;
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return v;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, "appVersion", "()Ljava/lang/String;");
+    jstring s = m ? (jstring)env->CallStaticObjectMethod(c, m) : NULL;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); s = NULL; }
+    if (s) {
+        const char *t = env->GetStringUTFChars(s, NULL);
+        if (t) v = t, env->ReleaseStringUTFChars(s, t);
+        env->DeleteLocalRef(s);
+    }
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+    return v;
+}
 
 static void log_folder_read() {  // (SheikahSlateActivity.logFolderName, once: then from each pick)
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
@@ -489,6 +635,37 @@ extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nat
     pthread_mutex_unlock(&g_lock);
     if (t) env->ReleaseStringUTFChars(name, t);
     if (g_settings.log_file) android_log_file(true);  // (the file moves to the folder, with this run's lines so far)
+}
+
+// Saves (Settings > Saves; SheikahSlateActivity importSave / exportSave): this version's save_0, and the result
+static std::string g_save_msg;  // (g_lock) the last import's or export's, shown under the buttons
+static bool g_save_failed, g_save_busy;
+
+extern "C" JNIEXPORT jstring JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeSaveDir(JNIEnv *env, jclass) {
+    char r[1024];
+    std::string d = rt_version_root(rt_game_version(), r, sizeof r) ? std::string(r) + "/save/save_0" : "";
+    return env->NewStringUTF(d.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeSaveDone(JNIEnv *env, jclass,
+                                                                                                    jint result, jstring detail) {
+    const char *t = env->GetStringUTFChars(detail, NULL);
+    std::string d = t ? t : "";
+    if (t) env->ReleaseStringUTFChars(detail, t);
+    char msg[600];
+    switch (result) {
+    case 0:
+        if (d.empty()) snprintf(msg, sizeof msg, "%s", tr("Saves imported."));
+        else snprintf(msg, sizeof msg, tr("Saves imported. The ones before are kept beside them as %s."), d.c_str());
+        break;
+    case 1: snprintf(msg, sizeof msg, tr("Saves exported to %s."), d.c_str()); break;
+    case 2: msg[0] = 0; break;
+    case 3: snprintf(msg, sizeof msg, "%s", tr("No BOTW save there: look for the one that holds 0, 1, 2... and option.sav.")); break;
+    default: snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str()); break;
+    }
+    pthread_mutex_lock(&g_lock);
+    g_save_msg = msg, g_save_failed = result >= 3, g_save_busy = false;
+    pthread_mutex_unlock(&g_lock);
 }
 
 // The game version of the picked main module's first bytes (game_version_of_build: 0 = not one this app runs)
@@ -522,12 +699,68 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_sheikahslate_SheikahSlateActivity_
     g_dest = dest;
     pthread_mutex_unlock(&g_lock);
     if (n) env->ReleaseStringUTFChars(name, n);
-    rt_remove_game_files(dest.c_str());  // (an earlier or interrupted setup's)
+    rt_remove_game_files_for_setup(dest.c_str());  // (an earlier or interrupted setup's; its compiled objects stay)
     if (own) mkdir(vr, 0755);
     mkdir(dest.c_str(), 0755);
     g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
     set_job("Copying the game files...");
     return env->NewStringUTF(dest.c_str());
+}
+
+// The picked romfs/'s files (relative paths) and its System/Version.txt's first bytes against the picked exefs/'s
+// version, before nativeImportBegin: a folder that can't be used leaves an earlier setup alone. false = the failure is
+// set (nativeImportDone(6) follows)
+extern "C" JNIEXPORT jboolean JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeCheckRomfs(JNIEnv *env, jclass, jint version,
+                                                                                                         jobjectArray paths, jstring version_txt) {
+    int n = env->GetArrayLength(paths);
+    std::vector<std::string> keep(n);
+    std::vector<const char *> p(n);
+    for (int i = 0; i < n; i++) {
+        jstring s = (jstring)env->GetObjectArrayElement(paths, i);
+        const char *c = env->GetStringUTFChars(s, NULL);
+        keep[i] = c ? c : "";
+        if (c) env->ReleaseStringUTFChars(s, c);
+        env->DeleteLocalRef(s);
+        p[i] = keep[i].c_str();
+    }
+    const char *t = version_txt ? env->GetStringUTFChars(version_txt, NULL) : NULL;
+    std::string txt = t ? t : "";
+    if (t) env->ReleaseStringUTFChars(version_txt, t);
+    char why[256] = "";
+    int r = romfs_check_set(version, p.data(), n, txt.c_str(), why, sizeof why);
+    while (!txt.empty() && (txt.back() == '\n' || txt.back() == '\r' || txt.back() == ' ')) txt.pop_back();
+    return romfs_check_result(r, why, n, txt.c_str());
+}
+
+static bool keep_loose(const char *rel);
+
+// A romfs.bin brought ready-made (the picked folder: exefs/ and romfs.bin - made on a PC from the game's own files, no
+// 41,000 files to copy through the file provider): nativeCheckRomfs for it, its descriptor (closed here) read from its
+// own tables and System/Version.txt. false = the failure is set (nativeImportDone(6) follows)
+extern "C" JNIEXPORT jboolean JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeCheckRomfsImage(JNIEnv *, jclass,
+                                                                                                              jint version, jint fd) {
+    char why[256] = "";
+    int r = romfs_check_image(version, fd, why, sizeof why);
+    close(fd);
+    if (r != ROMFS_SET_OK) fprintf(stderr, "[launcher] romfs.bin: %s\n", why);
+    return romfs_check_result(r, why, -1, "");
+}
+
+// The few files the runtime opens by path (keep_loose: the movies), out of a ready-made romfs.bin (its descriptor,
+// closed here) into this setup's romfs/. NULL, or why it failed.
+extern "C" JNIEXPORT jstring JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeImageLoose(JNIEnv *env, jclass, jint fd) {
+    set_job("Taking the movies out of the game data...");
+    std::string romfs = setup_dest() + "/romfs";
+    mkdir(romfs.c_str(), 0755);
+    char why[256] = "";
+    bool ok = romfs_image_extract(fd, romfs.c_str(), keep_loose, why, sizeof why);
+    close(fd);
+    if (ok) return NULL;
+    fprintf(stderr, "[launcher] romfs.bin's movies: %s\n", why);
+    pthread_mutex_lock(&g_lock);
+    g_fail_detail = why;  // (nativeImportDone(5) follows)
+    pthread_mutex_unlock(&g_lock);
+    return env->NewStringUTF(why);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeImportProgress(JNIEnv *, jclass, jlong done, jlong total) {
@@ -587,6 +820,85 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_sheikahslate_SheikahSlateActivity_
     return env->NewStringUTF(what);
 }
 
+// The DLC (Settings > DLC; SheikahSlateActivity importDlc): its image built as romfs.bin is, at
+// <1.0.0's data root>/dlc/aoc.bin (services/fs.c fs_aoc_image), the movies loose in dlc/romfs (hle/movie.c)
+static std::string g_dlc_msg;  // (g_lock) the last install's result
+extern "C" const char *fs_aoc_image(void);  // (runtime/services/fs.c: the DLC image, NULL when not set up)
+static bool g_dlc_failed, g_dlc_busy;
+static std::atomic<float> g_dlc_frac{-1};
+static std::string dlc_dir(void) {
+    char r[1024];
+    return rt_version_root(100, r, sizeof r) ? std::string(r) + "/dlc" : std::string();
+}
+static void dlc_progress(uint64_t done, uint64_t total) { g_dlc_frac = total ? (float)((double)done / (double)total) : 0; }
+extern "C" JNIEXPORT jstring JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeBuildDlc(
+        JNIEnv *env, jobject act, jobjectArray paths, jlongArray sizes) {
+    int n = env->GetArrayLength(paths);
+    std::vector<std::string> keep_alive(n);
+    std::vector<RomfsEntry> entries(n);
+    std::vector<jlong> sz(n);
+    if (n) env->GetLongArrayRegion(sizes, 0, n, sz.data());
+    for (int i = 0; i < n; i++) {
+        jstring s = (jstring)env->GetObjectArrayElement(paths, i);
+        const char *c = env->GetStringUTFChars(s, NULL);
+        keep_alive[i] = c ? c : "";
+        if (c) env->ReleaseStringUTFChars(s, c);
+        env->DeleteLocalRef(s);
+        entries[i] = {keep_alive[i].c_str(), (uint64_t)sz[i]};
+    }
+    jclass cls = env->GetObjectClass(act);
+    RomfsJni j = {env, act, env->GetMethodID(cls, "openRomfsFile", "(I)I")};
+    env->DeleteLocalRef(cls);
+    if (!j.open) { env->ExceptionClear(); return env->NewStringUTF("Internal error: openRomfsFile missing."); }
+    std::string dir = dlc_dir(), romfs = dir + "/romfs";
+    if (dir.empty()) return env->NewStringUTF("no data folder");
+    mkdir(dir.c_str(), 0755);
+    mkdir(romfs.c_str(), 0755);
+    g_dlc_frac = 0;
+    char why[256] = "";
+    bool ok = romfs_build_entries(entries.data(), n, romfs_jni_open, &j, (dir + "/aoc.bin").c_str(), romfs.c_str(),
+                                  keep_loose, dlc_progress, why, sizeof why);
+    g_dlc_frac = -1;
+    if (ok) return NULL;
+    fprintf(stderr, "[launcher] DLC image: %s\n", why);
+    return env->NewStringUTF(why[0] ? why : "Could not build the DLC's data image. Check free storage and try again.");
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeDlcDone(JNIEnv *env, jclass,
+                                                                                                   jint result, jstring detail) {
+    const char *t = env->GetStringUTFChars(detail, NULL);
+    std::string d = t ? t : "";
+    if (t) env->ReleaseStringUTFChars(detail, t);
+    char msg[600];
+    switch (result) {
+    case 0: snprintf(msg, sizeof msg, "%s", tr("DLC installed. Start the game: the title shows Master Mode.")); break;
+    case 2: msg[0] = 0; break;
+    case 3: snprintf(msg, sizeof msg, "%s", tr("No DLC there: choose the folder with the DLC's romfs (System/AocVersion.txt and Pack).")); break;
+    case 5: snprintf(msg, sizeof msg, "%s", tr("That's only the Champions' Ballad's unlock: choose the larger pack (01007EF00011F001), "
+                                               "which holds both DLCs.")); break;
+    default: snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str()); break;
+    }
+    fprintf(stderr, "[launcher] DLC setup: %d %s\n", (int)result, d.c_str());
+    pthread_mutex_lock(&g_lock);
+    g_dlc_msg = msg, g_dlc_failed = result >= 3, g_dlc_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void remove_tree(const std::string &p) {
+    struct stat st;
+    if (lstat(p.c_str(), &st) != 0) return;
+    if (S_ISDIR(st.st_mode)) {
+        if (DIR *d = opendir(p.c_str())) {
+            while (struct dirent *e = readdir(d))
+                if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) remove_tree(p + "/" + e->d_name);
+            closedir(d);
+        }
+        rmdir(p.c_str());
+    } else {
+        remove(p.c_str());
+    }
+}
+
 // The import thread's cause of a failure (an exception: "IOException: ..."), ahead of nativeImportDone
 extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeImportDetail(JNIEnv *env, jclass,
                                                                                                          jstring what) {
@@ -632,7 +944,8 @@ static void android_prune_loose(void) {  // (start screen, game files ready)
     if (pthread_create(&t, NULL, prune_thread, NULL) == 0) pthread_detach(t);
 }
 
-// 0 copied, 1 cancelled, 2 no game files found, 3 game packages instead of files, 4 another version, 5 copy failed
+// 0 copied, 1 cancelled, 2 no game files found, 3 game packages instead of files, 4 another version, 5 copy failed,
+// 6 the romfs/ doesn't go with the exefs/ (nativeCheckRomfs set the failure)
 extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeImportDone(JNIEnv *, jclass, jint result) {
     if (result == 0) {
         g_android_imported = true;
@@ -647,7 +960,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nat
     std::string detail = g_fail_detail;
     g_fail_detail.clear();
     pthread_mutex_unlock(&g_lock);
-    if (result == 1) return;
+    if (result == 1 || result == 6) return;
     set_failure(result == 2 ? FAIL_NOT_FOUND : result == 3 ? FAIL_UNUSABLE : result == 4 ? FAIL_VERSION : FAIL_COPY);
     if (result == 5 && detail.rfind("can't read ", 0) == 0)  // (not the free space: issue #17 read it as 30 GB asked for)
         set_job("Setup didn't finish", true,
@@ -682,6 +995,10 @@ static void SDLCALL picked(void *, const char *const *files, int) {
 static const char *FONT_STD[] = {"nintendo_udsg-r_std_003.bfttf", "nintendo_udsg-r_std_003.ttf",
                                  "nintendo_udsgr_std_003.ttf", "nintendo_udsgr_std_003.bfttf"};
 static const char *FONT_EXT[] = {"nintendo_ext_003.bfttf", "nintendo_ext_003.ttf"};
+static const char *FONT_CJK[] = {"nintendo_udsg-r_org_zh-cn_003.bfttf", "nintendo_udsg-r_org_zh-cn_003.ttf",  // (pl.c)
+                                 "nintendo_udsg-r_ext_zh-cn_003.bfttf", "nintendo_udsg-r_ext_zh-cn_003.ttf",
+                                 "nintendo_udjxh-db_zh-tw_003.bfttf",   "nintendo_udjxh-db_zh-tw_003.ttf",
+                                 "nintendo_udsg-r_ko_003.bfttf",        "nintendo_udsg-r_ko_003.ttf"};
 static std::vector<std::string> g_font_picks;
 static std::string g_font_msg;
 
@@ -707,12 +1024,27 @@ static void import_fonts() {
     mkdir("fonts", 0755);
     int ok = 0, skipped = 0;
     for (auto &src : picks) {
-        std::string base = src.substr(src.find_last_of('/') + 1), low = base;
+        std::string base = src.substr(src.find_last_of('/') + 1), low;
+#ifdef __ANDROID__
+        // Android's dialog hands back content:// URIs, which end in a document id ("primary%3ADownload%2F..." or a
+        // number) and which fopen can't open: the name and the copy come through the activity (issue #122)
+        bool uri = !src.compare(0, 10, "content://");
+        if (uri) base = android_document_name(src);
+#endif
+        low = base;
         for (auto &c : low) c = (char)tolower(c);
         bool known = false;
         for (auto n : FONT_STD) known |= low == n;
         for (auto n : FONT_EXT) known |= low == n;
+        for (auto n : FONT_CJK) known |= low == n;
         if (!known) { skipped++; continue; }
+#ifdef __ANDROID__
+        if (uri) {
+            char cwd[1024];
+            if (getcwd(cwd, sizeof cwd) && android_copy_document(src, std::string(cwd) + "/fonts/" + low)) ok++;
+            continue;
+        }
+#endif
         FILE *in = fopen(src.c_str(), "rb"), *out = fopen(("fonts/" + low).c_str(), "wb");
         if (in && out) {
             char buf[65536];
@@ -730,6 +1062,7 @@ static void import_fonts() {
 static void remove_fonts() {
     for (auto n : FONT_STD) unlink((std::string("fonts/") + n).c_str());
     for (auto n : FONT_EXT) unlink((std::string("fonts/") + n).c_str());
+    for (auto n : FONT_CJK) unlink((std::string("fonts/") + n).c_str());
     g_font_msg = "Imported fonts removed: the substitute font is used.";
 }
 
@@ -1123,14 +1456,38 @@ static void switch_to_version(int v) {
 #endif
 }
 
+// The setup's Game code (Native or Recompiled) into the version it set up: each version keeps its own settings, so a
+// setup of 1.8.2 from 1.9.0's page with Native chosen restarted into 1.8.2's - or a copy of 1.0.0's - with Recompiled,
+// and the start screen asked to build the game code the setup had just skipped (players' reports, 2026-10-28)
+static void carry_game_code(int version) {
+    char vr[1024], main_root[1024];
+    if (!rt_version_root(version, vr, sizeof vr) || !rt_version_root(100, main_root, sizeof main_root)) return;
+    std::string path = std::string(vr) + "/sheikahslate.ini", text, line;
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) f = fopen((std::string(main_root) + "/sheikahslate.ini").c_str(), "rb");  // (as paths.c version_seed)
+    if (f) {
+        for (int ch; (ch = fgetc(f)) != EOF;) {
+            line += (char)ch;
+            if (ch != '\n') continue;
+            if (line.compare(0, 11, "native_code")) text += line;
+            line.clear();
+        }
+        if (!line.empty() && line.compare(0, 11, "native_code")) text += line + "\n";
+        fclose(f);
+    }
+    text += std::string("native_code = ") + (g_settings.native_code ? "1" : "0") + "\n";
+    f = fopen(path.c_str(), "wb");
+    if (f) fputs(text.c_str(), f), fclose(f);
+}
+
 // The Game Files page's game versions: the one running, the others set up (choosing one starts the app again in it),
 // the ones not set up yet greyed - the files folder below sets them up. focus: the running one takes the cursor.
 static void version_rows(bool busy, bool focus) {
     static const char *const notes[N_VERSIONS] = {
         "The game's first release, without updates.",
         "An update of the game.",
-        "The game's last update, the only one in Brazilian Portuguese. 60 fps and widescreen (Video settings) work in "
-        "this one."};
+        "An update of the game, in Brazilian Portuguese too. 60 fps and widescreen (Video settings) work in this one.",
+        "The game's last update (2025), in Brazilian Portuguese too. Being brought up: expect problems."};
     opt_section("Game version");
     int cur = rt_game_version();
     for (int i = 0; i < N_VERSIONS; i++) {
@@ -1140,7 +1497,7 @@ static void version_rows(bool busy, bool focus) {
         std::string desc = std::string(tr(notes[i])) + "\n\n" +
                            tr(!set_up ? "Not set up yet: choose the folder with this version's game files below."
                                       : "Which version PLAY starts. Each one keeps its own game files, saves and settings; "
-                                        "1.6.0 and 1.8.2 start from a copy of 1.0.0's saves and settings. Choosing another "
+                                        "1.6.0, 1.8.2 and 1.9.0 start from a copy of 1.0.0's saves and settings. Choosing another "
                                         "one starts Sheikah Slate again with it.");
         if (busy || g_switching_to || (!set_up && v != cur)) opt_disable_next();
         if (opt_radio(label.c_str(), v == cur, desc.c_str()) && v != cur && set_up) switch_to_version(v);
@@ -1210,10 +1567,10 @@ static void prelaunch_tab(float sc) {
         // LASRecompAndroid's, with BOTW's in-place reads of draw targets)
         bool changed = false;
         const bool a8 = vk_adreno_8xx(vk_gpu_name());  // (Automatic: on for Adreno 8xx only)
-        auto tri = [&](const char *id, int *v) {  // Automatic / On / Off: -1 / 1 / 0
+        auto tri = [&](const char *id, int *v, bool auto_on) {  // Automatic / On / Off: -1 / 1 / 0; auto_on: Automatic's choice
             bool ch = false;
             ImGui::PushID(id);
-            ch |= ImGui::RadioButton(tr(a8 ? "Automatic (on for this GPU)" : "Automatic (off for this GPU)"), v, -1);
+            ch |= ImGui::RadioButton(tr(auto_on ? "Automatic (on for this GPU)" : "Automatic (off for this GPU)"), v, -1);
             ImGui::SameLine();
             ch |= ImGui::RadioButton(tr("On"), v, 1);
             ImGui::SameLine();
@@ -1231,15 +1588,15 @@ static void prelaunch_tab(float sc) {
                                          "anyway. Draw-target reads in place can be tried on this GPU."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Game memory on the GPU (Turnip)"));
-        changed |= tri("heap", &g_settings.gpu_heap);
+        changed |= tri("heap", &g_settings.gpu_heap, vk_turnip_heap_on(-1));  // (any Turnip that places it)
         ImGui::TextDisabled("%s", tr("On: the game's memory is mapped straight into the GPU's, the fastest way. Off: what each "
                                   "frame uses is copied instead - it draws right where the fast way doesn't, but this game "
                                   "runs at about half the frame rate (15 fps instead of 35 on an Adreno 830). Automatic: on "
-                                  "for Adreno 8xx GPUs, off for the others - on another Adreno, try On first. Applies when "
-                                  "the game starts."));
+                                  "wherever Turnip can map it - without it an Adreno 7xx shows no text. Applies when the "
+                                  "game starts."));
         ImGui::Spacing();
-        ImGui::Text("%s", tr("Draw-target reads in place"));
-        changed |= tri("inplace", &g_settings.inplace_reads);
+        ImGui::Text("%s", tr("Draw-target reads in place (Turnip)"));
+        changed |= tri("inplace", &g_settings.inplace_reads, a8);
         ImGui::TextDisabled("%s", tr("On: decals and effects read the image they draw on as it is, the fastest way. Off: a copy "
                                   "of it each time, slower (fewer fps) but by the Vulkan rules. Automatic: on for Adreno 8xx "
                                   "GPUs, off for the others. On Mali GPUs (the Galaxy Tab S10 Ultra) On reads them from the "
@@ -1247,7 +1604,7 @@ static void prelaunch_tab(float sc) {
                                   "roads or shadows look wrong, set it to Off. Applies when the game starts."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Turnip low-resolution Z (LRZ)"));
-        changed |= tri("lrz", &g_settings.turnip_lrz);
+        changed |= tri("lrz", &g_settings.turnip_lrz, a8);
         ImGui::TextDisabled("%s", tr("Turnip's early depth test, a little faster. Off can fix missing or broken drawing on "
                                   "some Adreno GPUs. Automatic: on for Adreno 8xx GPUs, off for the others. Applies when "
                                   "Sheikah Slate restarts."));
@@ -1294,7 +1651,7 @@ static void prelaunch_tab(float sc) {
     heading("Game files");
     ImGui::Text(tr("Game version: %s"), version_name(rt_game_version()));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", tr("Versions 1.0.0, 1.6.0 and 1.8.2 can be set up side by side, each with its own saves."));
+    ImGui::TextDisabled("%s", tr("Versions 1.0.0, 1.6.0, 1.8.2 and 1.9.0 can be set up side by side, each with its own saves."));
     ImGui::PopTextWrapPos();
     if (ImGui::Button(tr("Versions and setup"))) g_open_files = true;
     static double gb = -1;
@@ -1338,6 +1695,92 @@ static void prelaunch_tab(float sc) {
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+#ifdef __ANDROID__
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("Saves");
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_save_msg;
+        bool failed = g_save_failed, sbusy = g_save_busy;
+        pthread_mutex_unlock(&g_lock);
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("The saves are in the app's own folder, out of file managers' reach. Export saves this "
+                                     "version's as one .zip where you choose (to keep, edit, send or move them). Import "
+                                     "replaces them with the saves in a .zip - one exported here, or any holding 0, 1, 2... "
+                                     "and option.sav; Import from folder takes an emulator's save folder. The ones before "
+                                     "are kept beside them. A save from a newer version of the game may not load in an "
+                                     "older one."));
+        if (sbusy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr("Export saves"))) {
+            pthread_mutex_lock(&g_lock);
+            g_save_busy = true, g_save_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickSaveExport");  // (then nativeSaveDone)
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Import saves"))) {
+            pthread_mutex_lock(&g_lock);
+            g_save_busy = true, g_save_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickSaveImport");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Import from folder"))) {
+            pthread_mutex_lock(&g_lock);
+            g_save_busy = true, g_save_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickSaveImportFolder");
+        }
+        if (sbusy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("DLC");
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_dlc_msg;
+        bool failed = g_dlc_failed, dbusy = g_dlc_busy;
+        pthread_mutex_unlock(&g_lock);
+        bool have = fs_aoc_image() != NULL;
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("The Expansion Pass - The Master Trials and The Champions' Ballad - for game versions "
+                                     "1.6.0, 1.8.2 and 1.9.0. Choose the folder with your own DLC's extracted romfs: the "
+                                     "larger pack (01007EF00011F001, 7,094 files, about 1.4 GB) holds both; the other "
+                                     "one is only the Ballad's unlock and isn't needed. The DLC isn't included with "
+                                     "Sheikah Slate."));
+        ImGui::Text("%s", tr(have ? "Installed." : "Not installed."));
+        float f = g_dlc_frac;
+        if (dbusy && f >= 0) ImGui::Text(tr("Installing the DLC... %d%%"), (int)(f * 100));
+        if (dbusy || g_busy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr(have ? "Install again" : "Install DLC"))) {
+            pthread_mutex_lock(&g_lock);
+            g_dlc_busy = true, g_dlc_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickDlcFolder");  // (then importDlc -> nativeBuildDlc -> nativeDlcDone)
+        }
+        if (have) {
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Remove DLC"))) {
+                remove_tree(dlc_dir());
+                pthread_mutex_lock(&g_lock);
+                g_dlc_msg = tr("DLC removed."), g_dlc_failed = false;
+                pthread_mutex_unlock(&g_lock);
+            }
+        }
+        if (dbusy || g_busy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::PopTextWrapPos();
+    }
+#endif
     ImGui::Spacing();
     ImGui::Spacing();
     heading("Game font");
@@ -1402,11 +1845,20 @@ extern "C" void launcher_run(const char *root) {
     for (const char *p : fonts) {
         if (g_font_menu || !*p || !file_exists(p)) continue;
         bool b2 = p == own.c_str() || getenv("LARECOMP_LAUNCHER_FONT");
+        // (each followed by the menu language's other letters, if it needs any: ui/i18n.mm - not the title's, the
+        // app's name)
         g_font_small = io.Fonts->AddFontFromFileTTF(p, 30 * (b2 ? 1.75f : 1), NULL, ranges);
+        i18n_merge_fonts(io.Fonts, 30 * (b2 ? 1.75f : 1));
         g_font_menu = io.Fonts->AddFontFromFileTTF(p, 52 * (b2 ? 1.85f : 1), NULL, ranges);
+        i18n_merge_fonts(io.Fonts, 52 * (b2 ? 1.85f : 1));
         g_font_title = io.Fonts->AddFontFromFileTTF(p, 92 * (b2 ? 2.3f : 1), NULL, ranges);
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
+    if (!io.Fonts->Build()) {  // (a font ImGui couldn't read left the atlas empty: its upload crashed - ImGui's own font)
+        fprintf(stderr, "[ui] the start screen's fonts didn't build: ImGui's default font instead\n");
+        io.Fonts->Clear();
+        g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
+    }
     ImGuiStyle &st = ImGui::GetStyle();
     st.Colors[ImGuiCol_Header] = ImVec4(0, 0, 0, 0);
     st.Colors[ImGuiCol_HeaderHovered] = ImVec4(1, 1, 1, 0.08f);
@@ -1510,7 +1962,10 @@ extern "C" void launcher_run(const char *root) {
             g_set_up_version = 0;
             bool failed = g_job_failed;
             pthread_mutex_unlock(&g_lock);
-            if (set_up && set_up != rt_game_version()) switch_to_version(set_up);  // (set up beside this one: played now)
+            if (set_up && set_up != rt_game_version()) {  // (set up beside this one: played now)
+                carry_game_code(set_up);
+                switch_to_version(set_up);
+            }
             status = check_game_files(g_root);
             // (a failure stays on the page with its cause: with this version's files ready, a setup of another folder
             // that failed went back to the start screen without a word)
@@ -1806,18 +2261,20 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddLine(ImVec2(x, cy), ImVec2(x + u * 0.35f, cy + u * 0.35f), g, fs * 0.11f);
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
-                std::string src_d = tr("The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Breath of "
-                                       "the Wild for Nintendo Switch: version 1.0.0, 1.6.0 or 1.8.2 (the one in Brazilian "
-                                       "Portuguese). The version is told from the files, and each one is set up in a place of "
+                std::string src_d = tr("The folder with your own game folders (exefs/romfs, or exefs and a romfs.bin) of The Legend of Zelda: Breath of "
+                                       "the Wild for Nintendo Switch: version 1.0.0, 1.6.0, 1.8.2 or 1.9.0 (the last two in "
+                                       "Brazilian Portuguese). The version is told from the files, and each one is set up in a place of "
                                        "its own, beside the others. The game isn't included with Sheikah Slate.");
                 if (!src.empty()) src_d += std::string(tr("\n\nChosen: ")) + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
                 bool copied = check_copied_files(g_root).empty();  // (here, the game code to build again: an app update)
-                std::string ex_d = tr(copied ? "The game files are already here: this builds the game code from them again, as "
-                                               "Sheikah Slate needs after an update. It may take a while."
-                                             : "Copies the game files Sheikah Slate needs and recompiles the game from them. "
-                                               "This only needs to be done once and may take a while. Your own files aren't changed.");
+                std::string ex_d = tr(native_wanted() ? "Copies the game files Sheikah Slate needs (native game code: "
+                                                        "nothing to build). Your own files aren't changed."
+                                      : copied ? "The game files are already here: this builds the game code from them again, as "
+                                                 "Sheikah Slate needs after an update. It may take a while."
+                                               : "Copies the game files Sheikah Slate needs and recompiles the game from them. "
+                                                 "This only needs to be done once and may take a while. Your own files aren't changed.");
                 if (!job.empty()) ex_d += "\n\n" + std::string(tr(job.c_str())) + (job_hint.empty() ? "" : ".\n" + std::string(tr(job_hint.c_str())));
                 if (failed && !job_detail.empty()) ex_d += "\n(" + job_detail + ")";
 
@@ -1829,9 +2286,44 @@ extern "C" void launcher_run(const char *root) {
                 version_rows(busy, focus_first > 0 && focus_first--);
                 // the folder: this version's files when they aren't set up, else another version's (or this one's again)
                 opt_section("Your copy of the game");
+#ifdef __ANDROID__
+                {   // how the game's code runs - chosen before the folder (picking it sets the game up at once): built
+                    // from the files (recompiled) or the game's own on the CPU (native: no build; runtime/native.c)
+                    static const char *const modes[] = {"Recompiled", "Native (experimental)"};
+                    int m = g_settings.native_code ? 1 : 0;
+                    if (busy) opt_disable_next();
+                    opt_choice("Game code", &m, modes, 2, 0,
+                               "Recompiled: the setup rebuilds the game's code for this phone from your files (once, it may "
+                               "take a while). Set up this way, the game can still run natively: Video > Native game code.\n\n"
+                               "Native: the game's own code runs directly on the phone's CPU, so the setup only copies the "
+                               "files - no build. An experiment. Switching to Recompiled later means building the game code "
+                               "then.");
+                    if ((m == 1) != g_settings.native_code) {
+                        g_settings.native_code = m == 1;
+                        settings_save();
+                        status = check_game_files(g_root);
+                    }
+                }
+                {   // copied, or read where they are (the romfs/: services/fs.c romfs.link; the exefs/ is copied, small)
+                    static const char *const ways[] = {"Copy them", "Use them in place"};
+                    int w = g_settings.files_in_place ? 1 : 0;
+                    if (busy) opt_disable_next();
+                    opt_choice("Game files", &w, ways, 2, 0,
+                               "Copy them: the setup copies the game data (about 16 GB) into Sheikah Slate's folder - "
+                               "your folder can be moved or deleted afterwards.\n\n"
+                               "Use them in place: the game reads its data from your folder, no copy - it saves the space "
+                               "and the wait. It needs the permission to access all files (Android asks), and the folder "
+                               "must stay where it is: moved or deleted, the game files have to be set up again.");
+                    if ((w == 1) != g_settings.files_in_place) {
+                        g_settings.files_in_place = w == 1;
+                        settings_save();
+                    }
+                }
+#endif
                 if (busy) opt_disable_next();
 #ifdef __ANDROID__
-                if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true)) android_call("pickGameFolder");
+                if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
+                    android_call(g_settings.files_in_place ? "pickGameFolderInPlace" : "pickGameFolder");
 #else
                 if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
                     SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
@@ -1986,7 +2478,8 @@ extern "C" void launcher_run(const char *root) {
                     if (bold) dl->AddText(font, size, ImVec2(p.x + 0.7f * s, p.y), col, t);
                 };
 #ifdef __ANDROID__
-                std::string ver;  // (the PC version's label: not this app's)
+                std::string ver = app_version();  // this app's versionName, not the PC version's tag
+                if (!ver.empty()) ver = tag_label(ver, true);  // "Version 0.2.0-beta", as the PC version shows its own
 #else
                 std::string ver = tag_label(LARECOMP_VERSION, true);
 #endif

@@ -36,7 +36,7 @@ bool rt_dev_mode(void);           // dev / portable mode (rule 2 above): e.g. a 
 // starting directory or the executable's parent; NULL = shipped builds only). Absolute path in out; false = none.
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n);
 
-// Game versions (100, 160, 182: rt.h game_version_of_build)
+// Game versions (100, 160, 182, 190: rt.h game_version_of_build)
 int rt_game_version(void);                                // the one whose folder is the data root
 bool rt_select_game_version(int v);                       // the one the next start runs (the app restarts into it)
 bool rt_version_root(int v, char *out, size_t n);         // its folder (absolute)
@@ -53,6 +53,10 @@ bool rt_version_game_lib(int v, char *out, size_t n);
 bool rt_remove_game_file(const char *game_dir, const char *name);
 // All the game files set up there (rt_remove_game_file on each, then the empty folder). Saves and settings stay.
 bool rt_remove_game_files(const char *game_dir);
+// The same before a new setup there, except the game code's compiled objects (.gamebuild): runtime/gamebuild.c keeps
+// them only when they were compiled from the same game code by the same builder, so the folder picked again after a
+// build the app didn't finish goes on from there (issue #25: it started over)
+bool rt_remove_game_files_for_setup(const char *game_dir);
 // Bytes taken by the extracted game files in game_dir (links not followed).
 unsigned long long rt_game_files_size(const char *game_dir);
 

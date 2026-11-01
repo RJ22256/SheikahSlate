@@ -77,7 +77,8 @@ void kernel_signal(KObject *o) {
 // ------------------------------------------------------------------ time
 
 uint64_t rt_ticks(void) {
-    // 19.2 MHz system tick
+    // 19.2 MHz system tick (running the game's own code: the counter its rewritten reads see, native.c)
+    if (native_on()) return native_ticks();
     uint64_t ns = plat_now_ns();
     static double scale = -1;
     if (scale < 0) scale = getenv("LARECOMP_TICK_SCALE") ? atof(getenv("LARECOMP_TICK_SCALE")) : 1.0;
@@ -127,6 +128,11 @@ int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
             addr[n] = regions[i].addr; size[n] = regions[i].size; n++;
         }
     return n;
+}
+
+// [addr, addr+size) inside the guest's window
+static bool guest_range_ok(uint64_t addr, uint64_t size) {
+    return addr >= GUEST_LO && addr <= GUEST_HI && size <= GUEST_HI - addr;
 }
 
 static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
@@ -207,6 +213,23 @@ static int c0_on = -1;
 static KThread *c0_holder;  // (c0_m) the thread that has core 0, since c0_since
 static uint64_t c0_since;
 
+// Telemetry (c0_m; issue #41: how much of a frame goes to waiting for core 0, against a slow clock): every 30 s one log
+// line - how often core 0 changed hands, the waits for it (total, longest) and how much of the time it was held.
+static struct { uint64_t start, takes, waited, longest, held; } c0_stat;
+static void c0_held_until(uint64_t now) {
+    if (c0_holder) c0_stat.held += now - c0_since;
+}
+static void c0_stat_log(uint64_t now) {
+    if (!c0_stat.start) { c0_stat.start = now; return; }
+    uint64_t span = now - c0_stat.start;
+    if (span < 30000000000ull) return;
+    LOG("[kernel] core 0, last %.0f s: %llu takes, waited %.0f ms in all (longest %.1f ms), held %.0f%% of the time\n",
+        span / 1e9, (unsigned long long)c0_stat.takes, c0_stat.waited / 1e6, c0_stat.longest / 1e6,
+        100.0 * (double)c0_stat.held / (double)span);
+    memset(&c0_stat, 0, sizeof c0_stat);
+    c0_stat.start = now;
+}
+
 // Optional cooperative slices: request a handoff at the next function entry/SVC, never run two owners at once.
 // BOTW's busy waits depend on workers on other cores, handled by SetThreadCoreMask, not by forcing a handoff.
 // (LARECOMP_C0_SLICE_MS: the slice; default 0)
@@ -254,14 +277,14 @@ static void core0_acquire(KThread *t) {
         if (--c0_nevicted == 0) __atomic_fetch_and(&g_fnprof, ~2, __ATOMIC_SEQ_CST);
         if (t->core0_held) {
             t->core0_held = false;
-            c0_holder = NULL;
+            c0_held_until(plat_now_ns()), c0_holder = NULL;
             pthread_cond_broadcast(&c0_cv);
         }
     }
     if (__atomic_load_n(&t->core, __ATOMIC_ACQUIRE) != 0) {
         if (t->core0_held) {
             t->core0_held = false;
-            c0_holder = NULL;
+            c0_held_until(plat_now_ns()), c0_holder = NULL;
             pthread_cond_broadcast(&c0_cv);
         }
         pthread_mutex_unlock(&c0_m);
@@ -277,7 +300,11 @@ static void core0_acquire(KThread *t) {
     uint64_t t0 = plat_now_ns();
     while ((c0_holder || c0_head != t) && __atomic_load_n(&t->core, __ATOMIC_ACQUIRE) == 0 && !g_rt_unwind)
         pthread_cond_wait(&c0_cv, &c0_m);
-    g_blocked_ns += plat_now_ns() - t0;
+    uint64_t now = plat_now_ns(), w = now - t0;
+    g_blocked_ns += w;
+    c0_stat.takes++, c0_stat.waited += w;
+    if (w > c0_stat.longest) c0_stat.longest = w;
+    c0_stat_log(now);
     KThread **p = &c0_head, *prev = NULL;
     while (*p != t) { prev = *p; p = &(*p)->core0_next; }
     *p = t->core0_next;
@@ -290,7 +317,7 @@ static void core0_acquire(KThread *t) {
     }
     t->core0_held = true;
     c0_holder = t;
-    c0_since = plat_now_ns();
+    c0_since = now;
     pthread_mutex_unlock(&c0_m);
 }
 
@@ -309,7 +336,7 @@ static void core0_release(KThread *t) {
     }
     if (t->core0_held) {
         t->core0_held = false;
-        if (c0_holder == t) c0_holder = NULL;
+        if (c0_holder == t) c0_held_until(plat_now_ns()), c0_holder = NULL;
         pthread_cond_broadcast(&c0_cv);
     }
     pthread_mutex_unlock(&c0_m);
@@ -352,6 +379,7 @@ static void *thread_main(void *arg) {
         guest_call(&t->cpu, t->entry);
     }
     core0_release(t);
+    native_thread_end();
 #else
     if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
 #endif
@@ -497,6 +525,23 @@ static uint32_t block_current(int64_t timeout_ns) {
     waitlist_add(t);
 #ifdef __ANDROID__
     int kind0 = t->wait_kind;
+    {   // LARECOMP_KWAIT_SPIN_US=<us>: a short wait first without sleeping (the kernel lock let go meanwhile) - the
+        // main thread hands work to its job workers and waits for their results many times a frame, each wake-up a
+        // futex and maybe a sleeping core brought back. A/B in one run (LARECOMP_AB=<n>:kspin), 1.9.0 with FSR 1 +
+        // FXAA (GPU-bound near 20 ms): 50 us +4%, +1.4%, +0.4% in three runs, 150 us nothing. Off by default: with the
+        // default settings the frame sits at the 60 fps cap with the GPU as the limit, where a spin is only CPU heat.
+        static long spin_ns = -1;
+        if (spin_ns < 0) { const char *e = getenv("LARECOMP_KWAIT_SPIN_US"); spin_ns = (e ? atol(e) : 0) * 1000; }
+        extern int vk_ab(const char *what);
+        if (spin_ns > 0 && (timeout_ns < 0 || timeout_ns > spin_ns) && vk_ab("kspin") != 0) {
+            pthread_mutex_unlock(&g_klock);
+            for (uint64_t end = plat_now_ns() + (uint64_t)spin_ns; plat_now_ns() < end;) {
+                if (__atomic_load_n(&t->wait_kind, __ATOMIC_ACQUIRE) != kind0 || g_rt_unwind) break;
+                __asm__ volatile("yield");
+            }
+            pthread_mutex_lock(&g_klock);
+        }
+    }
 #endif
     while (t->wait_kind != WAIT_NONE) {
         if (g_rt_unwind) {  // reboot: give up the wait (the thread unwinds when its svc returns)
@@ -570,7 +615,7 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     // A wait that timed out returns without the mutex in BOTW 1.8.2's SDK, as on the console: user mode takes it
     // again (InternalConditionVariableImplByHorizon::TimedWait calls Enter on 0xea01). Taken here too, the thread then
     // waited for the mutex it held, and every thread after it (SavageWindRecomp). The older SDKs run as before.
-    if (r != R_OK && !(r == R_TIMEOUT && g_game_version == 182)) {
+    if (r != R_OK && !(r == R_TIMEOUT && g_game_version >= 182)) {
         // timed out / cancelled: still must reacquire the mutex
         if (!mutex_acquire_or_mark(mutex, tag)) {
             t->wait_kind = WAIT_MUTEX;
@@ -786,8 +831,24 @@ static void watchdog_start(void) {
     pthread_detach(th);
 }
 
+// LARECOMP_TEST_CRASH=<seconds> (a test of the crash report, dispatch.c rt_fatal_trace): that long after start, the
+// next two of the game's threads to make an SVC write to address 0 - a fault with a guest context, as a crash in the
+// game's code would be, and two at once as in issue #24 (the report gate).
+static void test_crash(void) {
+    static int64_t at = -1;
+    static int n;
+    if (at < 0) {
+        const char *e = getenv("LARECOMP_TEST_CRASH");
+        at = e && atoi(e) > 0 ? (int64_t)(plat_now_ns() + (uint64_t)atoi(e) * 1000000000ull) : 0;
+    }
+    if (!at || plat_now_ns() < (uint64_t)at || __atomic_fetch_add(&n, 1, __ATOMIC_SEQ_CST) >= 2) return;
+    LOG("[kernel] LARECOMP_TEST_CRASH: a write to address 0 on t%llu\n", (unsigned long long)(t_cur ? t_cur->id : 0));
+    *(volatile uint32_t *)(uintptr_t)0 = 0;
+}
+
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     rt_unwind_point();
+    test_crash();
     KThread *me = t_cur;
     if (me) {
         me->svc_since = plat_now_ns();
@@ -818,10 +879,29 @@ static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc) {
         svc_impl(c, imm, pc);
         uint64_t dt = plat_now_ns() - t0;
         static _Atomic int nslow;
-        if (((t_cur && t_cur->id == 80 && (imm == 0x18 || imm == 0x34)) || (dt > 10000000 && imm != 0x0b && imm != 0x1c)) && nslow < 20000) {
+        static long watch_tid = -2, watch_tid2 = -1;  // LARECOMP_PROF_SVC_TID=<id>[+<id>]: those threads' every SVC
+        if (watch_tid == -2) {
+            const char *e = ENV("LARECOMP_PROF_SVC_TID");
+            watch_tid = e ? strtol(e, (char **)&e, 10) : -1;
+            if (e && *e == '+') watch_tid2 = atol(e + 1);
+        }
+        static uint64_t from = ~0ull;  // LARECOMP_PROF_SVC_FROM=<s>: the watched threads from that many seconds in
+        if (from == ~0ull) from = t0 + (ENV("LARECOMP_PROF_SVC_FROM") ? (uint64_t)atol(ENV("LARECOMP_PROF_SVC_FROM")) * 1000000000ull : 0);
+        bool watched = t_cur && ((long)t_cur->id == watch_tid || (long)t_cur->id == watch_tid2) && t0 >= from;
+        static uint64_t watch_key = ~0ull;  // LARECOMP_PROF_SVC_KEY=<hex>: who signals that condition variable key
+        if (watch_key == ~0ull) watch_key = ENV("LARECOMP_PROF_SVC_KEY") ? strtoull(ENV("LARECOMP_PROF_SVC_KEY"), NULL, 16) : 0;
+        bool sig = watch_key && imm == 0x1d && a0 == watch_key;
+        if ((watched || sig || (watch_tid < 0 && !watch_key && dt > 10000000 && imm != 0x0b && imm != 0x1c)) && nslow < 20000) {
             nslow++;
-            LOG("[slow] t%llu svc%02x %llums a=%llx,%llx,%llx,%llx h0=%x lr=%llx\n", (unsigned long long)(t_cur ? t_cur->id : 0), imm,
-                (unsigned long long)(dt / 1000000), (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3, h0, (unsigned long long)lr);
+            uint64_t st[4] = {0}, fp = c->x[29];  // (callers: the frame pointer chain, 4 deep)
+            for (int k = 0; k < 4 && fp >= GUEST_LO && fp < GUEST_HI && !(fp & 7); k++) {
+                st[k] = *(const uint64_t *)(uintptr_t)(fp + 8);
+                fp = *(const uint64_t *)(uintptr_t)fp;
+            }
+            LOG("[slow] t%llu/%x svc%02x %.3fms at %.3f a=%llx,%llx,%llx,%llx h0=%x lr=%llx up=%llx,%llx,%llx,%llx\n",
+                (unsigned long long)(t_cur ? t_cur->id : 0), t_cur ? t_cur->handle : 0, imm, dt / 1e6, t0 / 1e6, (unsigned long long)a0, (unsigned long long)a1,
+                (unsigned long long)a2, (unsigned long long)a3, h0, (unsigned long long)lr, (unsigned long long)st[0],
+                (unsigned long long)st[1], (unsigned long long)st[2], (unsigned long long)st[3]);
         }
         unsigned tid = t_cur ? (unsigned)(t_cur->id & 31) : 31;
         svc_wait_ns[tid][imm] += dt;
@@ -873,11 +953,25 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     }
     case 0x02: case 0x03: x[0] = R_OK; break;  // SetMemoryPermission / SetMemoryAttribute
     case 0x04:  // MapMemory(dst, src, size): src is inaccessible while mapped, so copying is equivalent
+        // (an address outside the guest window, as a null stack from an allocation the game didn't check (issue #31),
+        // is the kernel's InvalidAddress, not a copy from it)
+        if (!guest_range_ok(x[0], x[2]) || !guest_range_ok(x[1], x[2])) {
+            LOG("[kernel] MapMemory dst=%llx src=%llx size=%llx: outside the guest's memory\n",
+                (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2]);
+            x[0] = R_INVALID_ADDRESS;
+            break;
+        }
         memcpy((void *)x[0], (void *)x[1], x[2]);
         region_add(x[0], x[2], 0xB, 3);
         x[0] = R_OK;
         break;
     case 0x05:  // UnmapMemory(dst, src, size): copy back
+        if (!guest_range_ok(x[0], x[2]) || !guest_range_ok(x[1], x[2])) {
+            LOG("[kernel] UnmapMemory dst=%llx src=%llx size=%llx: outside the guest's memory\n",
+                (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2]);
+            x[0] = R_INVALID_ADDRESS;
+            break;
+        }
         memcpy((void *)x[1], (void *)x[0], x[2]);
         region_remove(x[0]);
         x[0] = R_OK;
@@ -913,7 +1007,22 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     case 0x0A: longjmp(t_cur->unwind, 1);  // ExitThread: back to thread_main, which signals the thread object
     case 0x0B: {  // SleepThread (in slices of at most 50 ms: a reboot doesn't wait out a long sleep)
         int64_t ns = (int64_t)x[0];
-        if (ns <= 0) { sched_yield(); break; }
+        if (ns <= 0) {
+            // A yield returns at once, without the host's: the game's job workers spin on yields, and a host sched_yield
+            // took ~30 us - each look at the job queue came that much later (TOTKRecompAndroid, 2026-10-31: +6% fps,
+            // +14% with core 0's too, whose yield still hands the core on: its queue, svc_blocks).
+            // LARECOMP_HOST_YIELD=1: the host's yield as before; =2: skipped off core 0 only. LARECOMP_AB=<n>:yield.
+#ifdef __ANDROID__
+            static int host_yield = -1;
+            if (host_yield < 0) host_yield = getenv("LARECOMP_HOST_YIELD") ? atoi(getenv("LARECOMP_HOST_YIELD")) : 0;
+            extern int vk_ab(const char *what);
+            int ab = vk_ab("yield");
+            bool c0 = t_cur && __atomic_load_n(&t_cur->core, __ATOMIC_ACQUIRE) == 0;
+            if (ab >= 0 ? ab == 1 : host_yield == 0 || (host_yield == 2 && !c0)) break;
+#endif
+            sched_yield();
+            break;
+        }
         for (uint64_t end = plat_now_ns() + (uint64_t)ns, now; !g_rt_unwind && (now = plat_now_ns()) < end;) {
             uint64_t d = end - now < 50000000 ? end - now : 50000000;
             struct timespec ts = {(time_t)(d / 1000000000), (long)(d % 1000000000)};

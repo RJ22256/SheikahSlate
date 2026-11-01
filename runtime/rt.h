@@ -55,7 +55,7 @@ extern uint64_t g_guest_lo;
 #endif
 
 // ---- loader.c
-// The game's version, from main's build id (loader_load): 100 for v1.0.0, 160 for v1.6.0, 0 unknown. What differs
+// The game's version, from main's build id (loader_load): 100 for v1.0.0, 160 for v1.6.0, 182 / 190 for v1.8.2 / v1.9.0, 0 unknown. What differs
 // between them in the runtime keys on this (1.6.0 is on SDK 7.3.2 with NVN 53, 1.0.0 on SDK 0.12.14 with NVN 52).
 extern int g_game_version;
 // The version for a main build id (its NSO header's bytes 0x40-0x47; 0: unknown) - runtime/gamebuild.c too
@@ -111,6 +111,15 @@ int ui_run(void);  // window loop; returns the reboot kind requested (the window
 
 // ---- helpers
 void guest_call(Cpu *c, uint64_t addr);   // call guest function at addr (saves/restores x30)
+// ---- the game's own code on the CPU (LARECOMP_NATIVE=1, runtime/native.c: a prototype)
+bool native_wanted(void);                 // (the setting, or LARECOMP_NATIVE)
+void native_begin_boot(void);             // native_on() for this boot
+bool native_on(void);
+void native_prepare(void);                // the loaded modules rewritten and made executable
+void native_call(Cpu *c, uint64_t addr);  // guest_call's native path
+void native_thread_end(void);
+uint64_t native_ticks(void);
 uint64_t guest_sym(const char *name);     // cached loader_find_symbol, fatal if missing
 void *hle_alloc(uint64_t size);           // zeroed guest-visible memory (never freed)
 extern const char *g_romfs_dir;
+extern const char *g_romfs_link;  // the player's own romfs/ used in place (<root>/romfs.link names it): NULL - romfs.bin

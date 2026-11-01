@@ -34,8 +34,8 @@ static int q_presents;            // PRESENT requests queued and not finished (t
 static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t q_more = PTHREAD_COND_INITIALIZER, q_less = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t p_lock = PTHREAD_MUTEX_INITIALIZER;  // producers: an id, its list's fences and its push together
-static pthread_t render_thread;
-static bool started;
+pthread_t g_vk_render_thread;  // (also read by device.c renderer_present_count, many times a draw)
+bool g_vk_render_started;
 static int on = -1;
 
 // The game's thread may run this many frames ahead of the render thread (the translation of one frame overlaps the
@@ -65,7 +65,7 @@ bool vk_async_on(void) {
     return on;
 }
 
-bool vk_async_is_render_thread(void) { return started && pthread_equal(pthread_self(), render_thread); }
+bool vk_async_is_render_thread(void) { return g_vk_render_started && pthread_equal(pthread_self(), g_vk_render_thread); }
 
 // Thread CPU time excludes GPU fences, swapchain acquisition and time descheduled by Android.
 static uint64_t render_cpu_ns(void) {
@@ -88,8 +88,11 @@ static void *render_main(void *arg) {
         Req r = q[q_head % QN];
         pthread_mutex_unlock(&q_lock);
         uint64_t t0 = plat_now_ns(), cpu0 = cpu_timing ? render_cpu_ns() : 0;
+        extern void vk_tl(const char *what, uint64_t a, uint64_t b);  // (exec.c: LARECOMP_FRAME_TIMELINE)
+        vk_tl(r.type == REQ_EXEC ? "render: list start" : r.type == REQ_PRESENT ? "render: present start" : "render: fence", r.id, 0);
         if (r.type == REQ_EXEC) { vk_execute_now(r.a); free(r.p); }  // (r.p: the list copy, vk_async_execute)
         else if (r.type == REQ_PRESENT) vk_present_now((NvnTexture *)r.p);
+        if (r.type != REQ_FENCE) vk_tl(r.type == REQ_EXEC ? "render: list end" : "render: present end", r.id, 0);
         else if (r.type == REQ_FENCE) nvn_sync_set_seq(r.a, renderer_fence_seq());
         uint64_t elapsed = plat_now_ns() - t0;
         frame_cpu += cpu_timing ? render_cpu_ns() - cpu0 : elapsed;
@@ -112,9 +115,9 @@ static void *render_main(void *arg) {
 
 static uint64_t push(int type, uint64_t a, void *p) {
     pthread_mutex_lock(&q_lock);
-    if (!started) {
-        started = true;
-        pthread_create(&render_thread, NULL, render_main, NULL);
+    if (!g_vk_render_started) {
+        g_vk_render_started = true;
+        pthread_create(&g_vk_render_thread, NULL, render_main, NULL);
     }
     if (q_tail - q_head >= QN || (type == REQ_PRESENT && q_presents >= ahead)) {
         pthread_mutex_unlock(&q_lock);
@@ -126,6 +129,10 @@ static uint64_t push(int type, uint64_t a, void *p) {
         pthread_mutex_lock(&q_lock);
     }
     uint64_t id = ++q_tail;  // (ids 1, 2, ...: the request at index id - 1)
+    {
+        extern void vk_tl(const char *what, uint64_t a, uint64_t b);
+        vk_tl(type == REQ_EXEC ? "game: list sent" : type == REQ_PRESENT ? "game: present sent" : "game: fence sent", id, 0);
+    }
     q[(id - 1) % QN] = (Req){type, a, p, id};
     if (type == REQ_PRESENT) q_presents++;
     pthread_cond_signal(&q_more);
@@ -135,7 +142,7 @@ static uint64_t push(int type, uint64_t a, void *p) {
 
 // Until the render thread has finished request `id` (0: nothing to wait for).
 void vk_async_wait_id(uint64_t id) {
-    if (!id || !started || vk_async_is_render_thread()) return;
+    if (!id || !g_vk_render_started || vk_async_is_render_thread()) return;
     pthread_mutex_lock(&q_lock);
     while (q_done < id) pthread_cond_wait(&q_less, &q_lock);
     pthread_mutex_unlock(&q_lock);
@@ -143,7 +150,7 @@ void vk_async_wait_id(uint64_t id) {
 
 // Until every request queued so far has run (the render thread is idle after it).
 void vk_async_drain(void) {
-    if (!started || vk_async_is_render_thread()) return;
+    if (!g_vk_render_started || vk_async_is_render_thread()) return;
     pthread_mutex_lock(&q_lock);
     uint64_t id = q_tail;
     while (q_done < id) pthread_cond_wait(&q_less, &q_lock);

@@ -436,14 +436,35 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (depthfmt) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     else if (format_supports(vf, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkImageCreateFlags flags = 0;
-    static int no_mut = -1;  // (LARECOMP_VK_NO_MUTABLE=1, a measurement: render targets without it - Turnip's UBWC)
-    if (no_mut < 0) no_mut = getenv("LARECOMP_VK_NO_MUTABLE") != NULL;
-    if (!depthfmt && !(no_mut && (t->flags & 8)))
+    // Render targets (NVN's COMPRESSIBLE flag) without MUTABLE_FORMAT, but for their sRGB / UNORM twin named in a format
+    // list: a Mali driver doesn't compress (AFBC) an image whose views may take any format - each pass's loads and
+    // stores move it whole (from p5r-android's notes). BOTW views none in another format (title, world: logged) but the
+    // window's sRGB; a view that asks for one gets the image's own (vk_view). On Turnip it made no difference (UBWC,
+    // docs/BOTW-PORT.md), and it once broke a compressed image there (exec.c post_image): Mali only.
+    // LARECOMP_VK_RT_FORMAT_LIST=1 / 0 (LARECOMP_VK_NO_MUTABLE=1 as 1).
+    static int rt_list = -1;
+    if (rt_list < 0) {
+        const char *e = getenv("LARECOMP_VK_RT_FORMAT_LIST");
+        rt_list = e ? atoi(e) != 0 : getenv("LARECOMP_VK_NO_MUTABLE") != NULL || g_vk.props.vendorID == 0x13B5;
+        if (rt_list) LOG("[vk] render targets without mutable formats (their sRGB twin in a format list)\n");
+    }
+    VkFormat twin = vf == VK_FORMAT_R8G8B8A8_UNORM ? VK_FORMAT_R8G8B8A8_SRGB : vf == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_R8G8B8A8_UNORM
+                  : vf == VK_FORMAT_B8G8R8A8_UNORM ? VK_FORMAT_B8G8R8A8_SRGB : vf == VK_FORMAT_B8G8R8A8_SRGB ? VK_FORMAT_B8G8R8A8_UNORM
+                  : vf == VK_FORMAT_A8B8G8R8_UNORM_PACK32 ? VK_FORMAT_A8B8G8R8_SRGB_PACK32
+                  : vf == VK_FORMAT_A8B8G8R8_SRGB_PACK32 ? VK_FORMAT_A8B8G8R8_UNORM_PACK32 : VK_FORMAT_UNDEFINED;
+    VkFormat listed[2] = {vf, twin};
+    VkImageFormatListCreateInfo fl = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, .viewFormatCount = 2,
+                                      .pViewFormats = listed};
+    bool fixed = rt_list && !depthfmt && (t->flags & 8) && (!twin || g_vk.api >= VK_API_VERSION_1_2);
+    b->fixed_fmt = fixed;
+    b->view_alt = fixed ? twin : VK_FORMAT_UNDEFINED;
+    if (!depthfmt && (!fixed || twin))
         flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     if (type == VK_IMAGE_TYPE_3D && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
         flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;  // (its slices rendered to through 2D views: vk_view)
-    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = vf,
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = fixed && twin ? &fl : NULL,
+                            .flags = flags, .imageType = type, .format = vf,
                             .extent = {tw, th, depth}, .mipLevels = levels, .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
@@ -455,6 +476,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, ci.pNext = NULL, b->fixed_fmt = false;
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
         depthfmt = false;
     }
@@ -546,6 +568,10 @@ int vk_texture_count(void) {
             (unsigned long long)g_tex_stat_init, (unsigned long long)g_tex_stat_reused, (unsigned long long)g_tex_stat_reinit,
             (unsigned long long)g_tex_stat_fin_owner, (unsigned long long)g_tex_stat_fin_copy,
             (unsigned long long)g_tex_stat_reg);
+        extern uint64_t g_tex_drain_ns, g_tex_drains;
+        LOG("[tex-diag] slot replacements waited for the render thread: %llu, %.1f ms in all\n",
+            (unsigned long long)__atomic_exchange_n(&g_tex_drains, 0, __ATOMIC_RELAXED),
+            __atomic_exchange_n(&g_tex_drain_ns, 0, __ATOMIC_RELAXED) / 1e6);
         for (int i = g_nlive >= 3 ? g_nlive - 3 : 0; i < g_nlive; i++) {
             NvnTexture *t = g_live[i];
             LOG("[tex-sample #%d] addr=%llx %ux%ux%u fmt=%#x tgt=%u flags=%#x refs=%u fin=%d label=%s\n",
@@ -554,6 +580,17 @@ int vk_texture_count(void) {
     }
     return g_nlive;
 }
+// (diagnosis, exec.c vk_dump_watch_frame) the live texture over guest address addr with the most levels x layers
+NvnTexture *vk_texture_at(uint64_t addr) {
+    NvnTexture *best = NULL;
+    for (int i = 0; i < g_nlive; i++) {
+        NvnTexture *t = g_live[i];
+        if (t->addr != addr || !t->backend) continue;
+        if (!best || t->levels * t->layout.layers > best->levels * best->layout.layers) best = t;
+    }
+    return best;
+}
+
 static void live_add(NvnTexture *t, TexBackend *b) {
     if (g_nlive == g_cap_live) { g_cap_live = g_cap_live ? g_cap_live * 2 : 1024; g_live = realloc(g_live, g_cap_live * sizeof *g_live); }
     g_live[g_nlive++] = t;
@@ -824,8 +861,10 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     static int always_full = -1;
     if (always_full < 0) always_full = getenv("LARECOMP_TEX_FULLHASH") ? 1 : 0;
     bool full = b->dynamic || !b->uploaded || always_full;
-    bool periodic = frame - b->full_frame >= 120 && full_hash_budget >= total;  // (safety net: a full hash now and then)
-    if (!full && periodic) { full = true; full_hash_budget -= total; }
+    // (safety net: a full hash now and then - one larger than the frame's budget too, as the frame's first: a texture
+    // over 4 MB never fit it, and a change its samples missed stayed unseen - TOTKRecompAndroid's 26 MB terrain atlas, 20 s)
+    bool periodic = frame - b->full_frame >= 120 && (full_hash_budget >= total || full_hash_budget == (4u << 20));
+    if (!full && periodic) { full = true; full_hash_budget = full_hash_budget > total ? full_hash_budget - total : 0; }
     if (!b->tp) b->tp = texpatch_identify(t) + 1;  // (button prompts / Hero Mode icon: re-uploaded when their look changes)
     bool restyle = b->tp > 0 && b->uploaded && b->tp_gen != texpatch_generation();
     // The OS's page write tracking (exec.c vk_pages_changed, shared with the vertex cache): texture memory the CPU
@@ -843,7 +882,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             b->wgen = now;
             if (!ch && b->uploaded && !restyle) {
                 if (!periodic) { prof_tex_watch_skips++; return; }
-                if (b->dynamic) full_hash_budget -= total;  // (the others took theirs above)
+                if (b->dynamic) full_hash_budget = full_hash_budget > total ? full_hash_budget - total : 0;  // (the others took theirs above)
             }
         }
     }
@@ -857,12 +896,42 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
         if (sh == b->sample_hash) return;
     }
     prof_tex_full++; prof_tex_full_bytes += total; if (b->dynamic) prof_tex_dyn++;
-    uint64_t h = hash_full(mem, total);
+    uint64_t h = hash_full(mem, total), last_full = b->full_frame, old_sample = b->sample_hash;
     b->full_frame = frame;
     b->sample_hash = fnv_sample(mem, total);
     if (b->uploaded && h == b->data_hash && !restyle) return;
+    if (b->uploaded && h != b->data_hash && !b->dynamic && !always_full) {
+        // LARECOMP_LOG_TEX_MISS=1 (diagnosis): a change the sampled check didn't see, found by the periodic full hash -
+        // the texture showed its old contents meanwhile (the stretched-terrain curtains after a tower: gone with
+        // LARECOMP_TEX_FULLHASH=1, 2026-10-26)
+        static int on = -1, n;
+        if (on < 0) on = getenv("LARECOMP_LOG_TEX_MISS") != NULL;
+        if (on && n++ < 200)
+            LOG("[texmiss] frame %llu: %ux%ux%u fmt %#x flags %#x target %u levels %u at %llx+%llx changed, found %llu frames "
+                "after the last full hash; the samples %s\n", (unsigned long long)frame, t->width, t->height, t->depth,
+                t->format, t->flags, t->target, t->levels, (unsigned long long)t->addr, (unsigned long long)total,
+                (unsigned long long)(frame - last_full), b->sample_hash == old_sample ? "unchanged (missed)" : "changed");
+    }
     if (b->uploaded && h != b->data_hash) b->dynamic = true;
     if (b->tp > 0) b->tp_gen = texpatch_generation();
+    {   // LARECOMP_LOG_STALE_UPLOAD=1 (diagnosis): an upload from guest memory that a render target the GPU drew into
+        // covers - its object's own image, where the drawing never reaches memory: the texture reads what was there
+        // before (MacNativeGames PR #511: BOTW's terrain height map, drawn through one object and sampled through
+        // another, kept zeros - Link's feet under the ground). Each pair once, 60 at most.
+        static int on = -1, n;
+        if (on < 0) on = getenv("LARECOMP_LOG_STALE_UPLOAD") != NULL;
+        for (int i = 0; on && n < 60 && i < g_nlive; i++) {
+            NvnTexture *e = g_live[i];
+            if (e == t || !e->addr || !e->backend || !((TexBackend *)e->backend)->gpu_owned) continue;
+            uint64_t ee = e->addr + tegra_total_size(&e->layout);
+            if (e->addr >= t->addr + total || ee <= t->addr) continue;
+            n++;
+            LOG("[stale] frame %llu: %ux%u fmt %#x flags %#x at %llx+%llx uploaded from memory under the drawn target "
+                "%ux%u fmt %#x flags %#x at %llx+%llx\n", (unsigned long long)frame, t->width, t->height, t->format, t->flags,
+                (unsigned long long)t->addr, (unsigned long long)total, e->width, e->height, e->format, e->flags,
+                (unsigned long long)e->addr, (unsigned long long)(ee - e->addr));
+        }
+    }
     b->data_hash = h;
     b->uploaded = true;
     extern uint64_t vk_sig_uploads;  // (exec.c vk_frame_check)
@@ -994,6 +1063,23 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     TexBackend *b = tex_backend(t);
     if (b->pending_rgba) upload_pending(b);
+    if (for_render && !b->gpu_owned && t->addr) {  // (LARECOMP_LOG_STALE_UPLOAD: textures uploaded before, over it)
+        static int on = -1, n;
+        if (on < 0) on = getenv("LARECOMP_LOG_STALE_UPLOAD") != NULL;
+        uint64_t te = t->addr + tegra_total_size(&t->layout);
+        for (int i = 0; on && n < 60 && i < g_nlive; i++) {
+            NvnTexture *e = g_live[i];
+            TexBackend *eb = e->backend;
+            if (e == t || !e->addr || !eb || eb->gpu_owned || !eb->uploaded) continue;
+            uint64_t ee = e->addr + tegra_total_size(&e->layout);
+            if (e->addr >= te || ee <= t->addr) continue;
+            n++;
+            LOG("[stale] frame %llu: target %ux%u fmt %#x flags %#x at %llx+%llx first drawn over %ux%u fmt %#x flags %#x "
+                "at %llx+%llx, uploaded from memory\n", (unsigned long long)vk_frame_counter(), t->width, t->height, t->format,
+                t->flags, (unsigned long long)t->addr, (unsigned long long)(te - t->addr), e->width, e->height, e->format,
+                e->flags, (unsigned long long)e->addr, (unsigned long long)(ee - e->addr));
+        }
+    }
     if (for_render) b->gpu_owned = true;
     else if (!b->gpu_owned) {
         extern uint64_t prof_up_ns;
@@ -1112,6 +1198,12 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
 #ifdef __ANDROID__
         else if (b->bc_vf && is_bc(vf)) { uint32_t bpp; fmt = bc_target(vf, &bpp); }  // (decoded BC: its sRGB / UNORM view)
 #endif
+        if (b->fixed_fmt && fmt != b->format && fmt != b->view_alt) {  // (not in its format list: create_image)
+            static int nlog;
+            if (nlog++ < 8) LOG("[vk] a view of render target %ux%u (nvn %#x) as nvn %#x: in its own format\n", t->width, t->height,
+                                t->format, v->format);
+            fmt = b->format;
+        }
     }
     uint32_t lv0 = v && (v->setmask & 1) ? v->base_level : 0;
     uint32_t nlv = v && (v->setmask & 1) && v->num_levels ? v->num_levels : b->levels - (lv0 < b->levels ? lv0 : 0);
@@ -1136,6 +1228,9 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
                 const char *e = getenv("LARECOMP_3D_RT");
                 rt3d = e ? atoi(e) : vk_driver_is_qualcomm() ? 0 : 2;
             }
+            static int n3d;  // (which games draw so: TOTK's first frames on Qualcomm's driver lost the device too)
+            if (n3d++ < 4) LOG("[vk] 3D target %ux%ux%u level %u: %s\n", t->width, t->height, b->depth, lv0,
+                               rt3d == 0 || (rt3d == 1 && lv0 > 0) ? "skipped (LARECOMP_3D_RT)" : "a slice as 2D");
             if (rt3d == 0 || (rt3d == 1 && lv0 > 0)) return VK_NULL_HANDLE;
             uint32_t d = b->depth >> lv0, z = v && (v->setmask & 2) ? v->min_layer : 0;
             if (!d) d = 1;

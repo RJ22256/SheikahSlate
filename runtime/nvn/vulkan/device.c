@@ -177,6 +177,7 @@ static bool compat_group(VkExtensionProperties *ep, uint32_t ne, uint32_t api, i
 }
 
 static bool env_on(const char *name) { const char *v = getenv(name); return v && atoi(v); }
+bool vk_driver_is_turnip(void);  // (defined below: the gpu-heap automatic looks at the driver before that)
 
 // ---- synchronization2 without it (Mali's older drivers): Vulkan 1.0's barriers, submissions and timestamps. The
 // stage / access bits below 32 are 1.0's own; the split-up ones above map to the 1.0 bit they came from. (From LAS
@@ -514,12 +515,24 @@ static void create_device(void) {
     // reported to LASRecomp-Android-Plus; LAS Recomp for Android 4a8749f turned it off on every GPU). Here only on
     // Xclipse: without it BOTW's heap goes through CPU copies (~4 GB every 2 s), and Mali drivers may take it.
     // LARECOMP_VK_HOST_IMPORT=0 / 1: off / on on any GPU.
+    // Mali (ARM, vendor 0x13B5) whose driver offers the import (r54p1 and later): with it and the global-memory arena
+    // (exec.c gres_init) the game's text went missing from every menu and the title art had grey blocks (Mali-G2-Ultra
+    // r56p0, issue #44; Mali-G1-Ultra r54p1, #121 - both reporters' own tests, all there with both off), and the 3 GB
+    // heap imported at once got the app killed for memory and froze Android (Mali-G610 r56p0, #118). Both off on those
+    // unless LARECOMP_VK_HOST_IMPORT / LARECOMP_VK_NO_GRES say otherwise; the Mali drivers without the extension (r49p1
+    // and older) already go through CPU copies, and keep the arena. Driver compatibility's "Game memory on the GPU" =
+    // Off (gpu_heap 0) also leaves the import off on any driver but Turnip (whose Off is the placed heap's alone).
+    bool mali = g_vk.props.vendorID == 0x13B5;
     if (g_vk.host_import) {
         const char *e = getenv("LARECOMP_VK_HOST_IMPORT");
         bool xclipse = strstr(g_vk.props.deviceName, "Xclipse") || g_vk.props.vendorID == 0x144D;  // (Samsung)
-        if (e ? !atoi(e) : xclipse) {
+        bool by_setting = g_settings.gpu_heap == 0 && !vk_driver_is_turnip();
+        if (mali && !e) setenv("LARECOMP_VK_NO_GRES", "1", 0);
+        if (e ? !atoi(e) : xclipse || mali || by_setting) {
             g_vk.host_import = false;
-            LOG("[vk] guest heap import left off (%s)\n", e ? "LARECOMP_VK_HOST_IMPORT=0" : "Xclipse: its first submission fails");
+            LOG("[vk] guest heap import left off (%s)\n", e ? "LARECOMP_VK_HOST_IMPORT=0" :
+                xclipse ? "Xclipse: its first submission fails" :
+                mali ? "Mali: the game's text went missing, and memory ran out" : "settings: game memory on the GPU off");
         }
     }
 #endif
@@ -847,10 +860,11 @@ static void create_device(void) {
                                   .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = g_vk.qfam};
     VK_CHECK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_vk.pool));
 
-    // pipeline cache: cache/vk_pipelines.bin (written by vk_pipeline_cache_save)
+    // pipeline cache: cache/vk_pipelines.bin (written by vk_pipeline_cache_save; LARECOMP_VK_NO_PIPELINE_CACHE=1: neither
+    // read nor written - every pipeline compiled cold, for measuring)
     size_t sz = 0;
     void *data = NULL;
-    FILE *fp = fopen("cache/vk_pipelines.bin", "rb");
+    FILE *fp = getenv("LARECOMP_VK_NO_PIPELINE_CACHE") ? NULL : fopen("cache/vk_pipelines.bin", "rb");
     if (fp) {
 #ifdef __ANDROID__  // (a size cap and the public header checked: a file from another driver or a cut-off write)
         long length = -1;
@@ -885,6 +899,7 @@ static void create_device(void) {
 }
 
 void vk_pipeline_cache_save(void) {
+    if (getenv("LARECOMP_VK_NO_PIPELINE_CACHE")) return;
     size_t sz = 0;
     if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) != VK_SUCCESS || !sz) return;
     void *data = malloc(sz);
@@ -1001,11 +1016,30 @@ void vk_display_stats(char *out, size_t size) {
     out[0] = 0;
     if (g_vk.display_timing) dp_stats_take(&g_dp, out, (int)size, g_dp_aiming);
 }
+
+static bool surface_lost;  // (android_surface_ready makes the surface and swapchain again at the next frame)
+
+// The surface went away under a swapchain being made (back from the background with the new window at the old one's
+// address, so it looked unchanged: issue #108's FATAL): no swapchain now; the next frame makes the surface again.
+static void swapchain_surface_lost(VkSwapchainKHR old) {
+    LOG("[vk] window surface lost while making the swapchain: made again at the next frame\n");
+    for (uint32_t i = 0; i < g_vk.sc_count; i++) vk_rp_forget_view(g_vk.sc_views[i]), vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    g_vk.sc_count = 0;
+    if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
+    g_vk.swapchain = VK_NULL_HANDLE;
+    surface_lost = true;
+}
 #endif
 
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
+#ifdef __ANDROID__
+    VkResult cr = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps);
+    if (cr == VK_ERROR_SURFACE_LOST_KHR) { swapchain_surface_lost(g_vk.swapchain); return; }
+    VK_CHECK(cr);
+#else
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
+#endif
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
 #ifdef __ANDROID__
@@ -1069,7 +1103,13 @@ static void create_swapchain(void) {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = transform,
         .compositeAlpha = alpha, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
+#ifdef __ANDROID__
+    VkResult sr = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain);
+    if (sr == VK_ERROR_SURFACE_LOST_KHR || sr == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) { swapchain_surface_lost(old); return; }
+    VK_CHECK(sr);
+#else
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
+#endif
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vk_rp_forget_view(g_vk.sc_views[i]), vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
@@ -1104,7 +1144,6 @@ static void recreate_swapchain(void) {
 // when it comes back): the Vulkan surface and swapchain are made again for the new window. Frames in between are
 // skipped. Before this, everything after a trip to the background stayed black (every acquire: SURFACE_LOST).
 static struct ANativeWindow *surface_aw;  // the window g_vk.surface was made for
-static bool surface_lost;
 
 static struct ANativeWindow *android_window(void) {
     return SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
@@ -1189,10 +1228,21 @@ bool vk_frame_begin(const float clear[4]) {
     if (timing) vk_timing_trace_wait(VK_TIMING_SLOT, SDL_GetTicksNS() - trace_start);
     trace_start = timing ? SDL_GetTicksNS() : 0;
 #endif
-    VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    // At most a second for a window image: with no limit a compositor that kept every buffer held the game's frame there
+    // until the app went to the background (the surface's loss ends the wait) - TOTK froze until another window came
+    // in front and back (2026-10-25). Then the swapchain is made again, as that trip does; still none: no frame now.
+    const uint64_t acquire_ns = 1000000000ull;
+    VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, acquire_ns, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    if (r == VK_TIMEOUT || r == VK_NOT_READY) {
+        static int nstuck;
+        if (nstuck++ < 20) LOG("[vk] no window image within 1 s (%d): the swapchain made again\n", r);
+        r = VK_ERROR_OUT_OF_DATE_KHR;
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
-        r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        if (!g_vk.swapchain) return false;
+        r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, acquire_ns, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        if (r == VK_TIMEOUT || r == VK_NOT_READY) { LOG("[vk] still no window image: frame skipped\n"); return false; }
     }
 #ifdef __ANDROID__
     if (timing) vk_timing_trace_wait(VK_TIMING_ACQUIRE, SDL_GetTicksNS() - trace_start);
@@ -1288,7 +1338,6 @@ void vk_frame_end(const char *shot_path) {
     if (shot_path) {
         vk_wait_seq(seq);
         uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
-        extern void vk_readback_ready(uint64_t size);  // (exec.c: the CPU's cache, on a non-coherent type)
         vk_readback_ready((uint64_t)w * h * 4);
         uint8_t *px = shot.ptr;
         bool bgr = g_vk.sc_format == VK_FORMAT_B8G8R8A8_UNORM || g_vk.sc_format == VK_FORMAT_B8G8R8A8_SRGB;
@@ -1328,7 +1377,15 @@ bool vk_async_on(void);
 bool vk_async_is_render_thread(void);
 void vk_async_present(NvnTexture *t);
 void vk_async_drain(void);
-uint64_t renderer_present_count(void) { return vk_async_on() && !vk_async_is_render_thread() ? g_game_frames : total_frames; }
+// (asked many times a draw, mostly by the render thread: its test first, from async.c's variables - the calls to
+// vk_async_on and vk_async_is_render_thread were ~4% of the render thread, simpleperf 2026-10-31; a thread-local
+// costs a dynamic TLS resolve per read in this dlopened library)
+extern pthread_t g_vk_render_thread;
+extern bool g_vk_render_started;
+uint64_t renderer_present_count(void) {
+    if (g_vk_render_started && pthread_equal(pthread_self(), g_vk_render_thread)) return total_frames;
+    return vk_async_on() ? g_game_frames : total_frames;
+}
 #else
 uint64_t renderer_present_count(void) { return total_frames; }
 #endif
@@ -1400,8 +1457,9 @@ void backend_present(NvnTexture *t) {
         extern void widescreen_set_factor(float f);
         extern bool widescreen_allowed(void);
         // render scale + placement in the window: runtime/nvn/output_scale.c (Video tab "Internal resolution");
-        // no GPU timer here (-1): dynamic resolution goes by the frame time
+        // Dynamic goes by the frame time and, on Android, the GPU's busy time per frame (exec.c; elsewhere -1)
         OutScale os;
+        extern double vk_frame_gpu_ms(void);
         extern void widescreen_set_shape(float f);  // (the window's: the game's cameras widen from the start)
         widescreen_set_shape((float)((dw / dh) / (16.0 / 9.0)));
         {
@@ -1410,7 +1468,7 @@ void backend_present(NvnTexture *t) {
                 LOG("[widescreen] frame %llu: window %.0f x %.0f\n", (unsigned long long)total_frames, dw, dh);
             last_dw = dw, last_dh = dh;
         }
-        output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, -1, &os);
+        output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, vk_frame_gpu_ms(), &os);
 #ifdef __ANDROID__
         static int matrix_trace = -1;
         static uint64_t matrix_last;
@@ -1437,7 +1495,10 @@ void backend_present(NvnTexture *t) {
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
+        extern void vk_gp_note(VkCommandBuffer cb, const char *what);  // (LARECOMP_GPUPROF_AT: the present's own rows)
+        vk_gp_note(cb, "present: the image into the window");
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
+        vk_gp_note(cb, "present: menus and overlay");
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("LARECOMP_MENU_AT") ? atol(getenv("LARECOMP_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
@@ -1475,6 +1536,8 @@ void backend_present(NvnTexture *t) {
 #endif
     extern void vk_level_change_check(void);
     vk_level_change_check();
+    extern void vk_dump_watch_frame(void);  // (exec.c: LARECOMP_WATCH_TEXADDR's texture on request)
+    vk_dump_watch_frame();
     static long shot_every = -1;
     if (shot_every < 0) { const char *e = getenv("LARECOMP_SCREENSHOT_EVERY"); shot_every = e ? atol(e) : 0; }
     extern bool g_debug_frame;
@@ -1485,6 +1548,10 @@ void backend_present(NvnTexture *t) {
     // LARECOMP_DEBUG_FRAMES=<n> (with LARECOMP_DEBUG_FRAME / F9): dump n consecutive frames (build/pass_<frame>_NNN.png)
     static long debug_n = -1;
     if (debug_n < 0) { const char *e = getenv("LARECOMP_DEBUG_FRAMES"); debug_n = e && atol(e) > 1 ? atol(e) : 1; }
+    {   // (the debug frame that just ended: its LARECOMP_DEBUG_PICK points, exec.c)
+        extern void vk_pick_report(void);
+        if (g_debug_frame) vk_pick_report();
+    }
     g_debug_frame = debug_at && total_frames >= (uint64_t)debug_at && total_frames < (uint64_t)debug_at + (uint64_t)debug_n;
     {   // LARECOMP_GPUPROF_AT=<frame>[,<frame>...]: GPU time per pass of those frames ("[gpuprof]" in the log); also
         // the menu's Capture a GPU profile (vk_gpuprof_request: three frames, a few seconds on)
@@ -1765,9 +1832,11 @@ void vk_shaders_init(void);
 static void quick_exit_handler(void) {
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
-    if (trace) LOG("[vk] exit: waiting for the GPU\n");
     if (g_vk.dev) {
+#ifndef __ANDROID__
+        if (trace) LOG("[vk] exit: waiting for the GPU\n");
         vkDeviceWaitIdle(g_vk.dev);
+#endif
         if (trace) LOG("[vk] exit: saving the pipeline cache\n");
         vk_pipeline_cache_save();
     }
@@ -1905,6 +1974,15 @@ bool vk_adreno_8xx(const char *name) {
 }
 // A Turnip path's setting (-1 Automatic, 1 on, 0 off) for this GPU
 bool vk_turnip_path_on(int setting) { return setting < 0 ? vk_adreno_8xx(g_vk.props.deviceName) : setting != 0; }
+// gpu_heap's: Automatic is on wherever Turnip can place the heap. Off on a Turnip Adreno 7xx (an Adreno 732, which
+// Turnip names "Adreno (TM) 735": PR #103), the game's text glyphs (a buffer ~2.7 GB into the 3 GB heap, past Turnip's
+// 128 MB storage range) read as zeros - every menu, dialogue and item name blank. Only the heap: 0.2.5 widened
+// vk_turnip_path_on itself, and with it the in-place target reads it also gates, checked on the Adreno 830 only - the
+// likely cause of the terrain striped on an Adreno 750 (issue #129: BOTW's terrain decals read the targets they write).
+bool vk_turnip_heap_on(int setting) {
+    if (setting >= 0 || vk_adreno_8xx(g_vk.props.deviceName)) return vk_turnip_path_on(setting);
+    return g_vk.map_placed && vk_driver_is_turnip();
+}
 static bool g_lrz_at_start = true;
 bool vk_lrz_at_start(void) { return g_lrz_at_start; }  // (the start screen: a change needs a restart)
 const char *vk_gpu_name(void) { return g_vk.props.deviceName; }
@@ -1920,7 +1998,6 @@ void vk_gpuprof_request(int delay) {
 
 void ui_window_init(void) {
     if (window) return;
-    atexit(quick_exit_handler);
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
 #ifdef __ANDROID__
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");  // (the back button opens the menu: ui/touch_controls.mm)
@@ -2020,6 +2097,7 @@ void ui_window_init(void) {
     create_swapchain();
     vk_exec_init();
     vk_shaders_init();
+    atexit(quick_exit_handler);
 }
 
 SDL_Window *ui_window(void) { return window; }
@@ -2131,6 +2209,7 @@ int ui_run(void) {
 #endif
             if (e.type == SDL_EVENT_QUIT) {
                 LOG("window closed\n");
+                quick_exit_handler();
                 exit(0);
             }
             extern bool input_user_blocked(const SDL_Event *e);
@@ -2151,7 +2230,7 @@ int ui_run(void) {
             static uint64_t last;
             static size_t saved;
             uint64_t now = SDL_GetTicks();
-            if (g_vk.dev && now - last > 30000) {
+            if (g_vk.dev && now - last > 30000 && !getenv("LARECOMP_VK_NO_PIPELINE_CACHE")) {
                 last = now;
                 size_t sz = 0;
                 if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) == VK_SUCCESS && sz > saved + 65536) {
