@@ -14,5 +14,5 @@
     <string name="driver_error_intro">Графический драйвер не смог запустить игру. Обычно помогает драйвер Turnip для вашего GPU (.zip): нажмите «Установить драйвер».\n\nПодробности:</string>
     <string name="build_channel">Сборка кода игры</string>
     <string name="build_title">Собирается код игры</string>
-    <string name="build_text">Sheikah Slate продолжает сборку с выключенным экраном. Держите планшет на зарядке.</string>
+    <string name="build_text">WSword продолжает сборку с выключенным экраном. Держите планшет на зарядке.</string>
 </resources>

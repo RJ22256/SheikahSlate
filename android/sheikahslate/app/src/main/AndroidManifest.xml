@@ -26,7 +26,7 @@
          for games. Without it the tablet turned upright shows the game in portrait. (It is also the category Android's
          game features read; One UI's Game Launcher may need the app added by hand when it isn't from a store.) -->
     <application
-        android:label="Sheikah Slate"
+        android:label="WSword"
         android:icon="@mipmap/ic_launcher"
         android:appCategory="game"
         android:isGame="true"
@@ -70,7 +70,7 @@
             android:name=".SheikahSlateActivity"
             android:targetActivity=".GameActivity"
             android:icon="@mipmap/ic_launcher"
-            android:label="Sheikah Slate"
+            android:label="WSword"
             android:enabled="true"
             android:exported="true">
             <intent-filter>
@@ -84,7 +84,7 @@
             android:name=".IconSlate"
             android:targetActivity=".GameActivity"
             android:icon="@mipmap/ic_launcher_slate"
-            android:label="Sheikah Slate"
+            android:label="WSword"
             android:enabled="false"
             android:exported="true">
             <intent-filter>
@@ -98,7 +98,7 @@
             android:name=".IconMidnight"
             android:targetActivity=".GameActivity"
             android:icon="@mipmap/ic_launcher_midnight"
-            android:label="Sheikah Slate"
+            android:label="WSword"
             android:enabled="false"
             android:exported="true">
             <intent-filter>
@@ -112,7 +112,7 @@
             android:name=".IconDawn"
             android:targetActivity=".GameActivity"
             android:icon="@mipmap/ic_launcher_dawn"
-            android:label="Sheikah Slate"
+            android:label="WSword"
             android:enabled="false"
             android:exported="true">
             <intent-filter>
@@ -126,7 +126,7 @@
             android:name=".IconAncient"
             android:targetActivity=".GameActivity"
             android:icon="@mipmap/ic_launcher_ancient"
-            android:label="Sheikah Slate"
+            android:label="WSword"
             android:enabled="false"
             android:exported="true">
             <intent-filter>
@@ -140,7 +140,7 @@
             android:name=".IconForest"
             android:targetActivity=".GameActivity"
             android:icon="@mipmap/ic_launcher_forest"
-            android:label="Sheikah Slate"
+            android:label="WSword"
             android:enabled="false"
             android:exported="true">
             <intent-filter>

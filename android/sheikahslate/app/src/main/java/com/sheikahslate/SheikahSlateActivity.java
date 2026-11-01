@@ -309,7 +309,7 @@ public class SheikahSlateActivity extends SDLActivity {
                     self.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
                 }
             });
-            nativeImportDetail("Allow Sheikah Slate to access all files (the page Android just opened), then choose the folder again");
+            nativeImportDetail("Allow WSword to access all files (the page Android just opened), then choose the folder again");
             nativeImportDone(5);
             return;
         }
@@ -1565,7 +1565,7 @@ public class SheikahSlateActivity extends SDLActivity {
         if (android.os.Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
             self.runOnUiThread(() -> self.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                     Uri.parse("package:" + self.getPackageName()))));
-            nativeModImportDone("0|Allow Sheikah Slate to access all files (the page Android just opened), then import the mod again.");
+            nativeModImportDone("0|Allow WSword to access all files (the page Android just opened), then import the mod again.");
             return;
         }
         importMod(dir);

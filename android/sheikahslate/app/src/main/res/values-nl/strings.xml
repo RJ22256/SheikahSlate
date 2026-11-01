@@ -14,5 +14,5 @@
     <string name="driver_error_intro">De grafische driver kon het spel niet uitvoeren. Een Turnip-driver voor je GPU (.zip) lost het meestal op: tik op Een driver installeren.\n\nDetails:</string>
     <string name="build_channel">Bouwen van de spelcode</string>
     <string name="build_title">De spelcode wordt gebouwd</string>
-    <string name="build_text">Sheikah Slate gaat door met het scherm uit. Laat de tablet opladen.</string>
+    <string name="build_text">WSword gaat door met het scherm uit. Laat de tablet opladen.</string>
 </resources>

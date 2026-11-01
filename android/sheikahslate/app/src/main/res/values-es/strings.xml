@@ -14,5 +14,5 @@
     <string name="driver_error_intro">El driver gráfico no pudo ejecutar el juego. Un driver Turnip para tu GPU (.zip) suele solucionarlo: toca Instalar un driver.\n\nDetalles:</string>
     <string name="build_channel">Compilación del código del juego</string>
     <string name="build_title">Compilando el código del juego</string>
-    <string name="build_text">Sheikah Slate sigue compilando con la pantalla apagada. Deja la tableta cargando.</string>
+    <string name="build_text">WSword sigue compilando con la pantalla apagada. Deja la tableta cargando.</string>
 </resources>

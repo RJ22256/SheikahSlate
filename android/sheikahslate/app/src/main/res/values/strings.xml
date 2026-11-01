@@ -14,5 +14,5 @@
     <string name="driver_error_intro">The graphics driver couldn\'t run the game. On the Galaxy Tab S10 Ultra (a Mali GPU) only the system driver works: with a custom driver installed, tap Use the system driver; otherwise install the tablet\'s latest software update. On Adreno GPUs, a Turnip driver for your GPU (.zip) usually solves it: tap Install a driver.\n\nDetails:</string>
     <string name="build_channel">Game code build</string>
     <string name="build_title">Building the game code</string>
-    <string name="build_text">Sheikah Slate keeps building with the screen off. Keep the tablet charging.</string>
+    <string name="build_text">WSword keeps building with the screen off. Keep the tablet charging.</string>
 </resources>

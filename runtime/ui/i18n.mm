@@ -113,7 +113,7 @@ std::string ui_upper(const char *s) {
     return t;
 }
 
-void i18n_merge_fonts(ImFontAtlas *atlas, float size_px) {
+void i18n_merge_fonts(ImFontAtlas *atlas, float size_px, float rel) {
 #ifdef __ANDROID__
     // The shipped Baloo 2 has Latin only: Russian, Japanese, Korean and Chinese come from the phone's own fonts, merged
     // into the font just added, with the glyphs the menu language's table uses (a few hundred, not whole scripts: the
@@ -177,8 +177,8 @@ void i18n_merge_fonts(ImFontAtlas *atlas, float size_px) {
         const char *const path = chosen_path;
         cfg.OversampleH = 1;  // (big CJK glyph sets: half the atlas of the default 2)
         cfg.PixelSnapH = true;
-        // (Baloo 2 runs small for its size: the system fonts at ~60% of it match its letters' height)
-        atlas->AddFontFromFileTTF(path, size_px * 0.6f, &cfg, ranges.Data);
+        // (Baloo 2 runs small for its size: the system fonts at ~60% of it match its letters' height; Inter ~90%)
+        atlas->AddFontFromFileTTF(path, size_px * rel, &cfg, ranges.Data);
         static bool logged;
         if (!logged) logged = true, fprintf(stderr, "[ui] menus in %s: glyphs from %s\n", code, path);
         return;

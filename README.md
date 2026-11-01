@@ -35,6 +35,7 @@ It installs as its own app (`com.sheikahslate.tab`), so it can sit next to upstr
 | Graphics settings | Made on an Adreno phone | Video > Mode, from the tablet's own logs: **Battery** (30 fps at 60 Hz, lowest resolution held), **Performance** (the default: 30 fps paced to the 120 Hz screen, 900p scene steadied, FSR 1 to 1080p), **Turbo** (40 fps, 3 refreshes of 120 Hz a frame), **Turbo 60** (60 fps, the resolution lowered as far as needed) |
 | Frame rate 40 / 60 | (0.2.8-slate.9/10: the frame pacer stayed off after the start screen, so every game ran at 30) | The frame pacer on; the game's resolution follows the GPU's real time, down only as far as 40 or 60 needs |
 | Start screen | Title and menu over the artwork | The Glass Slate screen: a glass panel (PLAY, Saves, Mods, Settings, Quit), live chips, a card with the last save and the four modes a tap away |
+| Settings | Gold Sheikah frame, tabs along the top | The Glass Slate look: a rail of pages down the left, rows as glass tiles, the description in a card |
 | Look | The bundled background and icon | Settings > Look: your own start screen background, and the app's real icon - the player's picture by default, five more to choose |
 | Frame pacing | A frame goes up when the GPU finishes it: 3, 4 or 5 refreshes at 30 fps | Video > Even frame pacing: each frame aimed at a refresh of its own, 4 apart (VK_GOOGLE_display_timing) |
 | Decals on Mali | The pass ends before each decal that reads the G-buffer (a store and reload of every target on a tiler) | Read from the GPU's tile memory (VK_EXT_shader_tile_image): no pass breaks |
@@ -44,7 +45,7 @@ It installs as its own app (`com.sheikahslate.tab`), so it can sit next to upstr
 | Texture streaming | BC textures decoded on one thread | Big levels decoded on 3 worker threads too (same output, tested) |
 | Performance capture | GPU time per pass | Also the CPU per thread with callers, memory by kind, the heaviest shaders, why passes break (Video > Capture a performance profile) |
 | Driver error text | "Install a Turnip driver" (Adreno only) | Says Mali runs the system driver only |
-| Name, icon | BOTWRecompAndroid, Triforce | Sheikah Slate, an original slate-and-mountains icon |
+| Name, icon | BOTWRecompAndroid, Triforce | WSword (0.2.8-slate.14; the project is still Sheikah Slate), the player's own picture as the icon |
 
 Details, reasoning and the files involved: [docs/TAB-S10-ULTRA.md](docs/TAB-S10-ULTRA.md).
 
@@ -54,7 +55,7 @@ Details, reasoning and the files involved: [docs/TAB-S10-ULTRA.md](docs/TAB-S10-
    files in place: Game files > Use them in place).
 2. Open **Sheikah Slate**, go to **Set up game files** and choose the folder with your `exefs` and `romfs`. The app
    recompiles the game on the tablet (a long wait, the first time and after an update that changes the game code -
-   0.2.8-slate.9 was one; 0.2.8-slate.10 to .13 aren't). It keeps building with the screen off.
+   0.2.8-slate.9 was one; 0.2.8-slate.10 to .14 aren't). It keeps building with the screen off.
 3. Saves: start screen > Settings > **Saves** - Import saves (a .zip, one exported here or any holding 0, 1, 2... and
    option.sav), Import from folder (an emulator's save folder), Export saves.
 4. The Tab's Mali GPU runs Samsung's own Vulkan driver; Turnip driver packages are for Adreno GPUs and won't load.

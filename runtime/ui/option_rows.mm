@@ -167,12 +167,10 @@ void ui_sheikah_heading(const char *title, float s) {
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 ts = ImGui::CalcTextSize(t.c_str());
     ts.x *= 0.78f;
-    dl->AddText(ImGui::GetFont(), fs, ImVec2(p.x + 16 * s, p.y), IM_COL32(200, 172, 106, 230), t.c_str());
+    // (WSword's Glass Slate look: light cyan, a thin navy rule after it)
+    dl->AddText(ImGui::GetFont(), fs, ImVec2(p.x + 16 * s, p.y), IM_COL32(143, 217, 230, 255), t.c_str());
     float ly = p.y + fs * 0.55f, lx = p.x + 16 * s + ts.x + 14 * s;
-    if (lx < p.x + w - 20 * s) {
-        dl->AddLine(ImVec2(lx, ly), ImVec2(p.x + w - 12 * s, ly), IM_COL32(186, 157, 97, 90), 1);
-        ui_sheikah_diamond(dl, ImVec2(p.x + w - 12 * s, ly), 3.5f * s, IM_COL32(186, 157, 97, 140), false);
-    }
+    if (lx < p.x + w - 20 * s) dl->AddLine(ImVec2(lx, ly), ImVec2(p.x + w - 12 * s, ly), IM_COL32(28, 53, 80, 255), 1.2f * s);
     ImGui::Dummy(ImVec2(w, fs + 8 * s));
 }
 
@@ -189,7 +187,7 @@ static int row(const char *label, const std::string &value, bool changed, const 
     if (g_indent) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + g_indent * 28 * g_scale);  // (an option of the row above)
     ImVec2 p = ImGui::GetCursorScreenPos();
     float s = g_scale, fs = ImGui::GetFontSize();
-    float w = ImGui::GetContentRegionAvail().x, h = fmaxf(fs * 2.05f, 58 * s);
+    float w = ImGui::GetContentRegionAvail().x, h = fmaxf(fs * 2.6f, 66 * s);
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // (the row's own frame shows the selection)
     bool clicked = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
@@ -256,17 +254,17 @@ static int row(const char *label, const std::string &value, bool changed, const 
     if (g_desc_first.empty() && g_name_first.empty()) g_desc_first = desc ? desc : "", g_name_first = name;
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    const ImU32 cyan = IM_COL32(65, 222, 246, 235), gold = IM_COL32(186, 157, 97, off ? 60 : 110);
-    ImVec2 b(p.x + w, p.y + h - 2 * s);
+    // (WSword's Glass Slate look: the selected row a navy glass tile outlined in cyan, the others parted by a navy rule)
+    const ImU32 cyan = IM_COL32(94, 230, 245, 240), rule = IM_COL32(28, 53, 80, off ? 120 : 255);
+    ImVec2 b(p.x + w, p.y + h - 3 * s);
     if (sel) {
-        dl->AddRectFilled(ImVec2(p.x + 2, p.y + 2 * s), b, IM_COL32(22, 107, 131, off ? 30 : 70), 4 * s);
-        ui_sheikah_frame(dl, ImVec2(p.x + 2, p.y + 2 * s), b, off ? IM_COL32(65, 222, 246, 90) : cyan, 8 * s, 2 * s);
+        dl->AddRectFilled(ImVec2(p.x + 2, p.y + 3 * s), b, off ? IM_COL32(18, 51, 73, 110) : IM_COL32(18, 51, 73, 255), 12 * s);
+        dl->AddRect(ImVec2(p.x + 2, p.y + 3 * s), b, off ? IM_COL32(94, 230, 245, 90) : cyan, 12 * s, 0, 2 * s);
     } else {
-        dl->AddLine(ImVec2(p.x + 10 * s, p.y + h - 1), ImVec2(p.x + w, p.y + h - 1), gold, 1);
-        ui_sheikah_diamond(dl, ImVec2(p.x + 6 * s, p.y + h - 1), 3 * s, gold, false);
+        dl->AddLine(ImVec2(p.x + 10 * s, p.y + h - 1), ImVec2(p.x + w - 4 * s, p.y + h - 1), rule, 1.2f * s);
     }
     float ty = cy - fs * 0.5f;
-    ImU32 label_col = off ? IM_COL32(120, 120, 112, 255) : IM_COL32(240, 235, 218, 255);
+    ImU32 label_col = off ? IM_COL32(110, 125, 140, 255) : IM_COL32(234, 242, 250, 255);
     // the label, cut short with an ellipsis before the value's column (long names, bigger fonts)
     float room = vx0 - (p.x + pad) - pad * 0.5f;
     const char *end = name;
@@ -279,7 +277,7 @@ static int row(const char *label, const std::string &value, bool changed, const 
     dl->AddText(ImVec2(p.x + pad, ty), label_col, name, end);
     if (*end) dl->AddText(ImVec2(p.x + pad + ImGui::CalcTextSize(name, end).x, ty), label_col, "...");
     if (!shown.empty()) {
-        ImU32 vcol = off ? IM_COL32(120, 120, 112, 255) : changed ? IM_COL32(255, 252, 240, 255) : IM_COL32(214, 210, 196, 255);
+        ImU32 vcol = off ? IM_COL32(110, 125, 140, 255) : changed ? IM_COL32(143, 217, 230, 255) : IM_COL32(207, 227, 241, 255);
         float vw = ImGui::CalcTextSize(shown.c_str()).x;
         float vy = bar >= 0 && sel ? ty - fs * 0.18f : ty;
         dl->AddText(ImVec2((vx0 + vx1 - vw) * 0.5f, vy), vcol, shown.c_str());
@@ -289,15 +287,15 @@ static int row(const char *label, const std::string &value, bool changed, const 
         }
         if (bar >= 0 && sel && bx1 > bx0) {  // (a slider: its track under the value, filled to where it is)
             float by = cy + fs * 0.52f, f = g_drag_id == id ? g_drag : bar;
-            dl->AddLine(ImVec2(bx0, by), ImVec2(bx1, by), IM_COL32(186, 157, 97, 120), 2 * s);
+            dl->AddLine(ImVec2(bx0, by), ImVec2(bx1, by), IM_COL32(35, 65, 95, 255), 2 * s);
             dl->AddLine(ImVec2(bx0, by), ImVec2(bx0 + (bx1 - bx0) * f, by), cyan, 3 * s);
             dl->AddCircleFilled(ImVec2(bx0 + (bx1 - bx0) * f, by), 5 * s, cyan, 12);
         }
     }
-    if (!sel || !arrows) chevron(dl, p.x + w - pad * 0.9f, cy, fs * 0.22f, off ? IM_COL32(65, 222, 246, 70) : cyan);
+    if (!sel || !arrows) chevron(dl, p.x + w - pad * 0.9f, cy, fs * 0.22f, off ? IM_COL32(94, 230, 245, 70) : cyan);
     if (!g_two_panes && sel && desc && *desc) {  // (one pane: the description under the selected row)
         ImGui::PushTextWrapPos(0);
-        ImGui::TextColored(ImVec4(0.86f, 0.84f, 0.76f, 0.9f), "%s", desc);
+        ImGui::TextColored(ImVec4(0.73f, 0.80f, 0.86f, 1), "%s", desc);
         ImGui::PopTextWrapPos();
     }
     ImGui::PopID();
@@ -425,35 +423,29 @@ void opt_end(void) {
     float s = g_scale;
     ImGui::SameLine(0, 0);
     ImVec2 p = ImGui::GetCursorScreenPos(), avail = ImGui::GetContentRegionAvail();
-    float gap = 34 * s;
+    float gap = 26 * s;
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    const ImU32 gold = IM_COL32(186, 157, 97, 150);
-    float lx = p.x + gap * 0.5f;  // (the line between the panes, a diamond at each end)
-    dl->AddLine(ImVec2(lx, p.y + 8 * s), ImVec2(lx, p.y + avail.y - 8 * s), gold, 1.0f);
-    ui_sheikah_diamond(dl, ImVec2(lx, p.y + 6 * s), 4 * s, gold, false);
-    ui_sheikah_diamond(dl, ImVec2(lx, p.y + avail.y - 6 * s), 4 * s, gold, false);
+    // (WSword's Glass Slate look: the description in a glass card beside the rows)
+    ImVec2 ca(p.x + gap, p.y + 4 * s), cb(p.x + avail.x, p.y + avail.y - 4 * s);
+    dl->AddRectFilled(ca, cb, IM_COL32(10, 22, 40, 235), 18 * s);
+    dl->AddRect(ca, cb, IM_COL32(35, 65, 95, 255), 18 * s, 0, 1.3f * s);
     ImGui::SetCursorScreenPos(ImVec2(p.x + gap, p.y));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18 * s, 10 * s));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(26 * s, 22 * s));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
     ImGui::BeginChild("##desc", ImVec2(0, avail.y), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoNav);
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
-    ImVec2 cp = ImGui::GetWindowPos(), cs = ImGui::GetWindowSize();
-    // the watermark first: the Sheikah eye, faint, low in the pane
-    ui_sheikah_eye(dl = ImGui::GetWindowDrawList(), ImVec2(cp.x + cs.x * 0.5f, cp.y + cs.y * 0.7f), fminf(cs.x * 0.17f, 70 * s),
-                   IM_COL32(45, 150, 180, 45), 2 * s);
-    std::string name = ui_upper(g_name_shown.c_str());
+    dl = ImGui::GetWindowDrawList();
     ImGui::PushTextWrapPos(0);
-    ImGui::TextColored(ImVec4(0.90f, 0.85f, 0.70f, 1), "%s", name.c_str());
+    ImGui::TextColored(ImVec4(0.918f, 0.949f, 0.98f, 1), "%s", g_name_shown.c_str());
     ImGui::PopTextWrapPos();
     {
         ImVec2 q = ImGui::GetCursorScreenPos();
-        float w = ImGui::GetContentRegionAvail().x, y = q.y + 6 * s;
-        dl->AddLine(ImVec2(q.x, y), ImVec2(q.x + w, y), gold, 1.0f);
-        ui_sheikah_diamond(dl, ImVec2(q.x + w * 0.5f, y), 4 * s, gold, true);
-        ImGui::Dummy(ImVec2(w, 18 * s));
+        float w = ImGui::GetContentRegionAvail().x, y = q.y + 8 * s;
+        dl->AddLine(ImVec2(q.x, y), ImVec2(q.x + w, y), IM_COL32(28, 53, 80, 255), 1.2f * s);
+        ImGui::Dummy(ImVec2(w, 20 * s));
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.86f, 0.84f, 0.78f, 1));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.73f, 0.80f, 0.86f, 1));
     ImGui::PushTextWrapPos(0);
     ImGui::TextUnformatted(g_desc_shown.c_str());
     ImGui::PopTextWrapPos();

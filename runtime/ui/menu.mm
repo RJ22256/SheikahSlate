@@ -348,29 +348,34 @@ static void style_init(void) {
     c[ImGuiCol_NavCursor] = gold;
     c[ImGuiCol_Separator] = ImVec4(0.30f, 0.36f, 0.30f, 1);
     c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = c[ImGuiCol_WindowBg];
-#ifdef __ANDROID__  // (the Sheikah look, design/sheikah-settings-v1: charcoal blue, cyan where something is picked)
-    ImVec4 teal(0.05f, 0.11f, 0.13f, 0.95f), teal_hot(0.08f, 0.25f, 0.30f, 1), teal_on(0.10f, 0.36f, 0.42f, 1), cyan(0.25f, 0.87f, 0.96f, 1);
-    c[ImGuiCol_WindowBg] = ImVec4(0.035f, 0.065f, 0.075f, 0.92f);
+#ifdef __ANDROID__  // (WSword's Glass Slate look, as the start screen: deep navy glass, cyan where something is picked)
+    ImVec4 field(0.059f, 0.118f, 0.2f, 1), field_hot(0.078f, 0.157f, 0.259f, 1), field_on(0.071f, 0.2f, 0.286f, 1);
+    ImVec4 cyan(0.369f, 0.902f, 0.961f, 1);
+    c[ImGuiCol_WindowBg] = ImVec4(0.035f, 0.075f, 0.133f, 0.95f);
     c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_PopupBg] = ImVec4(0.035f, 0.065f, 0.075f, 0.98f);
-    c[ImGuiCol_Text] = ImVec4(0.94f, 0.92f, 0.85f, 1);
-    c[ImGuiCol_Border] = ImVec4(0.73f, 0.62f, 0.38f, 0.55f);
-    c[ImGuiCol_FrameBg] = teal;
-    c[ImGuiCol_FrameBgHovered] = teal_hot;
-    c[ImGuiCol_FrameBgActive] = teal_on;
-    c[ImGuiCol_Button] = teal;
-    c[ImGuiCol_ButtonHovered] = teal_hot;
-    c[ImGuiCol_ButtonActive] = teal_on;
-    c[ImGuiCol_Header] = teal_hot;
-    c[ImGuiCol_HeaderHovered] = teal_on;
-    c[ImGuiCol_HeaderActive] = teal_on;
+    c[ImGuiCol_PopupBg] = ImVec4(0.039f, 0.086f, 0.157f, 0.98f);
+    c[ImGuiCol_Text] = ImVec4(0.918f, 0.949f, 0.98f, 1);
+    c[ImGuiCol_TextDisabled] = ImVec4(0.624f, 0.702f, 0.784f, 1);
+    c[ImGuiCol_Border] = ImVec4(0.137f, 0.255f, 0.373f, 1);
+    c[ImGuiCol_FrameBg] = field;
+    c[ImGuiCol_FrameBgHovered] = field_hot;
+    c[ImGuiCol_FrameBgActive] = field_on;
+    c[ImGuiCol_Button] = field;
+    c[ImGuiCol_ButtonHovered] = field_hot;
+    c[ImGuiCol_ButtonActive] = field_on;
+    c[ImGuiCol_Header] = field_hot;
+    c[ImGuiCol_HeaderHovered] = field_on;
+    c[ImGuiCol_HeaderActive] = field_on;
     c[ImGuiCol_CheckMark] = cyan;
-    c[ImGuiCol_SliderGrab] = ImVec4(0.25f, 0.70f, 0.80f, 1);
+    c[ImGuiCol_SliderGrab] = ImVec4(0.30f, 0.70f, 0.80f, 1);
     c[ImGuiCol_SliderGrabActive] = cyan;
     c[ImGuiCol_NavCursor] = cyan;
-    c[ImGuiCol_Separator] = ImVec4(0.73f, 0.62f, 0.38f, 0.45f);
-    c[ImGuiCol_ScrollbarGrab] = ImVec4(0.30f, 0.33f, 0.32f, 0.8f);
-    s.FrameRounding = 4; s.ChildRounding = 4; s.WindowRounding = 6;
+    c[ImGuiCol_Separator] = ImVec4(0.11f, 0.208f, 0.314f, 1);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarGrab] = ImVec4(0.18f, 0.30f, 0.42f, 0.9f);
+    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.24f, 0.40f, 0.54f, 1);
+    c[ImGuiCol_ScrollbarGrabActive] = cyan;
+    s.FrameRounding = 10; s.ChildRounding = 12; s.WindowRounding = 22; s.PopupRounding = 18; s.ScrollbarRounding = 8;
     s.FrameBorderSize = 1;
 #endif
 }
@@ -402,8 +407,21 @@ static void init(void) {
     // the menu window itself: Baloo 2 SemiBold, as on the start screen (shipped, OFL), at its Settings window's sizes; the
     // FPS counter, overlays and on-screen keyboard keep the fonts above
     char baloo[1024];
+#ifdef __ANDROID__
+    {   // (WSword, 0.2.8-slate.14) the Glass Slate look: Inter Medium / Bold, OFL, as the start screen - at Baloo 2's
+        // letter height there (x0.72: Inter's letters are ~1.5x Baloo 2's at one size, a little larger)
+        char im[1024], ib[1024];
+        if (!getenv("LARECOMP_MENU_FONT") && rt_resource("Inter-Medium.otf", "third_party/fonts/Inter/Inter-Medium.otf", im, sizeof im) &&
+            rt_resource("Inter-Bold.otf", "third_party/fonts/Inter/Inter-Bold.otf", ib, sizeof ib)) {
+            g_menu_font = io.Fonts->AddFontFromFileTTF(im, 39 * 0.72f, &cfg);
+            i18n_merge_fonts(io.Fonts, 39 * 0.72f, 0.9f);
+            g_menu_font_big = io.Fonts->AddFontFromFileTTF(ib, 72 * 0.72f, &cfg);
+            i18n_merge_fonts(io.Fonts, 72 * 0.72f, 0.9f);
+        }
+    }
+#endif
     if (const char *f = getenv("LARECOMP_MENU_FONT")) strlcpy(baloo, f, sizeof baloo);  // (test) another weight / face
-    if (getenv("LARECOMP_MENU_FONT") || rt_resource("Baloo2-SemiBold.ttf", "third_party/fonts/Baloo2/Baloo2-SemiBold.ttf", baloo, sizeof baloo)) {
+    if (!g_menu_font && (getenv("LARECOMP_MENU_FONT") || rt_resource("Baloo2-SemiBold.ttf", "third_party/fonts/Baloo2/Baloo2-SemiBold.ttf", baloo, sizeof baloo))) {
         g_menu_font = io.Fonts->AddFontFromFileTTF(baloo, 39, &cfg);
         i18n_merge_fonts(io.Fonts, 39);  // (the menu language's other letters: ui/i18n.mm)
         g_menu_font_big = io.Fonts->AddFontFromFileTTF(baloo, 72, &cfg);
@@ -784,8 +802,8 @@ static void tab_quit(float scale, bool in_game) {
         ask = 0;
     const char *lost = in_game ? tr("\n\nProgress since your last save is lost.") : "";
     char d1[320], d2[320];
-    snprintf(d1, sizeof d1, tr("Leaves the game and goes back to the Sheikah Slate start screen.%s"), lost);
-    snprintf(d2, sizeof d2, tr("Closes Sheikah Slate.%s"), lost);
+    snprintf(d1, sizeof d1, tr("Leaves the game and goes back to the WSword start screen.%s"), lost);
+    snprintf(d2, sizeof d2, tr("Closes WSword.%s"), lost);
 #ifdef __ANDROID__
     const char *quit_app = "Close app", *quit_app_yes = "Close app";
     const char *quit_start = "Return to start", *quit_start_yes = "Return to start";
@@ -1030,32 +1048,36 @@ static void settings_icon(ImDrawList *dl, int id, ImVec2 c, float r, ImU32 col, 
 // A Sheikah button: dark, a gold frame with cut corners (cyan while pressed or under the cursor), an icon on the left
 // (0: back, a chevron; 1: restore, a circling arrow) and the label
 static bool sheikah_button(const char *label, ImVec2 size, int icon, float scale) {
+    // (WSword's Glass Slate look: a navy glass button, outlined in cyan while focused, hovered or pressed)
     ImGui::PushID(label);
     ImVec2 a = ImGui::GetCursorScreenPos();
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
     bool clicked = ImGui::InvisibleButton("##b", size, ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
-    bool hot = ImGui::IsItemActive() || (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible);
+    bool mouse = ImGui::GetIO().MouseSource != ImGuiMouseSource_TouchScreen;
+    bool hot = ImGui::IsItemActive() || (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible) ||
+               (mouse && ImGui::IsItemHovered());
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 b(a.x + size.x, a.y + size.y);
-    ui_sheikah_frame_filled(dl, a, b, hot ? IM_COL32(22, 80, 98, 230) : IM_COL32(10, 22, 26, 225), 12 * scale);
-    ui_sheikah_frame(dl, a, b, hot ? IM_COL32(65, 222, 246, 240) : IM_COL32(186, 157, 97, 220), 12 * scale, 2.2f * scale);
-    float fs = ImGui::GetFontSize(), cy = a.y + size.y * 0.5f, ix = a.x + 34 * scale, r = fs * 0.32f, t = 2.6f * scale;
-    ImU32 col = IM_COL32(240, 235, 218, 255);
+    float rr = 14 * scale;
+    dl->AddRectFilled(a, b, ImGui::IsItemActive() ? IM_COL32(26, 52, 82, 255) : hot ? IM_COL32(20, 40, 66, 255) : IM_COL32(15, 30, 51, 255), rr);
+    dl->AddRect(a, b, hot ? IM_COL32(94, 230, 245, 255) : IM_COL32(35, 65, 95, 255), rr, 0, (hot ? 2.2f : 1.3f) * scale);
+    float fs = ImGui::GetFontSize(), cy = a.y + size.y * 0.5f, ix = a.x + 30 * scale, r = fs * 0.36f, t = 2.4f * scale;
+    ImU32 col = IM_COL32(234, 242, 250, 255), icol = IM_COL32(94, 230, 245, 255);
     if (icon == 0) {
-        dl->AddLine(ImVec2(ix + r * 0.4f, cy - r), ImVec2(ix - r * 0.4f, cy), col, t);
-        dl->AddLine(ImVec2(ix - r * 0.4f, cy), ImVec2(ix + r * 0.4f, cy + r), col, t);
+        dl->AddLine(ImVec2(ix + r * 0.4f, cy - r), ImVec2(ix - r * 0.4f, cy), icol, t);
+        dl->AddLine(ImVec2(ix - r * 0.4f, cy), ImVec2(ix + r * 0.4f, cy + r), icol, t);
     } else {
         dl->PathArcTo(ImVec2(ix, cy), r, 0.6f, 5.6f, 16);
-        dl->PathStroke(col, 0, t);
+        dl->PathStroke(icol, 0, t);
         ImVec2 e(ix + r * cosf(0.6f), cy + r * sinf(0.6f));
         dl->AddTriangleFilled(ImVec2(e.x + r * 0.45f, e.y - r * 0.05f), ImVec2(e.x - r * 0.35f, e.y - r * 0.35f),
-                              ImVec2(e.x - r * 0.05f, e.y + r * 0.45f), col);
+                              ImVec2(e.x - r * 0.05f, e.y + r * 0.45f), icol);
     }
-    const std::string shown = ui_upper(tr(label));  // (the label in capitals, in the menu's language)
-    float tx = ix + r + 22 * scale, tw = ImGui::CalcTextSize(shown.c_str()).x;
+    const char *shown = tr(label);  // (as written, in the menu's language)
+    float tx = ix + r + 22 * scale, tw = ImGui::CalcTextSize(shown).x;
     tx = fmaxf(tx, a.x + (size.x - tw) * 0.5f + r);
-    dl->AddText(ImVec2(tx, cy - fs * 0.5f), col, shown.c_str());
+    dl->AddText(ImVec2(tx, cy - fs * 0.5f), col, shown);
     ImGui::PopID();
     return clicked;
 }
@@ -1114,60 +1136,40 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             g_tab = tabs[index].id;
         }
     }
-    const ImU32 gold = IM_COL32(186, 157, 97, 210), gold_dim = IM_COL32(186, 157, 97, 110), cyan = IM_COL32(65, 222, 246, 240);
-    const ImU32 ivory = IM_COL32(240, 235, 218, 255);
+    // WSword's Glass Slate look (0.2.8-slate.14; the UI concepts' D, as the start screen): a rail down the left - the
+    // app's name and "Settings", the pages as tiles (an icon and the name; the open one filled and outlined in cyan),
+    // BACK at its foot - and the open page beside it under its own title, RESTORE DEFAULTS at the title's right on Video
+    // and Audio. The page ids stay (LARECOMP_MENU_TAB, the controller's L / R); Up / Down go along the rail, Right into
+    // the page.
+    const ImU32 ink = IM_COL32(234, 242, 250, 255), cyan = IM_COL32(94, 230, 245, 255), line = IM_COL32(46, 110, 134, 255),
+                rule = IM_COL32(28, 53, 80, 255), sel_fill = IM_COL32(18, 51, 73, 255), label = IM_COL32(143, 217, 230, 255);
     ImDrawList *wdl = ImGui::GetWindowDrawList();
     ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
-    ui_sheikah_frame(wdl, ImVec2(wp.x + 3 * scale, wp.y + 3 * scale), ImVec2(wp.x + ws.x - 3 * scale, wp.y + ws.y - 3 * scale), gold,
-                     22 * scale, 2.5f * scale);
-    ui_sheikah_frame(wdl, ImVec2(wp.x + 11 * scale, wp.y + 11 * scale), ImVec2(wp.x + ws.x - 11 * scale, wp.y + ws.y - 11 * scale),
-                     IM_COL32(186, 157, 97, 60), 17 * scale, 1);
-    {   // the eye, the title between two lines with diamonds
-        float cx = wp.x + ws.x * 0.5f, ey = wp.y + 26 * scale;
-        ui_sheikah_eye(wdl, ImVec2(cx, ey), 15 * scale, cyan, 2 * scale);
-        const std::string title_s = ui_upper(tr("Settings"));
-        const char *title = title_s.c_str();
-        auto next_char = [](const char *c) {  // (a whole UTF-8 character: Ç, Õ)
-            const char *n = c + 1;
-            while (((unsigned char)*n & 0xc0) == 0x80) ++n;
-            return n;
-        };
-        ImFont *tf = g_font_big;
-        float tsz = 46 * scale, spacing = 4 * scale, tw = 0;
-        for (const char *c = title; *c; c = next_char(c)) tw += tf->CalcTextSizeA(tsz, FLT_MAX, 0, c, next_char(c)).x + spacing;
-        tw -= spacing;
-        float ty = ey + 24 * scale, x = cx - tw * 0.5f;
-        for (const char *c = title; *c; c = next_char(c)) {
-            wdl->AddText(tf, tsz, ImVec2(x, ty), ivory, c, next_char(c));
-            x += tf->CalcTextSizeA(tsz, FLT_MAX, 0, c, next_char(c)).x + spacing;
-        }
-        float ly = ty + tsz * 0.55f, l0 = tw * 0.5f + 26 * scale, l1 = l0 + 150 * scale;
-        for (int side = -1; side <= 1; side += 2) {
-            wdl->AddLine(ImVec2(cx + side * l0, ly), ImVec2(cx + side * l1, ly), gold_dim, 1.5f * scale);
-            ui_sheikah_diamond(wdl, ImVec2(cx + side * l0, ly), 5 * scale, gold, false);
-        }
-        ImGui::Dummy(ImVec2(0, ty + tsz + 8 * scale - ImGui::GetCursorScreenPos().y));
-    }
-    {   // the tabs: centred when they fit, else scrolled sideways
-        float th = 64 * scale, fs = ImGui::GetFontSize(), tab_w[16], total = 0;
-        char ups[16][48];
-        for (int i = 0; i < ntabs && i < 16; i++) {
-            const char *nm = tabs[i].id == -1 ? "Files" : tabs[i].name;
-            snprintf(ups[i], sizeof ups[i], "%s", ui_upper(tr(nm)).c_str());
-            tab_w[i] = fmaxf(190 * scale, ImGui::CalcTextSize(ups[i]).x + fs * 1.6f + 56 * scale);
-            total += tab_w[i];
-        }
-        float avail = ImGui::GetContentRegionAvail().x;
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
-        ImGui::BeginChild("##tabs", ImVec2(0, th + 14 * scale), ImGuiChildFlags_None,
-                          ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NavFlattened);
-        ImGui::PopStyleColor();
-        ui_touch_scroll();
-        if (total < avail) ImGui::SetCursorPosX((avail - total) * 0.5f);
+    wdl->AddRect(ImVec2(wp.x + 1, wp.y + 1), ImVec2(wp.x + ws.x - 1, wp.y + ws.y - 1), line, 22 * scale, 0, 1.5f * scale);
+    float rail_w = 290 * scale, gap = 28 * scale;
+    ImVec2 avail = ImGui::GetContentRegionAvail(), c0 = ImGui::GetCursorScreenPos();
+    wdl->AddLine(ImVec2(c0.x + rail_w + gap * 0.5f, c0.y), ImVec2(c0.x + rail_w + gap * 0.5f, c0.y + avail.y), rule, 1.2f * scale);
+    const char *open_name = "Settings";
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 8 * scale));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    ImGui::BeginChild("##rail", ImVec2(rail_w, avail.y), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NavFlattened | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleColor();
+    {
         ImDrawList *dl = ImGui::GetWindowDrawList();
-        for (int i = 0; i < ntabs && i < 16; i++) {
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        // (the titles a little under the big font's own size on screen: drawn from its atlas, not enlarged - crisp)
+        float fs = ImGui::GetFontSize(), ts = g_font_big->FontSize * ImGui::GetIO().FontGlobalScale * 0.8f;
+        dl->AddText(ImGui::GetFont(), fs * 0.82f, ImVec2(p.x + 4 * scale, p.y), label, "WSword");
+        dl->AddText(g_font_big, ts, ImVec2(p.x + 2 * scale, p.y + fs * 0.95f), ink, tr("Settings"));
+        ImGui::Dummy(ImVec2(rail_w, fs * 0.95f + ts * 1.2f + 18 * scale));
+        ImGuiIO &rio = ImGui::GetIO();
+        bool mouse = rio.MouseSource != ImGuiMouseSource_TouchScreen;
+        float th = 80 * scale;
+        for (int i = 0; i < ntabs; i++) {
             const Tab &t = tabs[i];
-            if (i) ImGui::SameLine(0, 0);
+            const char *nm = t.id == -1 ? "Files" : t.name;
+            if (g_tab == t.id) open_name = nm;
             ImGui::PushID(t.id);
             ImVec2 a = ImGui::GetCursorScreenPos();
             if (g_focus_tab == t.id || (g_focus_tab == -100 && t.id == g_tab) || (g_focus_tab == -1 && i == 0)) {
@@ -1176,72 +1178,70 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             }
             ImGui::BeginDisabled(!t.on);
             ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-            if (ImGui::InvisibleButton("##tab", ImVec2(tab_w[i], th), ImGuiButtonFlags_EnableNav)) g_tab = t.id;
+            if (ImGui::InvisibleButton("##tab", ImVec2(rail_w, th), ImGuiButtonFlags_EnableNav)) g_tab = t.id;
             ImGui::PopStyleColor();
-            bool hot = ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible;
+            bool hot = (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible) || (mouse && ImGui::IsItemHovered());
             ImGui::EndDisabled();
             bool open = g_tab == t.id;
-            ImU32 col = !t.on ? IM_COL32(120, 120, 112, 255) : open ? cyan : hot ? ivory : IM_COL32(214, 210, 196, 210);
-            float isz = fs * 0.62f, cy = a.y + th * 0.5f;
-            float content = isz * 2 + 18 * scale + ImGui::CalcTextSize(ups[i]).x, x0 = a.x + (tab_w[i] - content) * 0.5f;
-            settings_icon(dl, t.id, ImVec2(x0 + isz, cy), isz, col, scale);
-            dl->AddText(ImVec2(x0 + isz * 2 + 18 * scale, cy - fs * 0.5f), col, ups[i]);
-            if (open)
-                dl->AddLine(ImVec2(a.x + 14 * scale, a.y + th - 2 * scale), ImVec2(a.x + tab_w[i] - 14 * scale, a.y + th - 2 * scale),
-                            cyan, 3.5f * scale);
-            else if (hot)
-                dl->AddLine(ImVec2(a.x + 14 * scale, a.y + th - 2 * scale), ImVec2(a.x + tab_w[i] - 14 * scale, a.y + th - 2 * scale),
-                            gold, 2 * scale);
-            if (i) dl->AddLine(ImVec2(a.x, a.y + th * 0.22f), ImVec2(a.x, a.y + th * 0.78f), gold_dim, 1.2f * scale);
+            ImVec2 b(a.x + rail_w, a.y + th);
+            if (open) {
+                dl->AddRectFilled(a, b, sel_fill, 14 * scale);
+                dl->AddRect(a, b, cyan, 14 * scale, 0, 2.2f * scale);
+            } else if (hot) {
+                dl->AddRectFilled(a, b, IM_COL32(20, 40, 66, 255), 14 * scale);
+                dl->AddRect(a, b, IM_COL32(94, 230, 245, 170), 14 * scale, 0, 1.6f * scale);
+            }
+            if (open && hot) dl->AddRect(ImVec2(a.x - 3 * scale, a.y - 3 * scale), ImVec2(b.x + 3 * scale, b.y + 3 * scale), ink,
+                                         17 * scale, 0, 1.6f * scale);
+            ImU32 col = !t.on ? IM_COL32(110, 125, 140, 255) : open ? ink : IM_COL32(207, 227, 241, 255);
+            ImU32 icol = !t.on ? col : open ? cyan : IM_COL32(159, 216, 230, 255);
+            float isz = 17 * scale, cy = a.y + th * 0.5f;
+            settings_icon(dl, t.id, ImVec2(a.x + 24 * scale + isz, cy), isz, icol, scale);
+            dl->AddText(ImVec2(a.x + 24 * scale + isz * 2 + 20 * scale, cy - fs * 0.5f), col, tr(nm));
             ImGui::PopID();
         }
-        ImGui::EndChild();
-        ImVec2 q = ImGui::GetCursorScreenPos();  // (a line under the tabs, a diamond in the middle)
-        float lw = ImGui::GetContentRegionAvail().x;
-        wdl->AddLine(ImVec2(q.x, q.y), ImVec2(q.x + lw, q.y), gold_dim, 1.2f * scale);
-        ui_sheikah_diamond(wdl, ImVec2(q.x + lw * 0.5f, q.y), 5 * scale, gold, true);
-        ImGui::Dummy(ImVec2(lw, 10 * scale));
-    }
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(18 * scale, 18 * scale));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(14 * scale, 14 * scale));
-    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 22 * scale);
-    float bottom = 84 * scale, height = fmaxf(1, ImGui::GetContentRegionAvail().y - bottom);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
-    ImGui::BeginChild("##touchpage", ImVec2(0, height), ImGuiChildFlags_None);
-    ImGui::PopStyleColor();
-    ui_touch_scroll();
-    ImGui::PushID(g_tab);
-    settings_page(g_tab, scale, in_game, prelaunch);
-    ImGui::PopID();
-    if (const char *t = getenv("LARECOMP_PAGE_SCROLL")) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(t));  // (test)
-    ImGui::EndChild();
-    {   // BACK on the left; RESTORE DEFAULTS on the right on Video and Audio (asks first)
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8 * scale);
-        if (sheikah_button("Back", ImVec2(250 * scale, 62 * scale), 0, scale)) {
+        float bh = 62 * scale, y_back = ImGui::GetWindowHeight() - bh - 2 * scale;  // (BACK at the rail's foot)
+        if (ImGui::GetCursorPosY() < y_back) ImGui::SetCursorPosY(y_back);
+        if (sheikah_button("Back", ImVec2(rail_w, bh), 0, scale)) {
             if (prelaunch) g_touch_settings_back = true;
             else set_open(false);
         }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::SameLine(0, gap);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    ImGui::BeginChild("##content", ImVec2(0, avail.y), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NavFlattened | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleColor();
+    {   // the page's title; RESTORE DEFAULTS at its right on Video and Audio (asks first)
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float ts = g_font_big->FontSize * ImGui::GetIO().FontGlobalScale * 0.8f, hh = fmaxf(62 * scale, ts * 1.25f);
+        float cw = ImGui::GetContentRegionAvail().x;
+        dl->AddText(g_font_big, ts, ImVec2(p.x + 4 * scale, p.y + (hh - ts * 1.1f) * 0.5f), ink, tr(open_name));
         if (g_tab == 0 || g_tab == 1) {
-            float rw = 380 * scale;
-            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - rw);
-            if (sheikah_button("Restore defaults", ImVec2(rw, 62 * scale), 1, scale)) ImGui::OpenPopup("##restore");
+            float rw = 340 * scale;
+            ImGui::SetCursorScreenPos(ImVec2(p.x + cw - rw, p.y));
+            if (sheikah_button("Restore defaults", ImVec2(rw, hh), 1, scale)) ImGui::OpenPopup("##restore");
         }
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + hh + 12 * scale));
+        dl->AddLine(ImVec2(p.x, p.y + hh + 6 * scale), ImVec2(p.x + cw, p.y + hh + 6 * scale), rule, 1.2f * scale);
+        ImGui::Dummy(ImVec2(cw, 6 * scale));
         ImGui::SetNextWindowPos(ImVec2(wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.035f, 0.065f, 0.075f, 0.97f));
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.039f, 0.086f, 0.157f, 0.98f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(34 * scale, 26 * scale));
         if (ImGui::BeginPopupModal("##restore", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize)) {
             ImVec2 pp = ImGui::GetWindowPos(), ps = ImGui::GetWindowSize();
-            ui_sheikah_frame(ImGui::GetWindowDrawList(), ImVec2(pp.x + 2, pp.y + 2), ImVec2(pp.x + ps.x - 2, pp.y + ps.y - 2), gold,
-                             12 * scale, 2 * scale);
+            ImGui::GetWindowDrawList()->AddRect(ImVec2(pp.x + 1, pp.y + 1), ImVec2(pp.x + ps.x - 1, pp.y + ps.y - 1), line,
+                                                18 * scale, 0, 1.5f * scale);
             ImGui::TextUnformatted(tr("Restore the Video and Audio settings to their defaults?"));
             ImGui::TextDisabled("%s", tr("Saves, game files, mods, drivers and the controls stay as they are."));
             ImGui::Dummy(ImVec2(0, 10 * scale));
             if (sheikah_button("Restore", ImVec2(260 * scale, 58 * scale), 1, scale)) {
                 settings_reset_defaults();
                 settings_save();
-#ifdef __ANDROID__
                 android_set_display_refresh(g_settings.display_refresh);  // (the display mode follows at once)
-#endif
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
@@ -1253,7 +1253,20 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
     }
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(18 * scale, 18 * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(14 * scale, 14 * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 18 * scale);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    ImGui::BeginChild("##touchpage", ImVec2(0, fmaxf(1, ImGui::GetContentRegionAvail().y)), ImGuiChildFlags_None);
+    ImGui::PopStyleColor();
+    ui_touch_scroll();
+    ImGui::PushID(g_tab);
+    settings_page(g_tab, scale, in_game, prelaunch);
+    ImGui::PopID();
+    if (const char *t = getenv("LARECOMP_PAGE_SCROLL")) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(t));  // (test)
+    ImGui::EndChild();
     ImGui::PopStyleVar(3);
+    ImGui::EndChild();
     g_tab_request = -2;
     opt_focus_first(false);
     return;
@@ -1460,7 +1473,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
 #ifdef __ANDROID__
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.035f, 0.065f, 0.075f, 0.9f));  // (the Sheikah look: tabs_body)
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.035f, 0.075f, 0.133f, 0.95f));  // (the Glass Slate look: tabs_body)
 #endif
         ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
 #ifdef __ANDROID__

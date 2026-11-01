@@ -427,11 +427,11 @@ void android_set_display_refresh(int how) {
 void plat_fatal_notice(void) {
     fflush(stderr);
     char message[1400];
-    snprintf(message, sizeof message, "Sheikah Slate stopped because of an error.\n\n%s\n\n"
+    snprintf(message, sizeof message, "WSword stopped because of an error.\n\n%s\n\n"
              "Please include a screenshot of this message and your app/driver version in your bug report.\n"
              "More details: logcat, tag SheikahSlate.", fatal_message[0] ? fatal_message : "The runtime encountered a fatal error.");
     if (strcasestr(fatal_message, "vulkan") && driver_error_dialog(message)) return;  // (the driver's own errors)
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Sheikah Slate", message, NULL);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "WSword", message, NULL);
 }
 
 const char *rt_host_fn_name(uint64_t pc, uint64_t *offset);  // runtime/dispatch.c

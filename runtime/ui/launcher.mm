@@ -297,7 +297,7 @@ static void set_failure(int k) {
         "Choose the folder that holds the game files.",
         "Choose the folder that holds the game files.",
         "Make sure there's about 30 GB free and try again.",
-        "Sheikah Slate runs versions 1.0.0, 1.6.0, 1.8.2 and 1.9.0 of the game.",
+        "WSword runs versions 1.0.0, 1.6.0, 1.8.2 and 1.9.0 of the game.",
         "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
         "Try again: the build goes on where it stopped. If it keeps failing, report it on GitHub with the log."};
     if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
@@ -1011,8 +1011,8 @@ extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nat
     const char *n = env->GetStringUTFChars(name, NULL);
     pthread_mutex_lock(&g_lock);
     char m[512];
-    snprintf(m, sizeof m, tr("%s installed. Restart Sheikah Slate to use it."), n ? n : "");
-    g_driver_msg = n && !strcmp(n, "-") ? tr("The system's driver from the next start on. Restart Sheikah Slate to use it.")
+    snprintf(m, sizeof m, tr("%s installed. Restart WSword to use it."), n ? n : "");
+    g_driver_msg = n && !strcmp(n, "-") ? tr("The system's driver from the next start on. Restart WSword to use it.")
                    : n && *n                ? m
                                             : tr("That file isn't a driver.");
     g_driver_restart = n && *n;
@@ -1246,6 +1246,7 @@ static uint64_t load_png_texture(const char *name) {
 static ImFont *g_font_title, *g_font_menu, *g_font_small;
 #ifdef __ANDROID__
 static ImFont *g_glass_bold, *g_glass_text;  // (the Glass Slate start screen: Inter Bold / Medium, OFL - third_party/fonts/Inter)
+static ImFont *g_set_text, *g_set_big;       // (Settings in the Glass Slate look: Inter at Baloo 2's letter height)
 #endif
 enum Page { MAIN, SETTINGS, SETUP };  // SETTINGS: the in-game menu's tabs (runtime/ui/menu.mm)
 static int g_refocus = MAIN;  // back on the main page: select the item of the page we came from (controllers)
@@ -1325,7 +1326,7 @@ static bool menu_tip(float s) {
         static const char *const home[] = {"Home button", "Xbox button", "PlayStation button"};  // (bind_label_family)
         static const char *const pad[] = {"Minus + Plus", "View + Menu", "Create + Options"};
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted(tr("Sheikah Slate has its own menu for settings and controls."));
+        ImGui::TextUnformatted(tr("WSword has its own menu for settings and controls."));
         ImGui::Spacing();
         int fam = bind_label_family() % 3;
 #ifdef __ANDROID__
@@ -1605,7 +1606,7 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
         tx = pad + logo + 14 * u;
     }
     {
-        const char *name = "Sheikah Slate";
+        const char *name = "WSword";
         float tsz = 36 * u, avail = pw - 20 * u - tx, w0 = tw(fb, tsz, name);
         if (w0 > avail) tsz *= avail / w0;
         text(fb, tsz, tx, y + (logo - tsz * 1.21f) * 0.5f, ink, name);
@@ -1854,14 +1855,14 @@ static int g_switching_to;  // (Android: the version the app is about to start a
 static double g_switch_at;
 static void switch_to_version(int v) {
     if (!rt_select_game_version(v)) {
-        set_job("Couldn't switch the game version", true, "Sheikah Slate can't write to its data folder.");
+        set_job("Couldn't switch the game version", true, "WSword can't write to its data folder.");
         return;
     }
 #ifdef __ANDROID__
     g_switching_to = v;
     g_switch_at = ImGui::GetTime() + 0.6;
 #else
-    set_job(std::string(tr("Restart Sheikah Slate to play version")) + " " + version_name(v) + ".");
+    set_job(std::string(tr("Restart WSword to play version")) + " " + version_name(v) + ".");
 #endif
 }
 
@@ -1907,7 +1908,7 @@ static void version_rows(bool busy, bool focus) {
                            tr(!set_up ? "Not set up yet: choose the folder with this version's game files below."
                                       : "Which version PLAY starts. Each one keeps its own game files, saves and settings; "
                                         "1.6.0, 1.8.2 and 1.9.0 start from a copy of 1.0.0's saves and settings. Choosing another "
-                                        "one starts Sheikah Slate again with it.");
+                                        "one starts WSword again with it.");
         if (busy || g_switching_to || (!set_up && v != cur)) opt_disable_next();
         if (opt_radio(label.c_str(), v == cur, desc.c_str()) && v != cur && set_up) switch_to_version(v);
         if (focus && v == cur) ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
@@ -2016,10 +2017,10 @@ static void prelaunch_tab(float sc) {
         changed |= tri("lrz", &g_settings.turnip_lrz, a8);
         ImGui::TextDisabled("%s", tr("Turnip's early depth test, a little faster. Off can fix missing or broken drawing on "
                                   "some Adreno GPUs. Automatic: on for Adreno 8xx GPUs, off for the others. Applies when "
-                                  "Sheikah Slate restarts."));
+                                  "WSword restarts."));
         bool lrz_now = g_settings.turnip_lrz < 0 ? a8 : g_settings.turnip_lrz != 0;
         if (lrz_now != vk_lrz_at_start()) {  // (Turnip reads it once, when the app starts)
-            ImGui::Text("%s", tr("Restart Sheikah Slate to apply it."));
+            ImGui::Text("%s", tr("Restart WSword to apply it."));
             ImGui::SameLine();
             ImGui::PushID("lrz");  // (the driver's own Restart now may be showing too)
             if (ImGui::Button(tr("Restart now"))) {
@@ -2083,7 +2084,7 @@ static void prelaunch_tab(float sc) {
         ImGui::PushFont(g_font_menu);
         ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "%s", tr("Are you sure?"));
         ImGui::PopFont();
-        ImGui::Text(tr("This deletes Sheikah Slate's copy of the game files (%.1f GB)."), gb);
+        ImGui::Text(tr("This deletes WSword's copy of the game files (%.1f GB)."), gb);
         ImGui::TextDisabled("%s", tr("Saves and settings are kept. Your own game files aren't touched."));
         if (rt_dev_mode()) {  // (a source checkout: the files are the project's own extracted/)
             bool abs = !g_root.empty() && (g_root[0] == '/' || (g_root.size() > 1 && g_root[1] == ':'));
@@ -2093,7 +2094,7 @@ static void prelaunch_tab(float sc) {
         ImGui::Spacing();
         if (ImGui::Button(tr("Delete"), ImVec2(220 * sc, 0))) {
             bool ok = rt_remove_game_files(g_root.c_str());  // (runtime/paths.c: only what the extraction made)
-            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in Sheikah Slate's data folder?).", !ok);
+            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in WSword's data folder?).", !ok);
             g_files_deleted = true, gb = -1;
             ImGui::CloseCurrentPopup();
         }
@@ -2162,7 +2163,7 @@ static void prelaunch_tab(float sc) {
                                      "1.6.0, 1.8.2 and 1.9.0. Choose the folder with your own DLC's extracted romfs: the "
                                      "larger pack (01007EF00011F001, 7,094 files, about 1.4 GB) holds both; the other "
                                      "one is only the Ballad's unlock and isn't needed. The DLC isn't included with "
-                                     "Sheikah Slate."));
+                                     "WSword."));
         ImGui::Text("%s", tr(have ? "Installed." : "Not installed."));
         float f = g_dlc_frac;
         if (dbusy && f >= 0) ImGui::Text(tr("Installing the DLC... %d%%"), (int)(f * 100));
@@ -2233,7 +2234,7 @@ static void prelaunch_tab(float sc) {
                 for (int k = 0; k < N_ICONS; k++) tex[k] = load_png_texture(k_icon_files[k]);
             }
             if (current < 0) current = android_call_ret_int("appIcon", 0);
-            ImGui::TextDisabled("%s", tr("The app's icon, on the home screen and in the app list. Sheikah Slate starts "
+            ImGui::TextDisabled("%s", tr("The app's icon, on the home screen and in the app list. WSword starts "
                                          "again to change it; the home screen may drop the old icon - the new one is in "
                                          "the app list, to put back."));
             ImGui::Text(tr("App icon: %s"), tr(names[pending >= 0 ? pending : current]));
@@ -2255,7 +2256,7 @@ static void prelaunch_tab(float sc) {
                 ImGui::PopID();
             }
             if (pending >= 0) {
-                ImGui::Text(tr("Use the %s icon? Sheikah Slate starts again."), tr(names[pending]));
+                ImGui::Text(tr("Use the %s icon? WSword starts again."), tr(names[pending]));
                 if (ImGui::Button(tr("Use it"))) {
                     android_call_int("setAppIcon", pending);  // (then the app starts again)
                     current = pending, pending = -1;
@@ -2345,15 +2346,20 @@ extern "C" void launcher_run(const char *root) {
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
 #ifdef __ANDROID__
-    g_glass_bold = g_glass_text = NULL;
-    {   // the Glass Slate start screen's: drawn at their sizes (a little under these), the menu language's letters merged
+    g_glass_bold = g_glass_text = g_set_text = g_set_big = NULL;
+    {   // the Glass Slate start screen's: drawn at their sizes (a little under these), the menu language's letters merged;
+        // and Settings' (Baloo 2's sizes there x0.72: Inter's letters are ~1.5x Baloo 2's at one size, a little larger)
         char ib[1024], im[1024];
         if (rt_resource("Inter-Bold.otf", "third_party/fonts/Inter/Inter-Bold.otf", ib, sizeof ib) &&
             rt_resource("Inter-Medium.otf", "third_party/fonts/Inter/Inter-Medium.otf", im, sizeof im)) {
             g_glass_bold = io.Fonts->AddFontFromFileTTF(ib, 96, NULL, ranges);
-            i18n_merge_fonts(io.Fonts, 96);
+            i18n_merge_fonts(io.Fonts, 96, 0.9f);
             g_glass_text = io.Fonts->AddFontFromFileTTF(im, 48, NULL, ranges);
-            i18n_merge_fonts(io.Fonts, 48);
+            i18n_merge_fonts(io.Fonts, 48, 0.9f);
+            g_set_text = io.Fonts->AddFontFromFileTTF(im, 30 * 1.75f * 0.72f, NULL, ranges);
+            i18n_merge_fonts(io.Fonts, 30 * 1.75f * 0.72f, 0.9f);
+            g_set_big = io.Fonts->AddFontFromFileTTF(ib, 52 * 1.85f * 0.72f, NULL, ranges);
+            i18n_merge_fonts(io.Fonts, 52 * 1.85f * 0.72f, 0.9f);
         }
     }
 #endif
@@ -2362,7 +2368,7 @@ extern "C" void launcher_run(const char *root) {
         io.Fonts->Clear();
         g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
 #ifdef __ANDROID__
-        g_glass_bold = g_glass_text = NULL;
+        g_glass_bold = g_glass_text = g_set_text = g_set_big = NULL;
 #endif
     }
     ImGuiStyle &st = ImGui::GetStyle();
@@ -2564,7 +2570,7 @@ extern "C" void launcher_run(const char *root) {
             ImGui::SetCursorPos(ImVec2(x0, 120 * s));
             ImGui::PushFont(g_font_title);
             if (page == MAIN && !glass) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
-                const char *t = "Sheikah Slate";
+                const char *t = "WSword";
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 232, 120, 255),
                         IM_COL32(255, 138, 48, 255), t, 3 * s);
@@ -2698,9 +2704,9 @@ extern "C" void launcher_run(const char *root) {
                                                           ImGui::GetWindowPos().y + ds.y), IM_COL32(0, 0, 0, 110));
                 ImVec2 wp = ImGui::GetWindowPos();
                 ImGui::SetCursorScreenPos(ImVec2(wp.x + (ds.x - w) * 0.5f, wp.y + (ds.y - h) * 0.5f));
-#ifdef __ANDROID__  // (the Sheikah look, menu.mm tabs_body: its own frame, title and BACK)
-                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.035f, 0.065f, 0.075f, 0.94f));
-                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6 * sc);
+#ifdef __ANDROID__  // (the Glass Slate look, menu.mm tabs_body: its own rail of tabs, title and BACK)
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.035f, 0.075f, 0.133f, 0.95f));
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 22 * sc);
 #else
                 ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f, 0.09f, 0.08f, 0.96f));
                 ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 14 * sc);
@@ -2709,7 +2715,12 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::BeginChild("##settings", ImVec2(w, h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NavFlattened);
                 ImGui::PopStyleVar(2);
                 ImGui::PopStyleColor();
-                ImGui::PushFont(g_font_small);
+#ifdef __ANDROID__
+                ImFont *set_text = g_set_text ? g_set_text : g_font_small, *set_big = g_set_big ? g_set_big : g_font_menu;
+#else
+                ImFont *set_text = g_font_small, *set_big = g_font_menu;
+#endif
+                ImGui::PushFont(set_text);
                 bool back = false;
 #ifndef __ANDROID__
                 ImGui::PushFont(g_font_menu);
@@ -2732,7 +2743,7 @@ extern "C" void launcher_run(const char *root) {
                 }
 #endif
                 bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);  // (before the pages run, like the menu)
-                menu_tabs_draw(sc, g_font_small, g_font_menu, false, prelaunch_tab);
+                menu_tabs_draw(sc, set_text, set_big, false, prelaunch_tab);
 #ifdef __ANDROID__
                 extern bool menu_settings_back_requested();
                 back |= menu_settings_back_requested();
@@ -2807,16 +2818,16 @@ extern "C" void launcher_run(const char *root) {
                 std::string src_d = tr("The folder with your own game folders (exefs/romfs, or exefs and a romfs.bin) of The Legend of Zelda: Breath of "
                                        "the Wild for Nintendo Switch: version 1.0.0, 1.6.0, 1.8.2 or 1.9.0 (the last two in "
                                        "Brazilian Portuguese). The version is told from the files, and each one is set up in a place of "
-                                       "its own, beside the others. The game isn't included with Sheikah Slate.");
+                                       "its own, beside the others. The game isn't included with WSword.");
                 if (!src.empty()) src_d += std::string(tr("\n\nChosen: ")) + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
                 bool copied = check_copied_files(g_root).empty();  // (here, the game code to build again: an app update)
-                std::string ex_d = tr(native_wanted() ? "Copies the game files Sheikah Slate needs (native game code: "
+                std::string ex_d = tr(native_wanted() ? "Copies the game files WSword needs (native game code: "
                                                         "nothing to build). Your own files aren't changed."
                                       : copied ? "The game files are already here: this builds the game code from them again, as "
-                                                 "Sheikah Slate needs after an update. It may take a while."
-                                               : "Copies the game files Sheikah Slate needs and recompiles the game from them. "
+                                                 "WSword needs after an update. It may take a while."
+                                               : "Copies the game files WSword needs and recompiles the game from them. "
                                                  "This only needs to be done once and may take a while. Your own files aren't changed.");
                 if (!job.empty()) ex_d += "\n\n" + std::string(tr(job.c_str())) + (job_hint.empty() ? "" : ".\n" + std::string(tr(job_hint.c_str())));
                 if (failed && !job_detail.empty()) ex_d += "\n(" + job_detail + ")";
@@ -2852,7 +2863,7 @@ extern "C" void launcher_run(const char *root) {
                     int w = g_settings.files_in_place ? 1 : 0;
                     if (busy) opt_disable_next();
                     opt_choice("Game files", &w, ways, 2, 0,
-                               "Copy them: the setup copies the game data (about 16 GB) into Sheikah Slate's folder - "
+                               "Copy them: the setup copies the game data (about 16 GB) into WSword's folder - "
                                "your folder can be moved or deleted afterwards.\n\n"
                                "Use them in place: the game reads its data from your folder, no copy - it saves the space "
                                "and the wait. It needs the permission to access all files (Android asks), and the folder "
@@ -2893,7 +2904,7 @@ extern "C" void launcher_run(const char *root) {
                     snprintf(gb, sizeof gb, "%.1f GB", files_gb);
                     opt_section("Game files");
                     if (!g_confirm_delete) {
-                        if (opt_action("Delete game files", gb, "Frees the space Sheikah Slate's copy of the game files takes. "
+                        if (opt_action("Delete game files", gb, "Frees the space WSword's copy of the game files takes. "
                                        "Saves and settings are kept, and your own game files aren't touched: you can "
                                        "set the game files up again from them.", true))
                             g_confirm_delete = true;
@@ -2902,7 +2913,7 @@ extern "C" void launcher_run(const char *root) {
                             bool ok = rt_remove_game_files(g_root.c_str());
                             status = check_game_files(g_root);
                             if (ok) set_job("Game files deleted.");
-                            else set_job("Couldn't delete the game files", true, "They aren't in Sheikah Slate's data folder, "
+                            else set_job("Couldn't delete the game files", true, "They aren't in WSword's data folder, "
                                          "so they were left alone.");
                             if (!status.empty()) g_bg = 0;
                             g_confirm_delete = false, files_gb = -1;

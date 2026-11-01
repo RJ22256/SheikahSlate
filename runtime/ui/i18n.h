@@ -11,5 +11,6 @@ const char *tr(const char *en);
 // In capitals (section titles, row labels): ASCII, the accented Latin-1 letters and Cyrillic in UTF-8 (á -> Á, я -> Я)
 std::string ui_upper(const char *s);
 // After a menu font is added to atlas: the letters it lacks for the menu language (Cyrillic, Japanese, Korean, Chinese)
-// merged into it from the phone's own fonts, at about the same height (size_px: the font's own)
-void i18n_merge_fonts(ImFontAtlas *atlas, float size_px);
+// merged into it from the phone's own fonts, at about the same height (size_px: the font's own; rel: the system fonts'
+// size against it - 0.6 for Baloo 2, which runs small for its size, about 0.9 for Inter)
+void i18n_merge_fonts(ImFontAtlas *atlas, float size_px, float rel = 0.6f);

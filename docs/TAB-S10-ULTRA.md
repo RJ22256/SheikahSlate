@@ -502,6 +502,26 @@ cut to its drawing and centred on a white rounded square - as the default launch
 icon on the home screen without a step. The original slate design is one of the others in Settings > Look > App icon
 ("Slate", alias `IconSlate`), now six: Sword, Slate, Midnight, Dawn, Ancient, Forest.
 
+## Update 14 (0.2.8-slate.14): the app is WSword; Settings in the Glass Slate look
+
+### 40. The name: WSword
+
+The app shows itself as **WSword**: its launcher entries' labels (every icon), the start screen, Settings, messages and
+notifications, in every menu language. What doesn't show stays, so the update installs over the app with everything
+kept: the application id `com.sheikahslate.tab`, the signing key, the classes and JNI names, `sheikahslate.ini`, the
+data folders. The game's own item, the Sheikah Slate (Controls > Motion controls' text), keeps its name.
+
+### 41. Settings in the Glass Slate look (`menu.mm` tabs_body, `option_rows.mm`)
+
+The Settings window (the start screen's and the in-game menu's) as the start screen: deep navy glass with a teal edge
+and rounded corners. A rail down the left holds the app's name over "Settings", the pages as tiles - an icon and the
+name, the open one filled and outlined in cyan - and BACK at its foot; the open page is beside it under its own title,
+RESTORE DEFAULTS at the title's right on Video and Audio. Rows are parted by thin navy rules, the selected one a navy
+tile outlined in cyan, a changed value in light cyan; section titles in light cyan small capitals; the description in a
+glass card beside the rows. The gold cut-corner frames, diamonds and the eye are gone. Type: Inter Medium / Bold at
+Baloo 2's letter height there (x0.72), the menu language's other letters merged at 90% of it. Up / Down move along the
+rail, Right into the page, L / R switch pages as before.
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep
