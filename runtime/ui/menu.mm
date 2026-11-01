@@ -653,21 +653,29 @@ static void tab_display(void) {
         snprintf(fd, sizeof fd, "%s\n\n%s",
                  tr("Lossless Scaling's frame generation, from your own copy of Lossless.dll: frames made between the game's "
                     "real ones, so motion looks smoother. On a 120 Hz screen: 2x at 30 or 60 fps (60 or 120 shown), 3x at 40 "
-                    "(120), 4x at 30 (120). It adds about half a real frame of delay and takes GPU time from the game (its "
-                    "resolution may come down a little). Fast motion and the screen's edges can show smearing. Paused while "
-                    "this menu is open; the menus, the FPS counter and the touch controls are drawn on every frame, never "
+                    "(120), 4x at 30 (120). Never more frames than the screen shows: a choice past it is lowered (4x at 60 fps "
+                    "makes 2x), and on Auto (30 / 60) the extra frames follow the game's rate. It adds about half a real "
+                    "frame of delay and takes GPU time from the game - the line below says how much. Paused while this "
+                    "menu is open; the menus, the FPS counter and the touch controls are drawn on every frame, never "
                     "generated. Add Lossless.dll on the start screen: Settings > Lossless Scaling."),
                  tr(st));
         static const char *fgn[] = {"Off", "2x", "3x", "4x"};
         opt_choice("Frame generation", &g_settings.framegen, fgn, 4, 0, fd, false);
-        if (!g_settings.framegen) opt_disable_next();
-        opt_int("Flow scale", &g_settings.fg_flow, 25, 100, 5, 75, "%d%%",
-                "The resolution motion is found at, as a share of the game's image. Lower: less GPU time, motion found less "
-                "finely (thin things can wobble). Lossless Scaling suggests 75% for a 1440p image and 50% for 4K.");
+        {   // (settings.h fg_flow: 0 Automatic, shown as the slider's lowest step)
+            int fl = g_settings.fg_flow > 0 ? g_settings.fg_flow : 20;
+            if (!g_settings.framegen) opt_disable_next();
+            if (opt_int("Flow scale", &fl, 20, 100, 5, 20, "%d%%",
+                        "The resolution motion is found at, as a share of the game's image - most of frame generation's GPU "
+                        "time. Automatic: Lossless Scaling's own advice by the image's height, about 1080 lines of motion "
+                        "(100% at 1080 lines, 75% at 1440, 60% for the Galaxy Tab S10 Ultra's 1848). Lower: less GPU time, "
+                        "motion found less finely (thin things can wobble); higher than Automatic costs more for little "
+                        "you'd see.", "Automatic"))
+                g_settings.fg_flow = fl <= 20 ? 0 : fl;
+        }
         if (!g_settings.framegen) opt_disable_next();
         opt_toggle("Performance mode", &g_settings.fg_perf, false,
-                   "Lossless Scaling's lighter passes: much less GPU time, slightly less accurate in-between frames. Try it "
-                   "if the game's own frame rate drops with frame generation on.");
+                   "Lossless Scaling's lighter passes: much less GPU time, in-between frames slightly less accurate. Turn "
+                   "it on if the game's own frame rate or resolution drops with frame generation on.");
     }
 #endif
 

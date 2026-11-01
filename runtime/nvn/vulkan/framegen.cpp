@@ -8,6 +8,7 @@
 #include <exception>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace lb = lsfgvk::backend;
 
@@ -119,6 +120,21 @@ extern "C" int fg_schedule(char *err, size_t n) {
     if (!g_inst || !g_ctx) { put(err, n, "frame generation", "no context"); return -1; }
     try {
         g_inst->scheduleFrames(*g_ctx);
+        return 0;
+    } catch (const std::exception &e) {
+        put(err, n, "frame generation", e.what());
+    } catch (...) {
+        put(err, n, "frame generation", "unknown error");
+    }
+    return -1;
+}
+
+extern "C" int fg_schedule_some(const int *which, int count, char *err, size_t n) {
+    if (!g_inst || !g_ctx) { put(err, n, "frame generation", "no context"); return -1; }
+    try {
+        std::vector<size_t> w;
+        for (int k = 0; k < count; k++) w.push_back((size_t)which[k]);
+        g_inst->scheduleFrames(*g_ctx, w);
         return 0;
     } catch (const std::exception &e) {
         put(err, n, "frame generation", e.what());

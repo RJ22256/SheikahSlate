@@ -55,6 +55,9 @@ uint64_t fg_frame_index(void);
 // The passes for the frame just signalled: generated frame i is ready at fg_next_signal() (read before) + 1 + i.
 // 0, or -1 with the reason in err.
 int fg_schedule(char *err, size_t n);
+// Some of the context's frames: passes which[0..count) (ascending), the k-th ready at fg_next_signal() (read before)
+// + 1 + k. A context for 4x makes 2x's frame with {1}; count 0: only the shared pass (the next frame's history).
+int fg_schedule_some(const int *which, int count, char *err, size_t n);
 void fg_shutdown(void);
 
 #ifdef __cplusplus

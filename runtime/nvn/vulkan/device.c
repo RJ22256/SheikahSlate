@@ -1443,6 +1443,7 @@ void vk_present_draw_view(VkCommandBuffer cb, VkImageView view, uint32_t w, uint
 void vk_full_barrier(VkCommandBuffer cb);
 void vk_gp_note(VkCommandBuffer cb, const char *what);
 void renderer_submit(void);
+int framepace_current_fps(void);  // (hle/framepace.c: the game's frame rate now)
 bool vk_frame_begin(const float clear[4]);
 void vk_frame_end(const char *shot_path);
 
@@ -1467,7 +1468,18 @@ static struct {
     uint64_t last_frame;      // the real frame last given to the backend (total_frames + 1; 0 none)
     uint64_t made, shown, skipped, t_log;  // (the [framegen] line every 10 s)
     uint64_t shown_all, next_check;        // (fg_check: a generated frame against the two it is between)
+    int want, n, eff;         // the setting's frames between two real ones; the context's (n: what the screen shows of
+                              // them at the game's lowest frame rate); this frame's (eff: at its frame rate now)
+    int eff_logs;
+    // its GPU time (fg_time): timestamps when the game's frame is done, its copy is, and frame generation's passes are -
+    // a ring of FG_TS frames, read FG_TS later
+    VkQueryPool qp;
+    bool ts_off, ts_valid[4];
+    uint32_t ts_n;
+    double gpu_sum, copy_sum, gpu_avg;  // (ms: sums for the 10 s line, an average for the overlay and the menu)
+    uint32_t gpu_n;
 } fg;
+#define FG_TS 4
 static uint64_t fg_total_frames(void);
 
 static int fg_setting(void) {
@@ -1479,7 +1491,50 @@ static int fg_setting(void) {
 
 static int fg_swapchain_want(void) {
     int g = fg_setting();
-    return g && fg.failed_for != g ? g : 0;
+    if (!g || fg.failed_for == g) return 0;
+    return fg.want == g ? fg.n : g;  // (what fg_present found the screen shows, once it has run)
+}
+
+// The flow scale in use (percent): the setting's, or Automatic - Lossless Scaling's own advice by the image's height,
+// about 1080 lines of motion (100% at 1080 lines, 75% at 1440, 50% at 2160), in steps of 5. The Tab S10 Ultra's
+// 1848-line image: 60%, about a third of 100%'s GPU time for the motion search.
+static int fg_flow_for(uint32_t height) {
+    int f = g_settings.fg_flow;
+    if (f <= 0) f = height ? (int)lround(1080.0 * 100 / height / 5) * 5 : 100;
+    return f < 25 ? 25 : f > 100 ? 100 : f;
+}
+
+// The game's lowest and highest frame rates with the Frame rate setting (Auto: 30 to 60)
+static int fg_fps_floor(void) {
+    bool sixty = g_game_version == 0 || g_game_version >= 182;
+    return !sixty ? 30 : g_settings.fps_mode == 2 ? 60 : g_settings.fps_mode == 3 ? 40 : 30;
+}
+static int fg_fps_ceiling(void) {
+    bool sixty = g_game_version == 0 || g_game_version >= 182;
+    return !sixty ? 30 : g_settings.fps_mode == 1 ? 30 : g_settings.fps_mode == 3 ? 40 : 60;
+}
+
+// The frames made between two real ones at a frame rate: the setting's, never more than the screen shows - frames past
+// the refresh rate are made and never go up (60 fps at 4x on 120 Hz: two of three) - and where one fits, a whole number
+// of refreshes each (30 fps at 3x on 120 Hz: 90 a second, uneven - 2x). 0: the game already reaches the screen's rate.
+// The context is made for the game's lowest frame rate; at a higher one (Auto's 60) some of its frames are made: 4x's
+// middle one is 2x's (fg_present) - no second context, no pause while one is made.
+static int fg_generated_at(int want, int fps) {
+    return dp_fg_frames(g_dp.refresh > 0 ? g_dp.refresh : g_dp.nominal, want, fps);
+}
+
+// Frame generation's GPU time a real frame, from the timestamps FG_TS frames back (fg_present writes them): the copy,
+// and the passes - from the copy's end to when they are all done (the first generated frame's present may start)
+static void fg_time(uint32_t slot) {
+    if (!fg.qp || !fg.ts_valid[slot]) return;
+    fg.ts_valid[slot] = false;
+    uint64_t t[3];
+    if (vkGetQueryPoolResults(g_vk.dev, fg.qp, slot * 3, 3, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) return;
+    double per = g_vk.props.limits.timestampPeriod / 1e6;
+    double copy = (double)(t[1] - t[0]) * per, gpu = (double)(t[2] - t[1]) * per;
+    if (t[1] < t[0] || t[2] < t[1] || gpu > 200) return;  // (out of order: not one frame's)
+    fg.copy_sum += copy, fg.gpu_sum += gpu, fg.gpu_n++;
+    fg.gpu_avg = fg.gpu_avg > 0 ? fg.gpu_avg + (copy + gpu - fg.gpu_avg) * 0.1 : copy + gpu;
 }
 
 static void fg_stop(int gen, const char *why) {
@@ -1494,6 +1549,7 @@ static void fg_stop(int gen, const char *why) {
 // (the performance overlay, ui/perf_overlay.mm: frames on screen with frame generation)
 uint64_t vk_present_total(void) { return g_present_total; }
 int vk_fg_multiplier(void) { return g_fg_mult; }
+float vk_fg_gpu_ms(void) { return g_fg_mult > 1 ? (float)fg.gpu_avg : 0; }
 
 // (Video > Frame generation's status line, ui/menu.mm)
 void vk_fg_status(char *out, size_t n) {
@@ -1505,10 +1561,23 @@ void vk_fg_status(char *out, size_t n) {
         snprintf(out, n, "Off. Lossless.dll is added.");
     else if (fg.failed_for == g)
         snprintf(out, n, "Stopped: %s", fg.err);
-    else if (fg.open)
-        snprintf(out, n, "On: %dx at %ux%u, %s shaders. Paused while this menu is open.", g + 1, fg.im.width, fg.im.height,
-                 fg_low_precision() ? "FP16" : "full-precision");
-    else
+    else if (fg.want == g && !fg.n) {
+        int hz = g_dp.refresh > 0 ? (int)lround(1e9 / g_dp.refresh) : 0;
+        snprintf(out, n, "Not needed: the game's frame rate (%d fps) already fills the screen's %d Hz.", fg_fps_floor(), hz);
+    } else if (fg.open) {
+        int hz = g_dp.refresh > 0 ? (int)lround(1e9 / g_dp.refresh) : 0;
+        char cost[64] = "", cap[200] = "";
+        if (fg.gpu_avg > 0) snprintf(cost, sizeof cost, ", %.1f ms of GPU time a frame", fg.gpu_avg);
+        if (fg.gen < g)
+            snprintf(cap, sizeof cap, " (%dx chosen: at %d fps, %dx is all a %d Hz screen shows evenly - more would be made "
+                     "and never shown)", g + 1, fg_fps_floor(), fg.gen + 1, hz);
+        else if (fg.eff < fg.gen)
+            snprintf(cap, sizeof cap, " (%dx at %d fps, %dx when the game is at %d)", fg.gen + 1, fg_fps_floor(),
+                     fg_generated_at(g, fg_fps_ceiling()) + 1, fg_fps_ceiling());
+        snprintf(out, n, "On: %dx at %ux%u%s, flow scale %d%%%s, %s shaders%s%s. Paused while this menu is open.", fg.gen + 1,
+                 fg.im.width, fg.im.height, cap, fg.flow, g_settings.fg_flow <= 0 ? " (Automatic)" : "",
+                 fg_low_precision() ? "FP16" : "full-precision", fg.perf ? ", performance mode" : "", cost);
+    } else
         snprintf(out, n, "Starts with the game's next frame.");
 }
 
@@ -1521,7 +1590,7 @@ static void fg_place(float vx, float vy, float vw, float vh, const float pv[8]) 
 // Now and then (the 240th frame shown, then every 3600): the middle of the first generated frame against the real
 // frames before and after it, read back - "[framegen] check" in the log. A generated frame like neither of them but
 // between (each difference about half the two frames'), not black, not one of them: the passes work on this GPU.
-static void fg_check(uint64_t index) {
+static void fg_check(uint64_t index, int dest) {
     const uint32_t S = 128;
     uint32_t w = fg.im.width < S ? fg.im.width : S, h = fg.im.height < S ? fg.im.height : S;
     int32_t x = (int32_t)((fg.im.width - w) / 2), y = (int32_t)((fg.im.height - h) / 2);
@@ -1529,7 +1598,7 @@ static void fg_check(uint64_t index) {
     VkSpan rb = vk_readback(one * 3);
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
-    VkImage im[3] = {fg.im.source[(index + 1) % 2], fg.im.dest[0], fg.im.source[index % 2]};  // (before, generated, after)
+    VkImage im[3] = {fg.im.source[(index + 1) % 2], fg.im.dest[dest], fg.im.source[index % 2]};  // (before, generated, after)
     for (int i = 0; i < 3; i++) {
         VkBufferImageCopy rg = {.bufferOffset = rb.off + one * (uint64_t)i, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                 .imageOffset = {x, y, 0}, .imageExtent = {w, h, 1}};
@@ -1557,34 +1626,65 @@ static void fg_check(uint64_t index) {
 
 // The game's image b of this real frame into the backend, and the frames before it presented. Returns how many.
 static int fg_present(TexBackend *b) {
-    int gen = fg_setting();
-    if (!gen) {
+    int want = fg_setting();
+    if (!want) {
         if (fg.open) { fg_close(); fg.open = false; LOG("[framegen] off\n"); }
-        fg.failed_for = 0;
+        fg.failed_for = 0, fg.want = 0;
         g_fg_mult = 1;
         return 0;
     }
-    if (fg.failed_for == gen) return 0;
+    if (fg.failed_for == want) return 0;
     fg.failed_for = 0;
+    // the context's frames (at the game's lowest frame rate) and this frame's (at its rate now: framepace.c's target)
+    int gen = fg_generated_at(want, fg_fps_floor());
+    int now_fps = framepace_current_fps();
+    int which[FG_MAX_GENERATED];  // (some of the context's frames: evenly between, 4x's middle for 2x)
+    int eff = dp_fg_subset(gen, fg_generated_at(want, now_fps > 0 ? now_fps : fg_fps_ceiling()), which);
+    if (want != fg.want || gen != fg.n) {
+        if (gen != want)
+            LOG("[framegen] %dx chosen, %dx made: the game's %d fps x %d on the screen's %.0f Hz%s\n", want + 1, gen + 1,
+                fg_fps_floor(), want + 1, g_dp.refresh > 0 ? 1e9 / g_dp.refresh : 0.0,
+                gen ? " - more than it shows evenly" : " - the game fills it already");
+        fg.want = want, fg.n = gen;
+    }
+    if (eff != fg.eff && fg.eff_logs < 20) {
+        fg.eff_logs++;
+        if (gen && eff != gen)
+            LOG("[framegen] %dx now: the game at %d fps\n", eff + 1, now_fps);
+        else if (gen && fg.eff != gen && fg.eff)
+            LOG("[framegen] %dx again: the game at %d fps\n", eff + 1, now_fps);
+    }
+    fg.eff = eff;
+    if (!gen) {  // (the game fills the screen's rate: nothing to add)
+        if (fg.open) { fg_close(); fg.open = false; }
+        g_fg_mult = 1;
+        return 0;
+    }
     uint64_t frame = fg_total_frames() + 1;
     {   // (every 10 s: what it did - the stats line's "on screen" says how they went up)
         uint64_t now = SDL_GetTicksNS();
         if (now - fg.t_log >= 10000000000ull) {
-            if (fg.t_log)
+            if (fg.t_log) {
+                char t[96] = "";
+                if (fg.gpu_n)
+                    snprintf(t, sizeof t, "; GPU %.2f ms a real frame (the copy %.2f)", (fg.gpu_sum + fg.copy_sum) / fg.gpu_n,
+                             fg.copy_sum / fg.gpu_n);
                 LOG("[framegen] %dx: %llu frames made, %llu shown; %llu real frames without (paused for the menu, the first "
-                    "after a pause or a gap)\n", gen + 1, (unsigned long long)fg.made, (unsigned long long)fg.shown,
-                    (unsigned long long)fg.skipped);
+                    "after a pause or a gap)%s\n", fg.gen + 1, (unsigned long long)fg.made, (unsigned long long)fg.shown,
+                    (unsigned long long)fg.skipped, t);
+            }
             fg.t_log = now, fg.made = fg.shown = fg.skipped = 0;
+            fg.gpu_sum = fg.copy_sum = 0, fg.gpu_n = 0;
         }
     }
-    bool paused = menu_is_open() || !b || !b->image || b->layers != 1 || b->samples != 1 ||
+    bool paused = menu_is_open() || !eff || !b || !b->image || b->layers != 1 || b->samples != 1 ||
                   (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || b->width < 64 || b->height < 64;
     if (paused) { g_fg_mult = 1; fg.skipped++; return 0; }
     char err[400];
     if (!fg_ready()) {
         struct stat st;
         if (stat(vk_fg_dll_path(), &st) != 0) {
-            fg_stop(gen, "no Lossless.dll - add yours on the start screen: Settings > Lossless Scaling");
+            fg_stop(want, "no Lossless.dll - add yours on the start screen: Settings > Lossless Scaling");
             return 0;
         }
         const char *cache = NULL;
@@ -1594,22 +1694,24 @@ static int fg_present(TexBackend *b) {
         FgDevice d = {.instance = g_vk.inst, .phys = g_vk.phys, .dev = g_vk.dev, .qfam = g_vk.qfam, .queue = g_vk.queue,
                       .gipa = vkGetInstanceProcAddr, .fp16 = g_vk.fp16, .cache_path = cache};
         uint64_t t0 = SDL_GetTicksNS();
-        if (fg_init(&d, vk_fg_dll_path(), !getenv("LARECOMP_FG_FP32"), err, sizeof err)) { fg_stop(gen, err); return 0; }
+        if (fg_init(&d, vk_fg_dll_path(), !getenv("LARECOMP_FG_FP32"), err, sizeof err)) { fg_stop(want, err); return 0; }
         LOG("[framegen] started: Lossless.dll's %s shaders on %s (%.0f ms)\n", fg_low_precision() ? "FP16" : "full-precision",
             g_vk.props.deviceName, (SDL_GetTicksNS() - t0) / 1e6);
     }
-    if (!fg.open || fg.gen != gen || fg.im.width != b->width || fg.im.height != b->height || fg.flow != g_settings.fg_flow ||
+    int flow = fg_flow_for(b->height);
+    if (!fg.open || fg.gen != gen || fg.im.width != b->width || fg.im.height != b->height || fg.flow != flow ||
         fg.perf != g_settings.fg_perf) {
         fg.open = false;
         uint64_t t0 = SDL_GetTicksNS();
-        int flow = g_settings.fg_flow < 25 ? 25 : g_settings.fg_flow > 100 ? 100 : g_settings.fg_flow;
         if (fg_open(gen, b->width, b->height, flow / 100.0f, g_settings.fg_perf, &fg.im, err, sizeof err)) {
-            fg_stop(gen, err);
+            fg_stop(want, err);
             return 0;
         }
-        fg.open = true, fg.gen = gen, fg.flow = g_settings.fg_flow, fg.perf = g_settings.fg_perf;
-        LOG("[framegen] %dx at %ux%u (game image format %d), flow scale %d%%%s (%.0f ms)\n", gen + 1, b->width, b->height,
-            b->format, flow, fg.perf ? ", performance mode" : "", (SDL_GetTicksNS() - t0) / 1e6);
+        fg.open = true, fg.gen = gen, fg.flow = flow, fg.perf = g_settings.fg_perf;
+        fg.gpu_avg = 0;
+        LOG("[framegen] %dx at %ux%u (game image format %d), flow scale %d%%%s%s (%.0f ms)\n", gen + 1, b->width, b->height,
+            b->format, flow, g_settings.fg_flow <= 0 ? " (automatic)" : "", fg.perf ? ", performance mode" : "",
+            (SDL_GetTicksNS() - t0) / 1e6);
     }
     // the copy: the same bytes (an sRGB image's too: the backend works on them as they are, as the present shows them),
     // a blit where the format differs
@@ -1619,13 +1721,25 @@ static int fg_present(TexBackend *b) {
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
         if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
             snprintf(err, sizeof err, "the game's image (format %d) can't be copied for it on this GPU", b->format);
-            fg_stop(gen, err);
+            fg_stop(want, err);
             return 0;
         }
     }
     uint64_t sig = fg_next_signal(), index = fg_frame_index();
+    if (!fg.qp && !fg.ts_off) {  // (frame generation's GPU time: fg_time)
+        VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                    .queryCount = FG_TS * 3};
+        if (!g_vk.props.limits.timestampComputeAndGraphics || vkCreateQueryPool(g_vk.dev, &qi, NULL, &fg.qp) != VK_SUCCESS)
+            fg.ts_off = true, fg.qp = VK_NULL_HANDLE;
+    }
+    uint32_t ts = fg.ts_n++ % FG_TS;
+    fg_time(ts);  // (this slot's last use, FG_TS frames ago)
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);
+    vk_full_barrier(cb);  // (the game's image drawn)
+    if (fg.qp) {
+        vkCmdResetQueryPool(cb, fg.qp, ts * 3, 3);
+        vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fg.qp, ts * 3);
+    }
     VkImage dst = fg.im.source[index % 2];
     if (same) {
         VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
@@ -1636,12 +1750,13 @@ static int fg_present(TexBackend *b) {
                           .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {(int32_t)b->width, (int32_t)b->height, 1}}};
         vkCmdBlitImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
     }
-    vk_full_barrier(cb);
+    if (fg.qp) vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fg.qp, ts * 3 + 1);
+    // (no barrier after the copy: the submission's signal makes it visible to the passes that wait for it)
     vk_submit_timeline(VK_NULL_HANDLE, 0, fg.im.sync, sig);
     renderer_submit();
-    if (fg_schedule(err, sizeof err)) { fg_stop(gen, err); return 0; }
-    g_fg_mult = gen + 1;
-    fg.made += (uint64_t)gen;
+    if (fg_schedule_some(which, eff, err, sizeof err)) { fg_stop(want, err); return 0; }
+    g_fg_mult = eff + 1;
+    fg.made += (uint64_t)eff;
     // nothing to show for the first frame, nor after a gap (the menu, a skipped frame): the frame before isn't the one
     // the image before this one shows
     bool follows = fg.last_frame && fg.last_frame + 1 == frame;
@@ -1649,14 +1764,19 @@ static int fg_present(TexBackend *b) {
     if (!index || !follows || !fg.placed) { fg.skipped++; return 0; }
     static const float black[4] = {0, 0, 0, 1};
     int shown = 0;
-    for (int j = 0; j < gen && j < fg.im.ndest; j++) {
-        // (the present passes' own images - Video > Anti-aliasing's: the present before may still be reading them)
-        vk_full_barrier(vk_cmd());
+    extern bool vk_present_post_passes(void);
+    bool post = vk_present_post_passes();  // (the present's own passes - Video > Anti-aliasing: images of its own)
+    for (int j = 0; j < eff && which[j] < fg.im.ndest; j++) {
+        if (post) vk_full_barrier(vk_cmd());  // (the present before may still be reading them)
+        if (j == 0 && fg.qp) {  // (when all the passes are done: everything before in the queue)
+            vkCmdWriteTimestamp(vk_cmd(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fg.qp, ts * 3 + 2);
+            fg.ts_valid[ts] = true;
+        }
         if (!vk_frame_begin(black)) break;
-        g_fg_pos = j, g_fg_group = gen + 1;  // (dp_before_present: this group's j-th)
+        g_fg_pos = j, g_fg_group = eff + 1;  // (dp_before_present: this group's j-th)
         VkCommandBuffer c = vk_cmd();
         vk_gp_note(c, "present: a generated frame");
-        vk_present_draw_view(c, fg.im.dest_view[j], fg.im.width, fg.im.height, fg.vx, fg.vy, fg.vw, fg.vh, fg.pv);
+        vk_present_draw_view(c, fg.im.dest_view[which[j]], fg.im.width, fg.im.height, fg.vx, fg.vy, fg.vw, fg.vh, fg.pv);
         menu_render_again((void *)c);
         vk_submit_timeline(fg.im.sync, sig + 1 + (uint64_t)j, VK_NULL_HANDLE, 0);
         vk_frame_end(NULL);
@@ -1667,11 +1787,11 @@ static int fg_present(TexBackend *b) {
     if (shown) {
         if (!fg.next_check) fg.next_check = 240;
         if (fg.shown_all >= fg.next_check) {
-            fg_check(index);
+            fg_check(index, which[0]);
             fg.next_check = fg.shown_all + 3600;
         }
-        vk_full_barrier(vk_cmd());  // (and the real frame's after them)
-        g_fg_pos = shown, g_fg_group = gen + 1;  // (the real frame: its group's last)
+        if (post) vk_full_barrier(vk_cmd());  // (and the real frame's after them)
+        g_fg_pos = shown, g_fg_group = eff + 1;  // (the real frame: its group's last)
     }
     return shown;
 }

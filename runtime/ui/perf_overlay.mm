@@ -18,6 +18,7 @@ uint64_t vk_cum_wait_ns(void);  // vulkan/exec.c
 const char *vk_gpu_desc(void);  // vulkan/device.c
 uint64_t vk_present_total(void);  // (WSword: vulkan/device.c - presents made, real and generated)
 int vk_fg_multiplier(void);       // (presents per real frame with frame generation; 1 without)
+float vk_fg_gpu_ms(void);         // (its GPU time a real frame, ms; 0 unknown)
 }
 
 #define FT_N 120  // frame times in the graph
@@ -121,7 +122,12 @@ void perf_overlay_draw(ImVec2 display, float scale) {
     ImGui::SameLine();
     ImGui::TextDisabled("%.1f ms", fps > 0 ? 1000.0f / fps : 0.0f);
     if (fg) {  // (WSword: frame generation's frames on top - the game's own rate stays the line above)
-        ImGui::TextColored(ImVec4(0.56f, 0.85f, 0.90f, 1), "%.0f with frame generation %dx", shown_fps, vk_fg_multiplier());
+        float ms = vk_fg_gpu_ms();
+        if (ms > 0)
+            ImGui::TextColored(ImVec4(0.56f, 0.85f, 0.90f, 1), "%.0f with frame generation %dx (GPU %.1f ms)", shown_fps,
+                               vk_fg_multiplier(), ms);
+        else
+            ImGui::TextColored(ImVec4(0.56f, 0.85f, 0.90f, 1), "%.0f with frame generation %dx", shown_fps, vk_fg_multiplier());
     }
     float graph[FT_N];  // (oldest first)
     for (int i = 0; i < nft; i++) graph[i] = ft[(head - nft + i + FT_N) % FT_N];

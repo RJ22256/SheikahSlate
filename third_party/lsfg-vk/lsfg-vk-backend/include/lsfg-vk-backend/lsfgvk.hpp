@@ -191,6 +191,16 @@ namespace lsfgvk::backend {
         void scheduleFrames(Context& context);
 
         ///
+        /// (WSword) Schedule some of a context's generated frames: the passes in `which` (ascending, each below the
+        /// context's count), their frames signalled one after another - nextSignal() (read before) + 1 + k for
+        /// the k-th. A 4x context makes 2x's frame with {1} (halfway): no second context for a lower multiplier.
+        /// Empty: the shared pass alone (the next frame's history), nothing to show.
+        ///
+        /// @throws backend::error on failure
+        ///
+        void scheduleFrames(Context& context, const std::vector<size_t>& which);
+
+        ///
         /// Close a frame generation context
         ///
         /// @param context Context to close.

@@ -45,7 +45,7 @@ It installs as its own app (`com.sheikahslate.tab`), so it can sit next to upstr
 | Texture streaming | BC textures decoded on one thread | Big levels decoded on 3 worker threads too (same output, tested) |
 | Performance capture | GPU time per pass | Also the CPU per thread with callers, memory by kind, the heaviest shaders, why passes break (Video > Capture a performance profile) |
 | Driver error text | "Install a Turnip driver" (Adreno only) | Says Mali runs the system driver only |
-| Name, icon | BOTWRecompAndroid, Triforce | WSword (0.2.8-slate.16; the project is still Sheikah Slate), the player's own picture as the icon |
+| Name, icon | BOTWRecompAndroid, Triforce | WSword (0.2.8-slate.17; the project is still Sheikah Slate), the player's own picture as the icon |
 | Frame generation | None | Video > Frame generation 2x / 3x / 4x with **your own Lossless.dll** (start screen > Settings > Lossless Scaling; none is included): Lossless Scaling's shaders through lsfg-vk's backend (GPL-3.0) on WSword's own Vulkan device |
 
 **Licence note:** builds include `third_party/lsfg-vk` (the last GPL-3.0 version of lsfg-vk), so an APK built from this
@@ -60,7 +60,7 @@ Details, reasoning and the files involved: [docs/TAB-S10-ULTRA.md](docs/TAB-S10-
    files in place: Game files > Use them in place).
 2. Open **Sheikah Slate**, go to **Set up game files** and choose the folder with your `exefs` and `romfs`. The app
    recompiles the game on the tablet (a long wait, the first time and after an update that changes the game code -
-   0.2.8-slate.9 was one; 0.2.8-slate.10 to .16 aren't). It keeps building with the screen off.
+   0.2.8-slate.9 was one; 0.2.8-slate.10 to .17 aren't). It keeps building with the screen off.
 3. Saves: start screen > Settings > **Saves** - Import saves (a .zip, one exported here or any holding 0, 1, 2... and
    option.sav), Import from folder (an emulator's save folder), Export saves.
 4. The Tab's Mali GPU runs Samsung's own Vulkan driver; Turnip driver packages are for Adreno GPUs and won't load.

@@ -316,6 +316,35 @@ int main(void) {
     expect(dp_frames_per(1e9 / 90, 1e9 / 60) == 0, "60 fps on 90 Hz: not whole");
     expect(dp_frames_per(1e9 / 120, 1e9 / 300) == 0, "300 fps on 120 Hz: none");
 
+    // 8b. (WSword) Frame generation's multiplier on the display, and a context's passes for fewer frames.
+    {
+        double r120 = 1e9 / 120, r60 = 1e9 / 60, r90 = 1e9 / 90;
+        struct { double r; int want, fps, got; const char *what; } c[] = {
+            {r120, 1, 30, 1, "30 fps 2x on 120 Hz: 2x (2 refreshes each)"},
+            {r120, 2, 30, 1, "30 fps 3x on 120 Hz: 2x (3x is 90 a second, uneven)"},
+            {r120, 3, 30, 3, "30 fps 4x on 120 Hz: 4x"},
+            {r120, 2, 40, 2, "40 fps 3x on 120 Hz: 3x"},
+            {r120, 3, 40, 2, "40 fps 4x on 120 Hz: 3x (160 is past 120)"},
+            {r120, 1, 40, 1, "40 fps 2x on 120 Hz: 2x kept (80, uneven, but the screen shows it)"},
+            {r120, 3, 60, 1, "60 fps 4x on 120 Hz: 2x"},
+            {r60, 3, 30, 1, "30 fps 4x on 60 Hz: 2x"},
+            {r60, 1, 60, 0, "60 fps on 60 Hz: none"},
+            {r90, 2, 30, 2, "30 fps 3x on 90 Hz: 3x"},
+            {0, 3, 30, 3, "display rate unknown: as asked"},
+        };
+        for (unsigned k = 0; k < sizeof c / sizeof c[0]; k++) {
+            int g = dp_fg_frames(c[k].r, c[k].want, c[k].fps);
+            if (g != c[k].got) printf("  got %d\n", g);
+            expect(g == c[k].got, c[k].what);
+        }
+        int w[3];
+        expect(dp_fg_subset(3, 1, w) == 1 && w[0] == 1, "a 4x context makes 2x's frame with its middle pass");
+        expect(dp_fg_subset(3, 3, w) == 3 && w[0] == 0 && w[1] == 1 && w[2] == 2, "a 4x context at 4x: all three");
+        expect(dp_fg_subset(2, 1, w) == 0, "a 3x context has no halfway pass: none");
+        expect(dp_fg_subset(1, 3, w) == 1 && w[0] == 0, "no more than the context makes");
+        printf("frame generation multipliers checked\n");
+    }
+
     // 9. The stats line.
     {
         DPace p;

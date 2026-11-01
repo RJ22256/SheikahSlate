@@ -52,5 +52,13 @@ uint64_t dp_desired(DPace *p, uint32_t id, uint64_t now_ns, double period_ns, bo
 void dp_feedback(DPace *p, uint32_t id, uint64_t actual_ns, uint64_t earliest_ns);
 // The frame period on this display: n refreshes when the period is close to that, else the period itself.
 double dp_locked_period(double refresh_ns, double period_ns);
+// (WSword, frame generation) The frames to make between two real ones at `fps` on this display, of the `want` asked for:
+// never more than the display shows (frames past its rate are made and never go up), a whole number of refreshes each
+// where one fits (30 fps at 3x on 120 Hz is 90 a second, uneven: 2x). 0: the game fills the display's rate already.
+// refresh_ns 0 (unknown): want.
+int dp_fg_frames(double refresh_ns, int want, int fps);
+// Of a context making n frames between two real ones, the passes for `eff` of them evenly between (4x's middle one for
+// 2x) into which[]: how many (eff lowered until n + 1 is a multiple of eff + 1).
+int dp_fg_subset(int n, int eff, int *which);
 // ", screen 4x 97% (3x 1%, 5x 2%), paced: late 3, ..." for the stats line; resets the counters. Returns its length.
 int dp_stats_take(DPace *p, char *out, int size, bool paced);

@@ -613,6 +613,44 @@ So each generated frame was either:
 - **The `[framegen]` line** is logged every 10 s even while frame generation is paused.
 - **A content check in the log.** After the 240th generated frame shown, then every 3600, `[framegen] check` compares the middle of a generated frame with the real frames before and after it. A frame that is black, or a copy of one of the two, is named as such.
 
+## Update 17 (0.2.8-slate.17): frame generation at its least GPU time
+
+### 44. Nothing made that isn't shown; the motion search at the resolution it needs (`device.c` fg_present, `display_pacing.c`)
+
+**Never more frames than the screen shows** (`dp_fg_frames`). The multiplier in use is the one chosen, lowered:
+- **to the display's refresh rate.** Frames past it were made and never went up. For example, 60 fps at 4x on 120 Hz made three frames per real one and showed one.
+- **to a whole number of refreshes per frame, where one fits.** 30 fps at 3x is 90 frames a second on 120 Hz, which is uneven, so it becomes 2x.
+
+| On 120 Hz | Becomes | Why |
+|---|---|---|
+| 30 fps × 3 | 2x | 90 a second is uneven |
+| 40 fps × 4 | 3x | 160 is past 120 |
+| 60 fps × 4 | 2x | 240 is past 120 |
+| 60 fps on a 60 Hz screen | off | nothing to add |
+
+**Auto (30 / 60) frame rate.** The context is made for the game's lowest rate. When the game is at 60, only some of its passes run: a 4x context makes 2x's frame with its middle pass (`dp_fg_subset`, the backend's `scheduleFrames(context, which)`). So there is no second context, and no pause while one is made, when the rate moves.
+
+**Flow scale: Automatic** (the new default). This follows Lossless Scaling's own advice by the image's height, about 1080 lines of motion:
+
+| Image height | Flow scale |
+|---|---|
+| 1080 lines | 100% |
+| 1440 lines | 75% |
+| 1848 lines (the Tab's) | 60%, roughly a third of 100%'s motion-search work |
+
+Slate.15 always wrote its default, 75, so that value is read as Automatic. Any other value is kept.
+
+**Less waiting on the GPU in WSword's own steps:**
+- **After the copy:** no barrier. The submission's signal already makes the copy visible to the passes.
+- **Between the presents:** barriers only when the present runs passes of its own (Video > Anti-aliasing).
+
+**Its cost, measured.** Timestamps record when the game's frame, the copy and frame generation's passes finish, read 4 frames later:
+- **Overlay:** "60 with frame generation 2x (GPU 2.1 ms)".
+- **Video page:** the status line has it.
+- **Log:** every 10 s, `[framegen] … GPU x ms a real frame (the copy y)`.
+
+**Tests:** `tools/test_display_pacing.c` has the multiplier table and the subsets. `tools/test_modes.c` has the flow scale's Automatic and the slate.15 key.
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep

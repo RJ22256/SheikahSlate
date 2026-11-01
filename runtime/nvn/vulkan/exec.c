@@ -7935,6 +7935,10 @@ static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *src
 
 // The view the present samples: the game image, or its anti-aliased / upscaled version. ow x oh: the whole image's
 // size in the window (its crop is drawn into the viewport).
+// (WSword: whether the last present ran passes of its own - device.c fg_present's barriers between its presents)
+static bool g_post_last;
+bool vk_present_post_passes(void) { return g_post_last; }
+
 // (WSword: an image's view and size - the game's, or a generated frame's, device.c fg_present)
 static VkImageView post_process(VkCommandBuffer cb, VkImageView v, uint32_t bw, uint32_t bh, double ow_d, double oh_d) {
     bool smaa = g_settings.antialias == AA_SMAA, fxaa = g_settings.antialias == AA_FXAA;
@@ -7955,6 +7959,7 @@ static VkImageView post_process(VkCommandBuffer cb, VkImageView v, uint32_t bw, 
     }
     int up = pmode == 99 ? g_settings.upscaler : pmode;
     if (pmode == UPSCALE_BILINEAR) fsr = false;
+    g_post_last = smaa || fxaa || fsr;
     if (!smaa && !fxaa && !fsr) return v;
     gp_mark(cb, "present: %s%s %ux%u -> %ux%u", smaa ? "smaa " : fxaa ? "fxaa " : "", !fsr ? "" : up == UPSCALE_SGSR1 ? "sgsr1" : "easu+rcas",
             bw, bh, ow, oh);

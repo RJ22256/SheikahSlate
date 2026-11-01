@@ -126,7 +126,7 @@ int main(void) {
     // (WSword) frame generation: read back, kept by the modes (a mode isn't about it), clamped, saved
     for (int m = MODE_BATTERY; m <= MODE_TURBO60; m++) {
         FILE *f = fopen("sheikahslate.ini", "w");
-        fputs("tab_preset = 9\nframe_generation = 3x\nfg_flow_scale = 60\nfg_performance = 1\n", f);
+        fputs("tab_preset = 9\nframe_generation = 3x\nfg_flow = 60\nfg_performance = 1\n", f);
         fclose(f);
         fflush(stdout);
         pid_t p = fork();
@@ -145,11 +145,30 @@ int main(void) {
         snprintf(what, sizeof what, "frame generation 3x read back and kept by mode %d", m);
         expect(WIFEXITED(st) && WEXITSTATUS(st) == 0, what);
     }
-    expect(ini_has("frame_generation = 3x") && ini_has("fg_flow_scale = 60") && ini_has("fg_performance = 1"),
+    expect(ini_has("frame_generation = 3x") && ini_has("fg_flow = 60") && ini_has("fg_performance = 1"),
            "frame generation saved");
+    {   // (slate.15's key: its default 75 read as Automatic, another value kept)
+        int want[2] = {0, 100};
+        const char *ini[2] = {"tab_preset = 9\nfg_flow_scale = 75\n", "tab_preset = 9\nfg_flow_scale = 100\n"};
+        for (int k = 0; k < 2; k++) {
+            FILE *f = fopen("sheikahslate.ini", "w");
+            fputs(ini[k], f);
+            fclose(f);
+            pid_t p = fork();
+            if (!p) {
+                settings_load();
+                settings_save();
+                _exit(g_settings.fg_flow == want[k] ? 0 : 1);
+            }
+            int st;
+            waitpid(p, &st, 0);
+            expect(WIFEXITED(st) && WEXITSTATUS(st) == 0, k ? "slate.15's flow scale 100 kept" : "slate.15's default flow scale 75: Automatic");
+        }
+        expect(ini_has("fg_flow = 100"), "and saved under the new key");
+    }
     {
         FILE *f = fopen("sheikahslate.ini", "w");
-        fputs("tab_preset = 9\nframe_generation = 9x\nfg_flow_scale = 5\n", f);
+        fputs("tab_preset = 9\nframe_generation = 9x\nfg_flow = 5\n", f);
         fclose(f);
         pid_t p = fork();
         if (!p) {
@@ -165,11 +184,11 @@ int main(void) {
         pid_t p = fork();
         if (!p) {
             settings_load();
-            _exit(g_settings.framegen == 0 && g_settings.fg_flow == 75 && !g_settings.fg_perf ? 0 : 1);
+            _exit(g_settings.framegen == 0 && g_settings.fg_flow == 0 && !g_settings.fg_perf ? 0 : 1);
         }
         int st;
         waitpid(p, &st, 0);
-        expect(WIFEXITED(st) && WEXITSTATUS(st) == 0, "frame generation off by default (flow scale 75%)");
+        expect(WIFEXITED(st) && WEXITSTATUS(st) == 0, "frame generation off by default (flow scale Automatic)");
     }
 
     if (failures) { printf("%d failure(s)\n", failures); return 1; }

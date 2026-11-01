@@ -52,7 +52,7 @@ Settings g_settings = {
     .drs_mode = 0,
     .even_pacing = -1,
     .framegen = 0,
-    .fg_flow = 75,  // (Lossless Scaling's advice for a 1440p image; the Tab S10 Ultra's is 1080-1848 lines)
+    .fg_flow = 0,  // (Automatic: Lossless Scaling's advice by the image's height - 100% at 1080 lines, 60% at the Tab's 1848)
     .fg_perf = false,
     .event_fps_unlock = false,  // (some events count frames: hle/framepace.c in_event)
     .fps_mode = 1,  // (30: the game's own choice dropped the overworld to 20, where the GPU's clocks settled low)
@@ -342,9 +342,11 @@ void settings_load(void) {
         else if (!strcmp(key, "even_pacing")) g_settings.even_pacing = !strcmp(val, "on") ? 1 : !strcmp(val, "off") ? 0 : -1;
         else if (!strcmp(key, "frame_generation"))
             g_settings.framegen = !strcmp(val, "2x") ? 1 : !strcmp(val, "3x") ? 2 : !strcmp(val, "4x") ? 3 : 0;
-        else if (!strcmp(key, "fg_flow_scale")) {
+        else if (!strcmp(key, "fg_flow") || !strcmp(key, "fg_flow_scale")) {
             int v = atoi(val);
-            g_settings.fg_flow = v < 25 ? 25 : v > 100 ? 100 : v;
+            // (auto; slate.15 wrote its default, 75, whether chosen or not: read as Automatic, which gives 75 at 1440 lines)
+            if (!strcmp(val, "auto") || (!strcmp(key, "fg_flow_scale") && v == 75)) g_settings.fg_flow = 0;
+            else g_settings.fg_flow = v < 25 ? 25 : v > 100 ? 100 : v;
         }
         else if (!strcmp(key, "fg_performance")) g_settings.fg_perf = atoi(val) != 0;
         else if (!strcmp(key, "tab_preset")) g_tab_preset_rev = atoi(val);
@@ -445,8 +447,10 @@ void settings_save(void) {
     }
     fprintf(f, "even_pacing = %s\n", g_settings.even_pacing < 0 ? "auto" : g_settings.even_pacing ? "on" : "off");
     {   static const char *const fg[] = {"off", "2x", "3x", "4x"};
-        fprintf(f, "frame_generation = %s\nfg_flow_scale = %d\nfg_performance = %d\n",
-                fg[g_settings.framegen >= 0 && g_settings.framegen < 4 ? g_settings.framegen : 0], g_settings.fg_flow, g_settings.fg_perf);
+        fprintf(f, "frame_generation = %s\n", fg[g_settings.framegen >= 0 && g_settings.framegen < 4 ? g_settings.framegen : 0]);
+        if (g_settings.fg_flow > 0) fprintf(f, "fg_flow = %d\n", g_settings.fg_flow);
+        else fprintf(f, "fg_flow = auto\n");
+        fprintf(f, "fg_performance = %d\n", g_settings.fg_perf);
     }
     if (g_tab_preset_rev) fprintf(f, "tab_preset = %d\n", g_tab_preset_rev);
     fprintf(f, "cutscenes_60 = %d\n", g_settings.event_fps_unlock);

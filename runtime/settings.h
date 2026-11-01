@@ -63,8 +63,9 @@ typedef struct {
     int framegen;         // Video > Frame generation (WSword; vulkan/device.c fg_present, framegen.cpp - the player's own
                           // Lossless.dll): frames made between two real ones, 0 off, 1 2x, 2 3x, 3 4x.
                           // ini: frame_generation = off | 2x | 3x | 4x
-    int fg_flow;          // Video > Flow scale: the resolution motion is found at, percent of the image's (25-100).
-                          // ini: fg_flow_scale
+    int fg_flow;          // Video > Flow scale: the resolution motion is found at, percent of the image's (25-100); 0
+                          // Automatic - Lossless Scaling's advice by the image's height (vulkan/device.c fg_flow_for).
+                          // ini: fg_flow = auto | 25..100 (slate.15's fg_flow_scale: its default 75 read as auto)
     bool fg_perf;         // Video > Performance mode: Lossless Scaling's lighter passes. ini: fg_performance
     bool native_code;     // Android: the game's own code on the CPU, no build of it (runtime/native.c); off by default
     bool files_in_place;  // Android: a setup reads the picked romfs/ where it is, no copy (services/fs.c); off by default

@@ -187,6 +187,25 @@ void dp_feedback(DPace *p, uint32_t id, uint64_t actual, uint64_t earliest) {
     regrid(p, id, actual);
 }
 
+int dp_fg_frames(double refresh_ns, int want, int fps) {
+    if (refresh_ns <= 0 || want < 1 || fps <= 0) return want < 0 ? 0 : want;
+    double hz = 1e9 / refresh_ns;
+    for (int g = want; g >= 1; g--) {
+        double per = hz / ((double)fps * (g + 1));
+        if (per >= 0.97 && fabs(per - (int)(per + 0.5)) < 0.05) return g;
+    }
+    for (int g = want; g >= 1; g--)
+        if ((double)fps * (g + 1) <= hz * 1.03) return g;
+    return 0;
+}
+
+int dp_fg_subset(int n, int eff, int *which) {
+    if (eff > n) eff = n;
+    while (eff > 0 && (n + 1) % (eff + 1)) eff--;
+    for (int k = 0; k < eff; k++) which[k] = (k + 1) * (n + 1) / (eff + 1) - 1;
+    return eff < 0 ? 0 : eff;
+}
+
 int dp_stats_take(DPace *p, char *out, int size, bool paced) {
     uint32_t total = 0;
     for (int k = 0; k < 9; k++) total += p->shown[k];

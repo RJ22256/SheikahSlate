@@ -114,6 +114,8 @@ namespace lsfgvk::backend {
         /// schedule frames
         /// (see lsfg-vk documentation)
         void scheduleFrames();
+        /// (WSword) some of the passes (Instance::scheduleFrames)
+        void scheduleFrames(const std::vector<size_t>& which);
 
         /// (WSword) the handles, the next signal value and the next real frame's index
         [[nodiscard]] ContextImages images(VkFormat format) const {
@@ -702,7 +704,24 @@ void Instance::scheduleFrames(Context& context) { // NOLINT (static)
 #endif
 }
 
+void Instance::scheduleFrames(Context& context, const std::vector<size_t>& which) { // NOLINT (static)
+    try {
+        context.scheduleFrames(which);
+    } catch (const std::exception& e) {
+        throw backend::error("Unable to schedule frames", e);
+    }
+}
+
 void Context::scheduleFrames() {
+    std::vector<size_t> all(this->destImages.size());
+    for (size_t i = 0; i < all.size(); ++i) all[i] = i;
+    this->scheduleFrames(all);
+}
+
+void Context::scheduleFrames(const std::vector<size_t>& which) {
+    for (size_t k = 0; k < which.size(); ++k)
+        if (which[k] >= this->destImages.size() || (k && which[k] <= which[k - 1]))
+            throw backend::error("bad pass selection");
     // wait for previous pre-pass to complete
     if (this->fidx && !this->cmdbufFence.wait(this->ctx.vk))
         throw backend::error("Timeout waiting for previous frame to complete");
@@ -723,13 +742,15 @@ void Context::scheduleFrames() {
     cmdbuf.end(ctx.vk);
     cmdbuf.submit(this->ctx.vk,
         {}, this->syncSemaphore.handle(), this->idx,
-        {}, this->prepassSemaphore.handle(), this->idx
+        {}, this->prepassSemaphore.handle(), this->idx,
+        which.empty() ? this->cmdbufFence.handle() : VK_NULL_HANDLE // (WSword: no main pass - the fence here)
     );
 
     this->idx++;
 
-    // schedule main passes
-    for (size_t i = 0; i < this->destImages.size(); i++) {
+    // schedule main passes (WSword: the chosen ones, signalled one after another)
+    for (size_t k = 0; k < which.size(); k++) {
+        const size_t i = which[k];
         const auto& cmdbuf = this->cmdbufs.at(i + 1);
         cmdbuf.begin(ctx.vk);
 
@@ -747,12 +768,12 @@ void Context::scheduleFrames() {
         cmdbuf.end(ctx.vk);
         cmdbuf.submit(this->ctx.vk,
             {}, this->prepassSemaphore.handle(), this->idx - 1,
-            {}, this->syncSemaphore.handle(), this->idx + i,
-            i == this->destImages.size() - 1 ? this->cmdbufFence.handle() : VK_NULL_HANDLE
+            {}, this->syncSemaphore.handle(), this->idx + k,
+            k == which.size() - 1 ? this->cmdbufFence.handle() : VK_NULL_HANDLE
         );
     }
 
-    this->idx += this->destImages.size();
+    this->idx += which.size();
     this->fidx++;
 }
 
