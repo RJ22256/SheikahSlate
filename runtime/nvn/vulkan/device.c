@@ -2296,7 +2296,7 @@ static void quick_exit_handler(void) {
 #endif
 }
 
-#ifdef __ANDROID__
+// (WSword: on the PC build too)
 // ---- Sheikah Slate: the guest heap import on a driver that lists VK_EXT_external_memory_host but never ran this game
 // (Arm's Mali driver on the Galaxy Tab S10 Ultra's Immortalis-G720 among them; neither Turnip nor Qualcomm's driver has
 // the extension, so the phone this was made on never took this path). The import is made once the game sets its heap
@@ -2427,6 +2427,7 @@ bool vk_turnip_path_on(int setting) { return setting < 0 ? vk_adreno_8xx(g_vk.pr
 // 128 MB storage range) read as zeros - every menu, dialogue and item name blank. Only the heap: 0.2.5 widened
 // vk_turnip_path_on itself, and with it the in-place target reads it also gates, checked on the Adreno 830 only - the
 // likely cause of the terrain striped on an Adreno 750 (issue #129: BOTW's terrain decals read the targets they write).
+bool vk_driver_is_turnip(void);
 bool vk_turnip_heap_on(int setting) {
     if (setting >= 0 || vk_adreno_8xx(g_vk.props.deviceName)) return vk_turnip_path_on(setting);
     return g_vk.map_placed && vk_driver_is_turnip();
@@ -2434,7 +2435,7 @@ bool vk_turnip_heap_on(int setting) {
 static bool g_lrz_at_start = true;
 bool vk_lrz_at_start(void) { return g_lrz_at_start; }  // (the start screen: a change needs a restart)
 const char *vk_gpu_name(void) { return g_vk.props.deviceName; }
-#endif
+
 
 // The menu's Capture a GPU profile (ui/menu.mm): GPU time per pass of three frames, the first `delay` presented frames
 // from now (the menu closed by then, the game running), 45 apart - into the log, for tuning this GPU (g_gpuprof_req_*)
@@ -2550,7 +2551,7 @@ void ui_window_init(void) {
 
 SDL_Window *ui_window(void) { return window; }
 
-#ifdef __ANDROID__
+// (WSword: on the PC build too)
 // For the performance overlay (ui/perf_overlay.mm): the GPU and its driver, short ("Adreno (TM) 830 - Turnip").
 const char *vk_gpu_desc(void) {
     static char s[160];
@@ -2600,7 +2601,7 @@ bool vk_driver_is_turnip(void) {
     }
     return t > 0;
 }
-#endif
+
 
 void backend_init(void) {
     while (!atomic_load(&ui_ready)) SDL_Delay(1);
