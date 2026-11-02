@@ -20,14 +20,23 @@
 
 VkG g_vk;
 static SDL_Window *window;
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(_WIN32)
 // (WSword) frame generation with the player's Lossless.dll: the section "frame generation" below
+#define WS_FRAMEGEN 1
 const char *vk_fg_dll_path(void);
 static int g_sc_fg;       // frames generated per real one the swapchain was made for (FIFO, more images); 0 none
 static int g_fg_mult = 1; // presents per real frame now (the pacing's period): 1 + the generated ones
 static int g_fg_pos, g_fg_group = 1;  // the next present's place in its frame's group and the group's size (pacing)
 static uint64_t g_present_total;      // presents made, real and generated (the overlay: vk_present_total)
 static int fg_swapchain_want(void);
+// (WSword PC) a driver that doesn't report present times (NVIDIA's, Intel's): each frame - real or generated - presented
+// again for each refresh it stays up, on a FIFO swapchain, which then shows every present for one refresh: g_fill_k
+// presents a frame now (1: none again), g_sc_burst the most presents a real frame the swapchain was made for
+static int g_fill_k = 1, g_sc_burst = 1;
+static int fill_swapchain_burst(void);
+#ifdef _WIN32
+static void vk_load_display_timing(void);
+#endif
 #endif
 static atomic_bool ui_ready;
 static VkDebugUtilsMessengerEXT messenger;
@@ -578,11 +587,17 @@ static void create_device(void) {
         ext[n_ext++] = VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME;
     }
 #endif
+#ifdef _WIN32
+    // (WSword PC) VK_GOOGLE_display_timing where the driver has it (AMD's): even frame pacing and frame generation's
+    // presents each aimed at a refresh of its own, as on Android. LARECOMP_NO_DISPLAY_TIMING=1: not.
+    g_vk.display_timing = has_ext(ep, ne, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) && !getenv("LARECOMP_NO_DISPLAY_TIMING");
+    if (g_vk.display_timing) ext[n_ext++] = VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME;
+#endif
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
     VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-#ifdef __ANDROID__
+#ifdef WS_FRAMEGEN
     // (WSword) frame generation's features (fg_present): for a player who has it on or has added a Lossless.dll
     struct stat fg_st;
     bool fg_maybe = g_settings.framegen > 0 || stat(vk_fg_dll_path(), &fg_st) == 0;
@@ -718,6 +733,15 @@ static void create_device(void) {
                                            .pNext = &f11};
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = fault ? (void *)&ff : (void *)&f11};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
+#ifdef _WIN32
+    if (fg_maybe) {  // (WSword PC: frame generation's FP16 shaders, framegen.cpp - where the driver has them)
+        VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q12};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        g_vk.fp16 = q12.shaderFloat16;
+        f12.shaderFloat16 = g_vk.fp16;
+    }
+#endif
 #ifdef __ANDROID__
     {   // Adreno has no uniformAndStorageBuffer8BitAccess, and no shader uses 8-bit uniform buffers
         // (docs/las/ANDROID-PORT.md, Fase 0): the 8-bit features only when the driver has them
@@ -806,7 +830,7 @@ static void create_device(void) {
     b->vertexPipelineStoresAndAtomics = h->vertexPipelineStoresAndAtomics;
     b->robustBufferAccess = h->robustBufferAccess;  // guest shaders index cbufs freely: keep OOB reads harmless
     b->shaderClipDistance = h->shaderClipDistance;
-#ifdef __ANDROID__
+#ifdef WS_FRAMEGEN
     // (WSword: frame generation's compute shaders write R8 / RGBA16F storage images - lsfg-vk's own device asks for
     // nothing, desktop drivers don't check; where the driver has them, so a driver that does check takes them too.
     // Only for a player who uses it: the setting on, or a Lossless.dll added)
@@ -865,6 +889,9 @@ static void create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+#ifdef _WIN32
+    vk_load_display_timing();
+#endif
 #ifdef __ANDROID__
     volkLoadDevice(g_vk.dev);
     compat_aliases();
@@ -952,10 +979,10 @@ static VkPresentModeKHR present_mode(void) {
     // a throttled / captured / busy compositor slowed the whole game (4-21 fps with the GPU mostly idle; mailbox:
     // 60). No tearing. LARECOMP_VK_PRESENT=fifo|immediate|mailbox to choose.
     const char *e = getenv("LARECOMP_VK_PRESENT");
-#ifdef __ANDROID__
+#ifdef WS_FRAMEGEN
     // (WSword) FIFO with frame generation: each generated frame is a present of its own, aimed at its own refresh -
-    // under MAILBOX the next one could replace it before it went up
-    if (g_sc_fg && !e) return VK_PRESENT_MODE_FIFO_KHR;
+    // under MAILBOX the next one could replace it before it went up; and with the PC's presents again (g_sc_burst)
+    if ((g_sc_fg || g_sc_burst > 1) && !e) return VK_PRESENT_MODE_FIFO_KHR;
 #endif
     VkPresentModeKHR want = !e || !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
@@ -968,7 +995,22 @@ static VkPresentModeKHR present_mode(void) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(_WIN32)
+#ifdef _WIN32
+// (WSword PC) VK_GOOGLE_display_timing's functions aren't in the Vulkan loader's exports: the device's own (AMD's driver
+// has it), loaded once it is made (vk_load_display_timing); NULL elsewhere - display_timing then stays off
+static PFN_vkGetRefreshCycleDurationGOOGLE pfn_refresh_cycle;
+static PFN_vkGetPastPresentationTimingGOOGLE pfn_past_timing;
+#define vkGetRefreshCycleDurationGOOGLE pfn_refresh_cycle
+#define vkGetPastPresentationTimingGOOGLE pfn_past_timing
+static void vk_load_display_timing(void) {
+    if (!g_vk.display_timing) return;
+    pfn_refresh_cycle = (PFN_vkGetRefreshCycleDurationGOOGLE)vkGetDeviceProcAddr(g_vk.dev, "vkGetRefreshCycleDurationGOOGLE");
+    pfn_past_timing = (PFN_vkGetPastPresentationTimingGOOGLE)vkGetDeviceProcAddr(g_vk.dev, "vkGetPastPresentationTimingGOOGLE");
+    if (!pfn_refresh_cycle || !pfn_past_timing) g_vk.display_timing = false, pfn_refresh_cycle = NULL, pfn_past_timing = NULL;
+    LOG("[display] the driver reports present times: %s\n", g_vk.display_timing ? "yes (VK_GOOGLE_display_timing)" : "no");
+}
+#endif
 // ---- even frame pacing (Sheikah Slate; display_pacing.c). Each present carries an id and, with Video > Even frame
 // pacing, the time it asks not to go up before: a refresh of its own, the same number of refreshes after the frame
 // before (4 at 30 fps on the 120 Hz panel), from the times the system reports the earlier frames went up
@@ -980,19 +1022,54 @@ static uint64_t g_dp_refresh_ps;  // (the refined refresh period, picoseconds, f
 static uint32_t g_dp_presents;    // (presents on this swapchain: the system's period asked again every 240)
 static bool g_dp_aiming;          // (the last present asked for a time)
 
-static bool even_pacing_on(void) {
+static int even_pacing_setting(void) {
     static int env = -2;  // LARECOMP_EVEN_PACING=0 / 1: instead of the setting
     if (env == -2) { const char *e = getenv("LARECOMP_EVEN_PACING"); env = e ? atoi(e) != 0 : -1; }
-    int v = env >= 0 ? env : g_settings.even_pacing;
-    return g_vk.display_timing && v != 0;
+    return env >= 0 ? env : g_settings.even_pacing;
+}
+static bool even_pacing_on(void) { return g_vk.display_timing && even_pacing_setting() != 0; }
+
+// (WSword PC) without present times: frames shown again for each refresh they stay up (g_fill_k) - with Even frame
+// pacing On (Automatic is the reports' alone), or with frame generation, whose frames otherwise went up for one
+// refresh and the real one for the rest
+static bool fill_pacing_wanted(void) {
+#ifdef _WIN32
+    return !g_vk.display_timing && even_pacing_setting() == 1;
+#else
+    return false;
+#endif
 }
 
-// hle/framepace.c: the game's frame period on the display's refresh grid while frames are paced to it
+// hle/framepace.c: the game's frame period on the display's refresh grid while frames are paced to it (on the PC
+// without present times, while frames go up a refresh each: the game's clock in step with the display's, so FIFO's
+// queue of presents neither grows nor runs dry)
 uint64_t vk_display_frame_period(uint64_t period_ns) {
     uint64_t ps = __atomic_load_n(&g_dp_refresh_ps, __ATOMIC_RELAXED);
-    if (!ps || !even_pacing_on()) return period_ns;
+    bool locked = even_pacing_on() || (!g_vk.display_timing && (g_sc_burst > 1 || g_sc_fg));
+    if (!ps || !locked) return period_ns;
     return (uint64_t)(dp_locked_period(ps / 1000.0, (double)period_ns) + 0.5);
 }
+
+// (WSword PC) the window's display's refresh period from Windows (SDL: its exact rate, 59.94 or 143.856), ns; 0 unknown
+static double sdl_refresh_ns(void) {
+#ifdef _WIN32
+    const SDL_DisplayMode *dm = window ? SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window)) : NULL;
+    if (!dm) return 0;
+    double hz = dm->refresh_rate_numerator > 0 && dm->refresh_rate_denominator > 0
+                    ? (double)dm->refresh_rate_numerator / dm->refresh_rate_denominator : dm->refresh_rate;
+    return hz >= 20 && hz <= 500 ? 1e9 / hz : 0;
+#else
+    return 0;
+#endif
+}
+
+// (ui/menu.mm, ui/launcher.mm) the reports, the display's rate, and Even frame pacing as it is now
+bool vk_display_timing_on(void) { return g_vk.display_timing; }
+double vk_display_refresh_hz(void) {
+    double r = g_dp.refresh > 0 ? g_dp.refresh : g_dp.nominal > 0 ? g_dp.nominal : sdl_refresh_ns();
+    return r > 0 ? 1e9 / r : 0;
+}
+bool vk_even_pacing_active(void) { return even_pacing_on() || fill_pacing_wanted(); }
 
 static double dp_query_refresh(void) {
     VkRefreshCycleDurationGOOGLE rc = {0};
@@ -1002,7 +1079,17 @@ static double dp_query_refresh(void) {
 }
 
 static void dp_swapchain_created(void) {
-    if (!g_vk.display_timing || !g_vk.swapchain) return;
+    if (!g_vk.swapchain) return;
+    if (!g_vk.display_timing) {  // (PC: the display's rate from Windows - frame generation's choices and fill pacing)
+        double r = sdl_refresh_ns();
+        if (r <= 0) return;
+        dp_reset(&g_dp, r);
+        g_dp_presents = 0;
+        __atomic_store_n(&g_dp_refresh_ps, (uint64_t)(r * 1000), __ATOMIC_RELAXED);
+        LOG("[display] refresh %.3f ms (%.2f Hz, from Windows): no present times from the driver - even frame pacing %s\n",
+            r / 1e6, 1e9 / r, fill_pacing_wanted() ? "on (each frame presented again for each refresh)" : "off");
+        return;
+    }
     double r = dp_query_refresh();
     dp_reset(&g_dp, r);
     g_dp_presents = 0;
@@ -1033,7 +1120,17 @@ static bool dp_before_present(VkPresentTimeGOOGLE *pt) {
 
 // After a present: the times the system has for earlier ones.
 static void dp_after_present(void) {
-    if (!g_vk.display_timing || !vkGetPastPresentationTimingGOOGLE) return;
+    if (!g_vk.display_timing) {  // (PC: the display's rate again now and then - a mode change, another monitor)
+        if (++g_dp_presents % 240) return;
+        double was = g_dp.nominal, now = sdl_refresh_ns();
+        if (now > 0 && (was <= 0 || fabs(now - was) > 0.002 * was)) {
+            dp_reset(&g_dp, now);
+            __atomic_store_n(&g_dp_refresh_ps, (uint64_t)(now * 1000), __ATOMIC_RELAXED);
+            LOG("[display] refresh now %.3f ms (%.2f Hz, from Windows)\n", now / 1e6, 1e9 / now);
+        }
+        return;
+    }
+    if (!vkGetPastPresentationTimingGOOGLE) return;
     VkPastPresentationTimingGOOGLE t[16];
     uint32_t n = 16;
     VkResult r = vkGetPastPresentationTimingGOOGLE(g_vk.dev, g_vk.swapchain, &n, t);
@@ -1057,6 +1154,16 @@ void vk_display_stats(char *out, size_t size) {
     if (g_vk.display_timing) dp_stats_take(&g_dp, out, (int)size, g_dp_aiming);
 }
 
+// (WSword PC) fill pacing: the presents a real frame makes (presents: the real one and the generated ones) shown again
+// for each refresh they stay up, at the game's frame rate now - within the most the swapchain was made for (g_sc_burst)
+static int fill_k(int presents) {
+    if (g_vk.display_timing || g_sc_burst <= 1) return 1;
+    extern int framepace_current_fps(void);
+    return dp_fill_repeats(g_dp.refresh, framepace_current_fps(), presents, g_sc_burst);
+}
+#endif
+
+#ifdef __ANDROID__
 static bool surface_lost;  // (android_surface_ready makes the surface and swapchain again at the next frame)
 
 // The surface went away under a swapchain being made (back from the background with the new window at the old one's
@@ -1117,10 +1224,11 @@ static void create_swapchain(void) {
     for (uint32_t i = 0; i < nf; i++)
         if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; break; }
     uint32_t count = caps.minImageCount + 1;
-#ifdef __ANDROID__
+#ifdef WS_FRAMEGEN
     // (WSword) frame generation presents its frames together with the real one: an image for each, so none of them waits
-    // for one to come free - the render thread also translates the game's next frame
-    count += (uint32_t)g_sc_fg;
+    // for one to come free - the render thread also translates the game's next frame (PC: and each one again for the
+    // refreshes it stays up, g_sc_burst presents a real frame)
+    count += (uint32_t)(g_sc_burst > 1 ? g_sc_burst - 1 : g_sc_fg);
 #endif
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;  // (asked for: the driver may make more, up to VK_MAX_SWAP_IMAGES)
@@ -1174,7 +1282,7 @@ static void create_swapchain(void) {
                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
         VK_CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &g_vk.sc_views[i]));
     }
-#ifdef __ANDROID__
+#ifdef WS_FRAMEGEN
     dp_swapchain_created();
 #endif
 }
@@ -1259,13 +1367,16 @@ bool vk_frame_begin(const float clear[4]) {
 #ifdef __ANDROID__
     if (!android_surface_ready()) return false;
 #endif
-#ifdef __ANDROID__
+#ifdef WS_FRAMEGEN
     {
-        int fgw = fg_swapchain_want();
-        if (fgw != g_sc_fg) {
-            g_sc_fg = fgw;
+        int fgw = fg_swapchain_want(), bw = fill_swapchain_burst();
+        if (fgw != g_sc_fg || bw != g_sc_burst) {
+            g_sc_fg = fgw, g_sc_burst = bw;
             if (g_vk.swapchain) {
-                LOG("[framegen] swapchain made again: %s\n", fgw ? "FIFO, an image more for each generated frame" : "as without it");
+                if (bw > 1 && bw > fgw + 1)
+                    LOG("[framegen] swapchain made again: FIFO, %d presents a real frame (each frame again for each refresh)\n", bw);
+                else
+                    LOG("[framegen] swapchain made again: %s\n", fgw ? "FIFO, an image more for each generated frame" : "as without it");
                 recreate_swapchain();
             }
         }
@@ -1285,8 +1396,8 @@ bool vk_frame_begin(const float clear[4]) {
     {   // the present FRAMES ago done (its slot's semaphore and command buffers free); with frame generation, the real
         // frame and its generated ones in flight on top
         int depth = FRAMES;
-#ifdef __ANDROID__
-        depth += g_sc_fg;
+#ifdef WS_FRAMEGEN
+        depth += g_sc_burst > 1 ? g_sc_burst - 1 : g_sc_fg;
 #endif
         if (depth > FRAME_RING) depth = FRAME_RING;
         vk_wait_seq(slot_seq[(slot + FRAME_RING - depth) % FRAME_RING]);
@@ -1386,10 +1497,12 @@ void vk_frame_end(const char *shot_path) {
     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
-#ifdef __ANDROID__
+#ifdef WS_FRAMEGEN
     VkPresentTimeGOOGLE ptime;
     VkPresentTimesInfoGOOGLE ptimes = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, .swapchainCount = 1, .pTimes = &ptime};
     if (dp_before_present(&ptime)) pi.pNext = &ptimes;
+#endif
+#ifdef __ANDROID__
     uint64_t trace_start = vk_timing_trace_on() ? SDL_GetTicksNS() : 0;
 #endif
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
@@ -1399,6 +1512,9 @@ void vk_frame_end(const char *shot_path) {
     if (r == VK_ERROR_OUT_OF_DATE_KHR) recreate_swapchain();  // (SUBOPTIMAL: every frame of an unrotated swapchain)
     else if (r == VK_ERROR_SURFACE_LOST_KHR) surface_lost = true;
 #else
+#ifdef WS_FRAMEGEN
+    if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) dp_after_present(), g_present_total++;
+#endif
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
 #endif
     cur_frame.ok = false;
@@ -1435,7 +1551,7 @@ void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) 
 // (dp_before_present), on a FIFO swapchain with an image more for each (create_swapchain). Paused while the menu is
 // open (the game behind it doesn't move much; the menu itself isn't generated). A failure (no DLL, a driver that can't
 // build the shaders) stops it with its reason on the Video page, until the setting changes.
-#ifdef __ANDROID__
+#ifdef WS_FRAMEGEN
 #include "framegen.h"
 void vk_submit_timeline(VkSemaphore wait, uint64_t wait_value, VkSemaphore signal, uint64_t signal_value);
 void vk_present_draw_view(VkCommandBuffer cb, VkImageView view, uint32_t w, uint32_t h, float vx, float vy, float vw, float vh,
@@ -1447,12 +1563,18 @@ int framepace_current_fps(void);  // (hle/framepace.c: the game's frame rate now
 bool vk_frame_begin(const float clear[4]);
 void vk_frame_end(const char *shot_path);
 
+// (Android: the app's internal storage; PC: WSword's data folder - Settings > Lossless Scaling copies the picked file in)
+static const char *fg_dir(void) {
+#ifdef __ANDROID__
+    const char *in = SDL_GetAndroidInternalStoragePath();
+    return in ? in : ".";
+#else
+    return rt_data_root();
+#endif
+}
 const char *vk_fg_dll_path(void) {
-    static char p[600];
-    if (!p[0]) {
-        const char *in = SDL_GetAndroidInternalStoragePath();
-        snprintf(p, sizeof p, "%s/lsfg/Lossless.dll", in ? in : ".");
-    }
+    static char p[1100];
+    if (!p[0]) snprintf(p, sizeof p, "%s/lsfg/Lossless.dll", fg_dir());
     return p;
 }
 
@@ -1688,9 +1810,8 @@ static int fg_present(TexBackend *b) {
             return 0;
         }
         const char *cache = NULL;
-        char cp[640];
-        const char *in = SDL_GetAndroidInternalStoragePath();
-        if (in) snprintf(cp, sizeof cp, "%s/lsfg/pipeline_cache.bin", in), cache = cp;
+        char cp[1200];
+        snprintf(cp, sizeof cp, "%s/lsfg/pipeline_cache.bin", fg_dir()), cache = cp;
         FgDevice d = {.instance = g_vk.inst, .phys = g_vk.phys, .dev = g_vk.dev, .qfam = g_vk.qfam, .queue = g_vk.queue,
                       .gipa = vkGetInstanceProcAddr, .fp16 = g_vk.fp16, .cache_path = cache};
         uint64_t t0 = SDL_GetTicksNS();
@@ -1766,20 +1887,25 @@ static int fg_present(TexBackend *b) {
     int shown = 0;
     extern bool vk_present_post_passes(void);
     bool post = vk_present_post_passes();  // (the present's own passes - Video > Anti-aliasing: images of its own)
+    g_fill_k = fill_k(eff + 1);  // (PC without present times: each frame again for each refresh it stays up)
     for (int j = 0; j < eff && which[j] < fg.im.ndest; j++) {
-        if (post) vk_full_barrier(vk_cmd());  // (the present before may still be reading them)
-        if (j == 0 && fg.qp) {  // (when all the passes are done: everything before in the queue)
-            vkCmdWriteTimestamp(vk_cmd(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fg.qp, ts * 3 + 2);
-            fg.ts_valid[ts] = true;
+        bool ok = true;
+        for (int r = 0; r < g_fill_k && ok; r++) {
+            if (post) vk_full_barrier(vk_cmd());  // (the present before may still be reading them)
+            if (j == 0 && r == 0 && fg.qp) {  // (when all the passes are done: everything before in the queue)
+                vkCmdWriteTimestamp(vk_cmd(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fg.qp, ts * 3 + 2);
+                fg.ts_valid[ts] = true;
+            }
+            if (!vk_frame_begin(black)) { ok = false; break; }
+            g_fg_pos = j, g_fg_group = eff + 1;  // (dp_before_present: this group's j-th)
+            VkCommandBuffer c = vk_cmd();
+            vk_gp_note(c, r ? "present: a generated frame again" : "present: a generated frame");
+            vk_present_draw_view(c, fg.im.dest_view[which[j]], fg.im.width, fg.im.height, fg.vx, fg.vy, fg.vw, fg.vh, fg.pv);
+            menu_render_again((void *)c);
+            vk_submit_timeline(fg.im.sync, sig + 1 + (uint64_t)j, VK_NULL_HANDLE, 0);  // (each: its frame is made)
+            vk_frame_end(NULL);
         }
-        if (!vk_frame_begin(black)) break;
-        g_fg_pos = j, g_fg_group = eff + 1;  // (dp_before_present: this group's j-th)
-        VkCommandBuffer c = vk_cmd();
-        vk_gp_note(c, "present: a generated frame");
-        vk_present_draw_view(c, fg.im.dest_view[which[j]], fg.im.width, fg.im.height, fg.vx, fg.vy, fg.vw, fg.vh, fg.pv);
-        menu_render_again((void *)c);
-        vk_submit_timeline(fg.im.sync, sig + 1 + (uint64_t)j, VK_NULL_HANDLE, 0);
-        vk_frame_end(NULL);
+        if (!ok) break;
         shown++;
     }
     fg.shown += (uint64_t)shown;
@@ -1795,6 +1921,23 @@ static int fg_present(TexBackend *b) {
     }
     return shown;
 }
+
+// (WSword PC, no present times) the most presents a real frame the swapchain is made for: the generated frames and the
+// real one (fg_swapchain_want), each again for every refresh it stays up at the game's lowest frame rate - with frame
+// generation, or Even frame pacing On; at most FILL_MAX_BURST (an image each: 30 fps on a 240 Hz monitor without frame
+// generation, 8, is left uneven). 1: as without it.
+#define FILL_MAX_BURST 6
+static int fill_swapchain_burst(void) {
+#ifndef _WIN32
+    return 1;  // (Android: present times on every driver - aimed presents instead)
+#endif
+    if (g_vk.display_timing) return 1;
+    int gen = fg_swapchain_want();
+    if (!gen && !fill_pacing_wanted()) return 1;
+    double r = g_dp.refresh > 0 ? g_dp.refresh : sdl_refresh_ns();
+    int k = dp_fill_repeats(r, fg_fps_floor(), gen + 1, FILL_MAX_BURST);
+    return k > 1 ? (gen + 1) * k : 1;
+}
 #endif
 
 // ================================================================== game presentation (metal.m backend_present)
@@ -1806,7 +1949,7 @@ uint64_t renderer_present_count(void);
 void renderer_save_texture_tex(TexBackend *b, const char *path);
 
 static uint64_t frames, total_frames, g_frame_counter;
-#ifdef __ANDROID__
+#ifdef WS_FRAMEGEN
 static uint64_t fg_total_frames(void) { return total_frames; }
 #endif
 static long g_gpuprof_req_at;  // (vk_gpuprof_request: the next capture's frame, 0 none)
@@ -1884,8 +2027,10 @@ void backend_present(NvnTexture *t) {
     extern void vk_frame_check(NvnTexture *t, TexBackend *b);  // (exec.c: frames unlike the steady ones, logged)
     vk_frame_check(t, b);
     vk_end_pass();
-#ifdef __ANDROID__
-    fg_present(b);  // (WSword: frame generation's frames before this one, when it is on)
+#ifdef WS_FRAMEGEN
+    g_fill_k = 1;
+    int fg_shown = fg_present(b);  // (WSword: frame generation's frames before this one, when it is on)
+    if (!fg_shown) g_fill_k = fill_k(1);  // (PC without present times: the real frame again for each refresh it stays up)
 #endif
     static const float black[4] = {0, 0, 0, 1};
     uint64_t t0 = SDL_GetTicksNS();
@@ -1940,7 +2085,7 @@ void backend_present(NvnTexture *t) {
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
-#ifdef __ANDROID__
+#ifdef WS_FRAMEGEN
         fg_place((float)vx, (float)vy, (float)vw, (float)vh, pv);  // (frame generation's frames before the next one)
 #endif
         extern void vk_gp_note(VkCommandBuffer cb, const char *what);  // (LARECOMP_GPUPROF_AT: the present's own rows)
@@ -1955,6 +2100,23 @@ void backend_present(NvnTexture *t) {
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
         bool shot = win_shot && (long)total_frames + 1 == win_shot;
         vk_frame_end(shot ? "build/window.png" : NULL);
+#ifdef WS_FRAMEGEN
+        {   // (WSword PC, no present times: g_fill_k - the real frame presented again for each refresh it stays up, so
+            // the FIFO swapchain shows every present for one refresh; with frame generation as its frames were)
+            extern bool vk_present_post_passes(void);
+            bool post = vk_present_post_passes();
+            for (int r = 1; r < g_fill_k; r++) {
+                if (post) vk_full_barrier(vk_cmd());  // (the present before may still be reading its passes' images)
+                static const float black2[4] = {0, 0, 0, 1};
+                if (!vk_frame_begin(black2)) break;
+                VkCommandBuffer c = vk_cmd();
+                vk_gp_note(c, "present: the image again (even pacing)");
+                vk_present_draw(c, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
+                menu_render_again((void *)c);
+                vk_frame_end(NULL);
+            }
+        }
+#endif
         if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
     } else {
         renderer_submit();
@@ -2482,6 +2644,15 @@ void ui_window_init(void) {
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     int win_w = 1280, win_h = 720;
+#ifdef _WIN32
+    {   // (WSword PC) a 16:9 window at about 3/4 of the display's usable height (1280x720 was small on a 1440p or 4K one)
+        SDL_Rect ub;
+        if (SDL_GetDisplayUsableBounds(SDL_GetPrimaryDisplay(), &ub) && ub.h > 900) {
+            win_h = ub.h * 3 / 4, win_w = win_h * 16 / 9;
+            if (win_w > ub.w * 9 / 10) win_w = ub.w * 9 / 10, win_h = win_w * 9 / 16;
+        }
+    }
+#endif
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);
     SDL_WindowFlags wflags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #ifdef __ANDROID__
@@ -2495,7 +2666,7 @@ void ui_window_init(void) {
                                             getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST"));
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
-    window = SDL_CreateWindow("Sheikah Slate", win_w, win_h, wflags);
+    window = SDL_CreateWindow("WSword", win_w, win_h, wflags);
 #ifdef __ANDROID__
     // opened with the screen locked / off: no surface to make the window on yet - it comes once the activity shows.
     // SDL_PumpEvents sleeps while the app is paused, so the 5 s count only time in the foreground: a window that fails
@@ -2504,7 +2675,7 @@ void ui_window_init(void) {
         if (tries == 0) LOG("[vk] waiting for the Android window (%s)\n", SDL_GetError());
         SDL_PumpEvents();
         SDL_Delay(50);
-        window = SDL_CreateWindow("Sheikah Slate", win_w, win_h, wflags);
+        window = SDL_CreateWindow("WSword", win_w, win_h, wflags);
     }
 #endif
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());

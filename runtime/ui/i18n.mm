@@ -7,7 +7,9 @@
 #include <unordered_map>
 
 #include "imgui.h"
-#ifdef __ANDROID__
+#include "slate_ui.h"
+#ifdef WS_SLATE_UI
+#include <string>
 #include <vector>
 // (ImGui's own TrueType reader, a private copy: a phone font it can't read leaves the whole atlas empty - HyperOS's
 // NotoSansCJK did, and the start screen crashed uploading it)
@@ -20,7 +22,7 @@ extern "C" {
 #include "../settings.h"
 }
 
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
 typedef const char *const Pair[2];
 static const char *const kPt[][2] = {
 #include "i18n_pt.inc"
@@ -74,7 +76,7 @@ static const Table *menu_table(void) {
 #endif
 
 const char *tr(const char *en) {
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     const Table *t = en && *en ? menu_table() : NULL;
     if (!t) return en;
     static const auto *map = [t] {  // (built once, thread-safe: the start screen's callbacks run on Java's threads)
@@ -94,7 +96,7 @@ std::string ui_upper(const char *s) {
     for (size_t i = 0; i < t.size(); i++) {
         unsigned char c = (unsigned char)t[i];
         if (c < 0x80) t[i] = (char)toupper(c);
-#ifdef __ANDROID__  // (the desktop's menus are English: bytes as before)
+#ifdef WS_SLATE_UI  // (LAS's desktop menus are English: bytes as before)
         else if (c == 0xC3 && i + 1 < t.size()) {  // U+00E0..U+00FE: the lowercase accented letters (but ÷, U+00F7)
             unsigned char d = (unsigned char)t[i + 1];
             if (d >= 0xA0 && d <= 0xBE && d != 0xB7) t[i + 1] = (char)(d - 0x20);
@@ -114,7 +116,7 @@ std::string ui_upper(const char *s) {
 }
 
 void i18n_merge_fonts(ImFontAtlas *atlas, float size_px, float rel) {
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     // The shipped Baloo 2 has Latin only: Russian, Japanese, Korean and Chinese come from the phone's own fonts, merged
     // into the font just added, with the glyphs the menu language's table uses (a few hundred, not whole scripts: the
     // atlas stays small)
@@ -134,6 +136,22 @@ void i18n_merge_fonts(ImFontAtlas *atlas, float size_px, float rel) {
     // Korean, Simplified, Traditional Chinese faces in that order: Android's fonts.xml); each checked with ImGui's reader
     // (font_ok) - variable CFF2 fonts it can't read
     int face = !strcmp(code, "ko") ? 1 : !strcmp(code, "zh-Hans") ? 2 : !strcmp(code, "zh-Hant") ? 3 : 0;
+#ifdef _WIN32
+    // (WSword PC) Windows' own: Yu Gothic (then Meiryo), Malgun Gothic, Microsoft YaHei (then SimSun), Microsoft JhengHei
+    // (then MingLiU), Segoe UI - one face a file, or the collection's first
+    static std::string dir;
+    if (dir.empty()) {
+        const char *w = getenv("WINDIR");
+        dir = std::string(w && *w ? w : "C:\\Windows") + "\\Fonts\\";
+    }
+    static const char *const first[] = {"YuGothM.ttc", "malgun.ttf", "msyh.ttc", "msjh.ttc"};
+    static const char *const second[] = {"meiryo.ttc", "gulim.ttc", "simsun.ttc", "mingliu.ttc"};
+    static std::string a, b, c;
+    a = dir + first[face], b = dir + second[face], c = dir + "segoeui.ttf";
+    const char *cjk_fonts[] = {a.c_str(), b.c_str()};
+    const char *cyr_fonts[] = {c.c_str()};
+    face = 0;
+#else
     static const char *const own[] = {"/system/fonts/MiSansJapaneseVF.ttf", "/system/fonts/MiSansKoreanVF.ttf",
                                       "/system/fonts/MiSansVF.ttf", "/system/fonts/MiSansTCVF.ttf"};
     const char *cjk_fonts[] = {cjk ? own[face] : "", "/system/fonts/NotoSansCJK-Regular.ttc",
@@ -142,6 +160,7 @@ void i18n_merge_fonts(ImFontAtlas *atlas, float size_px, float rel) {
     static const char *const cyr_fonts[] = {"/system/fonts/RobotoStatic-Medium.ttf", "/system/fonts/Roboto-Medium.ttf",
                                             "/system/fonts/RobotoStatic-Regular.ttf", "/system/fonts/Roboto-Regular.ttf",
                                             "/system/fonts/NotoSans-Regular.ttf"};
+#endif
     const char *const *list = cjk ? cjk_fonts : cyr_fonts;
     size_t n = cjk ? sizeof cjk_fonts / sizeof *cjk_fonts : sizeof cyr_fonts / sizeof *cyr_fonts;
     // a letter of the language the font must have (あ, 한, 中, 中, Я)

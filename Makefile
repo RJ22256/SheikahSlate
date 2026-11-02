@@ -26,8 +26,8 @@ GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools
                 tools/gamelib_entry.c runtime/hle/hle_symbols.txt runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS) --simd c') | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-16)
 
-# the Android app's versionName: the start screen's "App" version and the zip's name
-VERSION  := $(shell sed -n 's/^.*versionName = "\([^"]*\)".*/\1/p' android/sheikahslate/app/build.gradle.kts)
+# the PC build's version (the start screen's "App" and the zip's name): the Android app's it was made from, then pc.<n>
+VERSION  := 0.2.8-pc.1
 OSFLAGS  := -D_WIN32_WINNT=0x0A00 -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S \
             -DWIN32_LEAN_AND_MEAN -DNOMINMAX $(if $(RELEASE),-DLARECOMP_ZIP_BUILD) $(if $(NO_FFMPEG),-DLARECOMP_NO_FFMPEG)
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)

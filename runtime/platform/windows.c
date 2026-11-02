@@ -964,3 +964,37 @@ void plat_write_tracking_enable(uint64_t lo, uint64_t hi) { (void)lo, (void)hi; 
 void plat_write_prepare(uint64_t addr, uint64_t size) { (void)addr, (void)size; }
 // (the performance capture's CPU time per thread: platform/android.c's; not on Windows yet)
 void plat_thread_sample(int ms) { (void)ms; }
+
+// ---- (WSword PC) device state for the performance overlay (runtime/ui/perf_overlay.mm): this process's CPU time as a
+// share of every core since the last call, its memory, the system's free memory, and a laptop's battery. No CPU
+// clusters or temperatures (Windows has no public way to read them without a driver).
+#include <psapi.h>
+void plat_device_stats(PlatDeviceStats *out) {
+    memset(out, 0, sizeof *out);
+    out->soc_temp_c = out->batt_temp_c = out->batt_pct = -1;
+    out->thermal = -1;
+    out->headroom = -1;
+    static uint64_t last_cpu, last_ns;
+    static int cores;
+    if (!cores) {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        cores = si.dwNumberOfProcessors > 0 ? (int)si.dwNumberOfProcessors : 1;
+    }
+    FILETIME c, e, k, u;
+    static float pct;
+    if (GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u)) {
+        uint64_t cpu = (((uint64_t)k.dwHighDateTime << 32 | k.dwLowDateTime) + ((uint64_t)u.dwHighDateTime << 32 | u.dwLowDateTime)) * 100;
+        uint64_t ns = plat_now_ns();
+        if (last_ns && ns > last_ns) pct = (float)((double)(cpu - last_cpu) / (double)(ns - last_ns) / cores * 100.0);
+        last_cpu = cpu, last_ns = ns;
+    }
+    out->cpu_pct = pct;
+    PROCESS_MEMORY_COUNTERS pm = {.cb = sizeof pm};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pm, sizeof pm)) out->rss_mb = (uint32_t)(pm.WorkingSetSize >> 20);
+    MEMORYSTATUSEX ms = {.dwLength = sizeof ms};
+    if (GlobalMemoryStatusEx(&ms)) out->avail_mb = (uint32_t)(ms.ullAvailPhys >> 20);
+    SYSTEM_POWER_STATUS ps;  // (a desktop: no battery - flag 128; 255: unknown)
+    if (GetSystemPowerStatus(&ps) && !(ps.BatteryFlag & 128) && ps.BatteryFlag != 255 && ps.BatteryLifePercent <= 100)
+        out->batt_pct = ps.BatteryLifePercent;
+}

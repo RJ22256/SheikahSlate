@@ -3,8 +3,10 @@
 // and how much of the time the CPU waits on it (apps can't read the GPU's own load), memory, temperatures, battery
 // power and Android's thermal state (runtime/platform/android.c plat_device_stats; the battery and thermal state come
 // from the activity, SheikahSlateActivity.reportDeviceStats). Full, or compact (one line); a finger drags it
-// anywhere on the screen (ui/touch_controls.mm, g_settings.overlay_pos) - LASRecompAndroid's.
-#ifdef __ANDROID__
+// anywhere on the screen (ui/touch_controls.mm, g_settings.overlay_pos) - LASRecompAndroid's. (WSword PC: the same
+// overlay - the CPU's and GPU's work, memory and a laptop's battery from platform/windows.c - dragged with the mouse while
+// the game doesn't have it: perf_overlay_mouse.)
+#if defined(__ANDROID__) || defined(_WIN32)
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <stdio.h>
@@ -139,10 +141,15 @@ void perf_overlay_draw(ImVec2 display, float scale) {
     char cpu[96] = "";
     for (int i = 0, n = 0; i < ds.ncluster && n < (int)sizeof cpu - 8; i++)
         n += snprintf(cpu + n, sizeof cpu - n, "%s%u", i ? " / " : "", ds.cluster_mhz[i]);
-    ImGui::Text("CPU %s MHz", cpu);
-    ImGui::SameLine();
-    ImGui::TextDisabled("app %.0f%%", ds.cpu_pct);
+    if (ds.ncluster > 0) {
+        ImGui::Text("CPU %s MHz", cpu);
+        ImGui::SameLine();
+        ImGui::TextDisabled("app %.0f%%", ds.cpu_pct);
+    } else {
+        ImGui::Text("CPU app %.0f%%", ds.cpu_pct);
+    }
 
+#ifdef __ANDROID__
     PlatAdpfStats adpf;
     plat_adpf_stats(&adpf);
     if (adpf.state > 0) {
@@ -165,18 +172,25 @@ void perf_overlay_draw(ImVec2 display, float scale) {
     } else {
         ImGui::TextDisabled("ADPF: %s", adpf.state == -2 ? "disabled" : "unavailable");
     }
+#endif
     ImGui::Text("GPU %s", vk_gpu_desc());
     ImGui::TextColored(grade(100 - wait_pct, 50, 20), "    waiting on the GPU %.0f%%", wait_pct);
     ImGui::Text("RAM app %u MB", ds.rss_mb);
-    ImGui::SameLine();
-    ImGui::TextDisabled("free %u MB", ds.avail_mb);
+    if (ds.avail_mb) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("free %u MB", ds.avail_mb);
+    }
 
     if (ds.soc_temp_c > 0) {
         ImGui::TextColored(grade(100 - ds.soc_temp_c, 35, 20), "SoC %.0f\xc2\xb0" "C", ds.soc_temp_c);
         ImGui::SameLine();
     }
     if (ds.batt_temp_c > 0) ImGui::TextColored(grade(100 - ds.batt_temp_c, 60, 55), "Battery %.0f\xc2\xb0" "C", ds.batt_temp_c);
+#ifdef __ANDROID__
     else ImGui::NewLine();
+#else
+    else if (ds.soc_temp_c > 0) ImGui::NewLine();  // (the SameLine above)
+#endif
     if (ds.batt_pct >= 0) {
         if (ds.watts > 0) { ImGui::Text("Power %.1f W", ds.watts); ImGui::SameLine(); }
         ImGui::TextDisabled("battery %.0f%%", ds.batt_pct);
@@ -192,4 +206,39 @@ void perf_overlay_draw(ImVec2 display, float scale) {
     record();
     ImGui::End();
 }
+
+#ifdef _WIN32
+// (WSword PC) the mouse drags the overlay while the game doesn't have the mouse (hle/input.c: mouse camera off, or Alt
+// held) and the menu is closed - true when the event was the overlay's
+extern "C" bool perf_overlay_mouse(const SDL_Event *e) {
+    static bool dragging;
+    static float dx, dy;
+    if (!g_settings.show_fps) return dragging = false;
+    SDL_Window *w = NULL;
+    float x = 0, y = 0;
+    if (e->type == SDL_EVENT_MOUSE_MOTION) w = SDL_GetWindowFromID(e->motion.windowID), x = e->motion.x, y = e->motion.y;
+    else if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP)
+        w = SDL_GetWindowFromID(e->button.windowID), x = e->button.x, y = e->button.y;
+    else return false;
+    if (!w) return false;
+    float k = SDL_GetWindowPixelDensity(w);
+    int pw = 0, ph = 0;
+    SDL_GetWindowSizeInPixels(w, &pw, &ph);
+    if (pw <= 0 || ph <= 0) return false;
+    x *= k, y *= k;
+    const float *r = g_perf_rect;
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        if (e->button.button != SDL_BUTTON_LEFT || r[2] <= 0 || x < r[0] || x > r[0] + r[2] || y < r[1] || y > r[1] + r[3])
+            return false;
+        dragging = true, dx = r[0] - x, dy = r[1] - y;
+        return true;
+    }
+    if (!dragging) return false;
+    float nx = (x + dx) / pw, ny = (y + dy) / ph;  // (place() keeps it on the screen)
+    g_settings.overlay_pos[0] = nx < 0 ? 0 : nx > 1 ? 1 : nx;
+    g_settings.overlay_pos[1] = ny < 0 ? 0 : ny > 1 ? 1 : ny;
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_UP) dragging = false, settings_save();
+    return true;
+}
+#endif
 #endif

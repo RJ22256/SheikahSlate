@@ -50,9 +50,7 @@ uint64_t vk_sig_uploads, vk_sig_views, vk_sig_sampled_fmtviews;  // (textures.c:
 static int fc_lines;  // (its log lines: at most 120 a run)
 static uint32_t fc_epoch;  // (presents so far: TexBackend.drawn_epoch)
 #define FC_LOG(...) do { if (fc_lines < 120) { fc_lines++; LOG(__VA_ARGS__); } } while (0)
-#ifdef __ANDROID__
 uint64_t vk_cum_wait_ns(void) { return cum_wait; }  // (the performance overlay: time spent waiting on the GPU)
-#endif
 static uint32_t prof_end_line[4096];  // passes ended, by the exec.c line that ended them (0: submit / present)
 uint64_t prof_views_created;  // textures.c vk_image_view cache misses
 uint64_t prof_up_ns = ~0ull;  // textures.c upload checks (~0: profiling off)

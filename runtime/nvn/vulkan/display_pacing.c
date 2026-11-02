@@ -199,6 +199,12 @@ int dp_fg_frames(double refresh_ns, int want, int fps) {
     return 0;
 }
 
+int dp_fill_repeats(double refresh_ns, int fps, int presents, int max_burst) {
+    if (refresh_ns <= 0 || fps <= 0 || presents < 1) return 1;
+    int k = dp_frames_per(refresh_ns, 1e9 / ((double)fps * presents));
+    return k < 2 || k * presents > max_burst ? 1 : k;
+}
+
 int dp_fg_subset(int n, int eff, int *which) {
     if (eff > n) eff = n;
     while (eff > 0 && (n + 1) % (eff + 1)) eff--;

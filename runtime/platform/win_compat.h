@@ -65,6 +65,15 @@ static inline char *strsep(char **sp, const char *delim) {
     return s;
 }
 
+// (WSword: the Mods page - a mod made for the DLC by its folder's name)
+#include <ctype.h>
+static inline char *strcasestr(const char *h, const char *n) {
+    size_t k = strlen(n);
+    for (; *h; h++)
+        if (!_strnicmp(h, n, k)) return (char *)h;
+    return k ? NULL : (char *)h;
+}
+
 // POSIX mkdir(path, mode); mingw's takes only the path.
 static inline int plat_mkdir(const char *p, int mode) { (void)mode; return _mkdir(p); }
 #define mkdir(p, m) plat_mkdir(p, m)

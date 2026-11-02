@@ -120,7 +120,7 @@ int framepace_target(void) {
 // takes 1/30 of a minute times the step each frame).
 #define FPS_CEILING 300
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(_WIN32)
 // (Sheikah Slate) on the display's own refresh: 4 of the panel's real refreshes at 30 fps on 120 Hz rather than 1/30 s of
 // our clock, the two drift apart a little - with Video > Even frame pacing (vulkan/device.c), which aims each frame at a
 // refresh of its own; the period itself otherwise
@@ -133,7 +133,7 @@ uint64_t framepace_period_ns(void) {
     int fps = framepace_target();
     __atomic_store_n(&g_fps_now, fps, __ATOMIC_RELAXED);
     uint64_t period = 1000000000ull / (uint64_t)(fps > 0 ? fps : FPS_CEILING);
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(_WIN32)
     if (fps > 0) period = vk_display_frame_period(period);
 #endif
     return period;

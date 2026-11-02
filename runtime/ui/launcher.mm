@@ -33,6 +33,7 @@
 #include "imgui_internal.h"  // (SetKeyOwner)
 #include "option_rows.h"
 #include "osk.h"
+#include "slate_ui.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -75,6 +76,9 @@ const char *vk_gpu_name(void);
 void android_set_display_refresh(int how);  // (platform/android.c: Video > Display refresh rate)
 #endif
 }
+#ifndef __ANDROID__
+static void android_set_display_refresh(int) {}  // (PC: Exclusive fullscreen's refresh rate - ui/menu.mm)
+#endif
 #ifdef __APPLE__
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -1076,6 +1080,211 @@ extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nat
 }
 #endif
 
+#ifdef _WIN32
+// ------------------------------------------------------------------ (WSword PC) Settings' pickers: Windows' own dialogs
+// (SDL's), each result shown under its buttons as on Android - Lossless.dll (copied to lsfg/Lossless.dll in WSword's data
+// folder once fg_check_dll finds its frame generation shaders: the player picks the file, it isn't looked for), the
+// start screen's background (look/background.png), the DLC (its image built as on Android), the app's icon (the window's
+// and the taskbar's: SDL_SetWindowIcon, at once)
+#include <errno.h>
+#include "../nvn/vulkan/framegen.h"  // (fg_check_dll - Settings > Lossless Scaling)
+extern "C" const char *vk_fg_dll_path(void);  // (vulkan/device.c: <data folder>/lsfg/Lossless.dll)
+extern "C" const char *vk_gpu_desc(void);     // ("NVIDIA GeForce RTX 4070 - NVIDIA")
+extern "C" const char *vk_driver_desc(void);  // (the driver as it names itself, and its version)
+extern "C" const char *fs_aoc_image(void);    // (runtime/services/fs.c: the DLC image, NULL when not set up)
+static std::string app_version() { return WSWORD_VERSION; }
+static std::string g_look_msg, g_lsfg_msg, g_dlc_msg;  // (g_lock)
+static bool g_look_failed, g_look_busy, g_lsfg_failed, g_lsfg_busy, g_dlc_failed, g_dlc_busy;
+static std::atomic<bool> g_bg_reload{false};  // (the start screen loads the background again: load_background)
+static std::atomic<float> g_dlc_frac{-1};
+
+static bool copy_file(const std::string &src, const std::string &dst) {
+    FILE *in = fopen(src.c_str(), "rb");
+    if (!in) return false;
+    FILE *out = fopen(dst.c_str(), "wb");
+    bool ok = out != NULL;
+    char buf[65536];
+    size_t n;
+    while (ok && (n = fread(buf, 1, sizeof buf, in)) > 0) ok = fwrite(buf, 1, n, out) == n;
+    fclose(in);
+    if (out && fclose(out) != 0) ok = false;
+    if (!ok) remove(dst.c_str());
+    return ok;
+}
+
+static void SDLCALL picked_lsfg(void *, const char *const *files, int) {
+    char msg[800] = "";
+    bool failed = false;
+    if (files && files[0]) {
+        std::string src = files[0], part = std::string(vk_fg_dll_path()) + ".part";
+        std::string dir = vk_fg_dll_path();
+        dir.erase(dir.find_last_of('/'));
+        mkdir(dir.c_str(), 0755);
+        bool fp16 = false;
+        char err[400] = "";
+        if (!copy_file(src, part)) {
+            failed = true;
+            snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+        } else if (fg_check_dll(part.c_str(), &fp16, err, sizeof err) != 0) {
+            remove(part.c_str());
+            failed = true;
+            snprintf(msg, sizeof msg, tr("That isn't a Lossless.dll WSword can use: %s"), err);
+        } else {
+            remove(vk_fg_dll_path());  // (Windows' rename doesn't replace)
+            if (rename(part.c_str(), vk_fg_dll_path()) != 0) {
+                failed = true;
+                snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+                remove(part.c_str());
+            } else {
+                fprintf(stderr, "[framegen] Lossless.dll added from %s (FP16 shaders %s)\n", src.c_str(), fp16 ? "there too" : "not there");
+                snprintf(msg, sizeof msg, "%s", tr("Lossless.dll added: its frame generation shaders are there. Turn it on in "
+                                                   "the game: Settings > Video > Frame generation."));
+            }
+        }
+    }
+    pthread_mutex_lock(&g_lock);
+    g_lsfg_msg = msg, g_lsfg_failed = failed, g_lsfg_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+static void pick_lsfg(SDL_Window *win) {
+    pthread_mutex_lock(&g_lock);
+    g_lsfg_busy = true, g_lsfg_msg.clear();
+    pthread_mutex_unlock(&g_lock);
+    static const SDL_DialogFileFilter f[] = {{"Lossless.dll", "dll"}};
+    SDL_ShowOpenFileDialog(picked_lsfg, NULL, win, f, 1, NULL, false);
+}
+
+static std::string custom_background_path() { return std::string(rt_data_root()) + "/look/background.png"; }
+static void SDLCALL picked_background(void *, const char *const *files, int) {
+    char msg[600] = "";
+    bool failed = false;
+    if (files && files[0]) {
+        SDL_Surface *s = SDL_LoadPNG(files[0]);  // (checked before it replaces the one in use)
+        if (!s) {
+            failed = true;
+            snprintf(msg, sizeof msg, tr("That didn't work: %s"), tr("WSword reads PNG pictures."));
+        } else {
+            SDL_DestroySurface(s);
+            mkdir((std::string(rt_data_root()) + "/look").c_str(), 0755);
+            if (copy_file(files[0], custom_background_path())) {
+                snprintf(msg, sizeof msg, "%s", tr("Background changed."));
+                g_bg_reload = true;
+            } else {
+                failed = true;
+                snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+            }
+        }
+    }
+    pthread_mutex_lock(&g_lock);
+    g_look_msg = msg, g_look_failed = failed, g_look_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+static void pick_background(SDL_Window *win) {
+    pthread_mutex_lock(&g_lock);
+    g_look_busy = true, g_look_msg.clear();
+    pthread_mutex_unlock(&g_lock);
+    static const SDL_DialogFileFilter f[] = {{"PNG pictures", "png"}};
+    SDL_ShowOpenFileDialog(picked_background, NULL, win, f, 1, NULL, false);
+}
+
+// The DLC (Settings > DLC): the pack's romfs found in the picked folder - System/AocVersion.txt with Pack/ beside it, the
+// folder itself or a few levels down, as SheikahSlateActivity.findDlc - its image built at <1.0.0's data root>/dlc/aoc.bin
+// (services/fs.c fs_aoc_image) and its movies copied loose into dlc/romfs (hle/movie.c)
+static std::string dlc_dir(void) {
+    char r[1024];
+    return rt_version_root(100, r, sizeof r) ? std::string(r) + "/dlc" : std::string();
+}
+static bool is_dir_at(const std::string &p) {
+    struct stat st;
+    return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+static std::string find_dlc(const std::string &dir, int depth, bool *ballad) {
+    struct stat st;
+    bool sys = stat((dir + "/System/AocVersion.txt").c_str(), &st) == 0, pack = is_dir_at(dir + "/Pack");
+    if (sys && pack) return dir;
+    if (sys) *ballad = true;  // (the Ballad's pack: its unlock only)
+    if (depth >= 4 || pack) return "";
+    DIR *d = opendir(dir.c_str());
+    if (!d) return "";
+    std::string found;
+    while (struct dirent *e = readdir(d)) {
+        if (e->d_name[0] == '.' || !is_dir_at(dir + "/" + e->d_name)) continue;
+        found = find_dlc(dir + "/" + e->d_name, depth + 1, ballad);
+        if (!found.empty()) break;
+    }
+    closedir(d);
+    return found;
+}
+static void remove_tree(const std::string &p) {
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) return;
+    if (S_ISDIR(st.st_mode)) {
+        if (DIR *d = opendir(p.c_str())) {
+            while (struct dirent *e = readdir(d))
+                if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) remove_tree(p + "/" + e->d_name);
+            closedir(d);
+        }
+        rmdir(p.c_str());
+    } else {
+        remove(p.c_str());
+    }
+}
+static void dlc_progress(uint64_t done, uint64_t total) { g_dlc_frac = total ? (float)((double)done / (double)total) : 0; }
+static std::string g_dlc_pick;
+static void *dlc_thread(void *) {
+    std::string pick = g_dlc_pick;
+    for (char &c : pick) if (c == '\\') c = '/';
+    bool ballad = false;
+    std::string src = find_dlc(pick, 0, &ballad), msg, dir = dlc_dir();
+    bool failed = true;
+    char why[256] = "";
+    if (src.empty()) {
+        msg = tr(ballad ? "That's only the Champions' Ballad's unlock: choose the larger pack (01007EF00011F001), which holds "
+                          "both DLCs."
+                        : "No DLC there: choose the folder with the DLC's romfs (System/AocVersion.txt and Pack).");
+    } else if (dir.empty()) {
+        char m[300];
+        snprintf(m, sizeof m, tr("That didn't work: %s"), "no data folder");
+        msg = m;
+    } else {
+        mkdir(dir.c_str(), 0755);
+        g_dlc_frac = 0;
+        bool ok = romfs_build(src.c_str(), (dir + "/aoc.bin").c_str(), dlc_progress, why, sizeof why);
+        if (ok && is_dir_at(src + "/Movie")) mkdir((dir + "/romfs").c_str(), 0755),
+                                             ok = romfs_copy_tree((src + "/Movie").c_str(), (dir + "/romfs/Movie").c_str(), NULL);
+        g_dlc_frac = -1;
+        if (ok) {
+            failed = false;
+            msg = tr("DLC installed. Start the game: the title shows Master Mode.");
+        } else {
+            char m[400];
+            snprintf(m, sizeof m, tr("That didn't work: %s"), why[0] ? why : "Could not build the DLC's data image. Check free space and try again.");
+            msg = m;
+        }
+    }
+    fprintf(stderr, "[launcher] DLC setup from %s: %s\n", pick.c_str(), msg.c_str());
+    pthread_mutex_lock(&g_lock);
+    g_dlc_msg = msg, g_dlc_failed = failed, g_dlc_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    return NULL;
+}
+static void SDLCALL picked_dlc(void *, const char *const *files, int) {
+    bool go = files && files[0];
+    pthread_mutex_lock(&g_lock);
+    if (go) g_dlc_pick = files[0];
+    else g_dlc_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    pthread_t t;
+    if (go && pthread_create(&t, NULL, dlc_thread, NULL) == 0) pthread_detach(t);
+}
+static void pick_dlc(SDL_Window *win) {
+    pthread_mutex_lock(&g_lock);
+    g_dlc_busy = true, g_dlc_msg.clear();
+    pthread_mutex_unlock(&g_lock);
+    SDL_ShowOpenFolderDialog(picked_dlc, NULL, win, NULL, false);
+}
+#endif
+
 // ------------------------------------------------------------------ folder dialog (SDL calls back on any thread)
 static void SDLCALL picked(void *, const char *const *files, int) {
     if (!files || !files[0]) return;
@@ -1174,7 +1383,7 @@ static int g_bg_w, g_bg_h;
 #ifdef __ANDROID__
 // (Sheikah Slate) Settings > Look: the player's own background picture (SheikahSlateActivity pickBackground: decoded,
 // sized to the screen and saved as PNG here), over the bundled artwork; g_bg_reload (beside nativeLookDone): a new one,
-// or the original back
+// or the original back (PC: the pickers' section above)
 static std::string custom_background_path() {
     const char *in = SDL_GetAndroidInternalStoragePath();
     return in ? std::string(in) + "/look/background.png" : "";
@@ -1185,7 +1394,7 @@ static void load_background(GpuDevice dev) {
     if (g_bg) return;
     char artwork[1100];
     bool found = false;
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     {
         std::string own = custom_background_path();
         struct stat st;
@@ -1270,7 +1479,7 @@ static void load_background(GpuDevice dev) {
 #endif
 }
 
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
 // Settings > Look's app icons (SheikahSlateActivity APP_ICONS, in its order) and their pictures (freed with the start
 // screen's ImGui backend, when a game starts); g_icon_current: the one in use (SheikahSlateActivity.appIcon)
 static const char *const k_icon_names[] = {"Sword", "Slate", "Midnight", "Dawn", "Ancient", "Forest"};
@@ -1295,11 +1504,24 @@ static uint64_t load_png_texture(const char *name) {
     SDL_DestroySurface(rgba);
     return t;
 }
+#ifdef _WIN32
+// (WSword PC) Settings > Look's icon as the window's and the taskbar's (the exe's own, windows.rc, stays the Sword)
+extern "C" bool vk_even_pacing_active(void);  // (vulkan/device.c: Even frame pacing as it is now - the start screen's chip)
+static void ui_window_icon(void) {
+    int k = g_settings.app_icon >= 0 && g_settings.app_icon < N_ICONS ? g_settings.app_icon : 0;
+    char path[1100];
+    if (!rt_resource(k_icon_files[k], NULL, path, sizeof path)) return;
+    if (SDL_Surface *s = SDL_LoadPNG(path)) {
+        SDL_SetWindowIcon(ui_window(), s);
+        SDL_DestroySurface(s);
+    }
+}
+#endif
 #endif
 
 // ------------------------------------------------------------------ screen
 static ImFont *g_font_title, *g_font_menu, *g_font_small;
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
 static ImFont *g_glass_bold, *g_glass_text;  // (the Glass Slate start screen: Inter Bold / Medium, OFL - third_party/fonts/Inter)
 static ImFont *g_set_text, *g_set_big;       // (Settings in the Glass Slate look: Inter at Baloo 2's letter height)
 #endif
@@ -1488,7 +1710,7 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     return clicked;
 }
 
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
 // ------------------------------------------------------------------ the Glass Slate start screen
 // (Sheikah Slate, 0.2.8-slate.13: concept A of the UI concepts, the player's choice) A glass panel down the left over
 // the background: the app's icon in use and its name, the game's and the app's version, PLAY, Saves (Settings >
@@ -1648,7 +1870,11 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
     dl->AddRectFilled(P(0, 0), P(pw, ds.y), IM_COL32(9, 19, 34, 228));
     dl->AddLine(P(pw, 0), P(pw, ds.y), line, 1.5f * u);
     float y = 52 * u, logo = 46 * u;
+#ifdef __ANDROID__
     if (g_icon_current < 0) g_icon_current = android_call_ret_int("appIcon", 0);
+#else
+    g_icon_current = g_settings.app_icon;  // (PC: Settings > Look's choice, the window's icon)
+#endif
     if (!g_icon_tex_loaded) {
         g_icon_tex_loaded = true;
         for (int k = 0; k < N_ICONS; k++) g_icon_tex[k] = load_png_texture(k_icon_files[k]);
@@ -1706,6 +1932,7 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
             snprintf(msg, sizeof msg, "!  %s", tr(busy ? "Setting up the game files..." : status.c_str()));
             text(ft, 15 * u, pad, ly, IM_COL32(255, 184, 102, 255), msg, bw + 40 * u);
         }
+#ifdef __ANDROID__
         const char *drv = getenv("LARECOMP_VK_DRIVER");
         std::string driver = tr("system driver");
         if (drv && *drv) {  // (a custom one: its folder's name, drivers/<name>/lib...so)
@@ -1714,9 +1941,15 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
             size_t b = e != std::string::npos && e > 0 ? p.rfind('/', e - 1) : std::string::npos;
             driver = b != std::string::npos ? p.substr(b + 1, e - b - 1) : p;
         }
+        const char *open_menu = "In game, the back button opens the menu.";
+#else
+        std::string driver = vk_driver_desc();  // (PC: the driver's own name and version)
+        if (driver.size() > 48) driver.resize(48);
+        const char *open_menu = "In game, Esc or F1 opens the menu.";
+#endif
         std::string gpu = std::string(vk_gpu_name()) + "  \xc2\xb7  " + driver;
         text(ft, 14 * u, pad, ly + 24 * u, muted, gpu.c_str(), bw + 40 * u);
-        text(ft, 14 * u, pad, ly + 48 * u, muted, tr("In game, the back button opens the menu."), bw + 40 * u);
+        text(ft, 14 * u, pad, ly + 48 * u, muted, tr(open_menu), bw + 40 * u);
     }
 
     // ---- the chips at the top right: the refresh rate, Even frame pacing, the battery
@@ -1728,7 +1961,13 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
         const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
         char b[96];
         if (dm && dm->refresh_rate > 1) snprintf(b, sizeof b, "%d Hz", (int)lroundf(dm->refresh_rate)), chips.push_back(b);
+#ifdef __ANDROID__
         chips.push_back(tr(g_settings.even_pacing == 0 ? "Even pacing off" : "Even pacing on"));
+#else
+        chips.push_back(tr(vk_even_pacing_active() ? "Even pacing on" : "Even pacing off"));
+        if (g_settings.framegen > 0 && file_exists(vk_fg_dll_path()))
+            snprintf(b, sizeof b, tr("Frame generation %dx"), g_settings.framegen + 1), chips.push_back(b);
+#endif
         if (st.batt_pct >= 0) {
             if (st.batt_temp_c > 0) snprintf(b, sizeof b, "%.0f%%  \xc2\xb7  %.0f\xc2\xb0" "C", st.batt_pct, st.batt_temp_c);
             else snprintf(b, sizeof b, "%.0f%%", st.batt_pct);
@@ -1766,12 +2005,21 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
         text(ft, 13 * u, x, yy, label, tr("MODE"));
         yy += 22 * u;
         static const char *names[] = {"Battery", "Performance", "Turbo", "Turbo 60"};
+#ifdef __ANDROID__
         static const char *subs[] = {"30 fps  \xc2\xb7  60 Hz", "30 fps  \xc2\xb7  sharpest", "40 fps", "60 fps"};
         static const char *blurbs[] = {
             "Coolest and longest: the game's lowest resolution held, the lighter upscaler.",
             "Each frame shown for exactly 4 refreshes at 120 Hz, AMD FSR 1: the best image.",
             "Each frame shown for exactly 3 refreshes; the resolution comes down as far as a frame needs.",
             "The smoothest: the resolution lowered as far as 60 needs; the most heat."};
+#else
+        static const char *subs[] = {"30 fps  \xc2\xb7  light", "30 / 60 fps", "40 fps  \xc2\xb7  120 Hz", "60 fps"};
+        static const char *blurbs[] = {
+            "For a laptop on its battery: 30 fps, the Switch's 900p scene, the lighter upscaler.",
+            "60 fps where your PC keeps up, 30 where it doesn't; the scene at your window's resolution.",
+            "Each frame shown for exactly 3 refreshes of a 120 Hz monitor (uneven at 60 Hz).",
+            "Always 60 fps: the game's resolution lowered as far as 60 needs."};
+#endif
         int cur = settings_current_mode();
         bool sixty = rt_game_version() >= 182;  // (1.0.0 and 1.6.0 run at 30)
         float gap = 10 * u, mw = (inner - 3 * gap) / 4, mh = 64 * u;
@@ -1847,7 +2095,7 @@ static bool launcher_pad_event(const SDL_Event &e) {
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
         ImGuiKey k = launcher_pad_key(e.gbutton.button);
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
         // ImGui ignores A while its nav cursor is hidden, as it starts out (PLAY focused at launch): A did nothing until
         // the d-pad had moved the selection. A controller press shows it, so this very press acts
         if (k != ImGuiKey_None && e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) ImGui::SetNavCursorVisible(true);
@@ -1976,7 +2224,7 @@ static bool g_open_files;     // Settings > Prelaunch: the Game Files page (vers
 static void prelaunch_tab(float sc) {
     const ImVec4 gold(0.93f, 0.76f, 0.33f, 1);
     auto heading = [&](const char *t) {
-#ifdef __ANDROID__  // (the Sheikah look of the menu's pages)
+#ifdef WS_SLATE_UI  // (the Sheikah look of the menu's pages)
         ui_sheikah_heading(t, sc);
         return;
 #endif
@@ -2112,6 +2360,28 @@ static void prelaunch_tab(float sc) {
     }
     ImGui::Spacing();
     ImGui::Spacing();
+#elif defined(_WIN32)
+    heading("Graphics");  // (WSword PC: the GPU and driver the game runs on, and the log to send with a report)
+    {
+        ImGui::PushTextWrapPos(0);
+        ImGui::Text(tr("GPU: %s"), vk_gpu_name());
+        if (*vk_driver_desc()) ImGui::TextDisabled("%s", vk_driver_desc());
+        ImGui::TextDisabled("%s", tr("WSword runs on your GPU's own Vulkan driver: keep it up to date (NVIDIA, AMD or Intel's "
+                                     "site, or Windows Update). With more than one GPU, WSword picks the dedicated one."));
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", tr("What WSword reports (GPU, driver, errors) goes to WSword.log in its folder, to send "
+                                     "with a bug report; after a crash, the run before is kept beside it."));
+        if (ImGui::Button(tr("Show the log in Explorer"))) {
+            char exe[1100];
+            std::string d = plat_exe_path(exe, sizeof exe) ? exe : rt_data_root();
+            size_t cut = d.find_last_of("\\/");
+            if (cut != std::string::npos && plat_exe_path(exe, sizeof exe)) d.erase(cut);
+            reveal_folder(d);
+        }
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
 #endif
     heading("Game files");
     ImGui::Text(tr("Game version: %s"), version_name(rt_game_version()));
@@ -2160,10 +2430,11 @@ static void prelaunch_tab(float sc) {
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     ImGui::Spacing();
     ImGui::Spacing();
     heading("Saves");
+#ifdef __ANDROID__
     {
         pthread_mutex_lock(&g_lock);
         std::string msg = g_save_msg;
@@ -2204,6 +2475,23 @@ static void prelaunch_tab(float sc) {
         }
         ImGui::PopTextWrapPos();
     }
+#else
+    {   // (WSword PC: the saves are plain files in WSword's data folder - each game version's own)
+        char vr[1024];
+        std::string dir = rt_version_root(rt_game_version(), vr, sizeof vr) ? std::string(vr) + "/save/save_0" : "";
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("This game version's saves are files in WSword's data folder: open it to back them up "
+                                     "or move them. To bring saves from an emulator or another PC, copy its save folder's "
+                                     "contents (0, 1, 2... and option.sav) into it while WSword isn't running. A save from a "
+                                     "newer version of the game may not load in an older one."));
+        ImGui::PopTextWrapPos();
+        if (ImGui::Button(tr("Show saves in Explorer")) && !dir.empty()) {
+            mkdir((std::string(vr) + "/save").c_str(), 0755);
+            mkdir(dir.c_str(), 0755);
+            reveal_folder(dir);
+        }
+    }
+#endif
     ImGui::Spacing();
     ImGui::Spacing();
     heading("DLC");
@@ -2227,7 +2515,11 @@ static void prelaunch_tab(float sc) {
             pthread_mutex_lock(&g_lock);
             g_dlc_busy = true, g_dlc_msg.clear();
             pthread_mutex_unlock(&g_lock);
+#ifdef __ANDROID__
             android_call("pickDlcFolder");  // (then importDlc -> nativeBuildDlc -> nativeDlcDone)
+#else
+            pick_dlc(g_launcher_win);  // (then dlc_thread)
+#endif
         }
         if (have) {
             ImGui::SameLine();
@@ -2264,7 +2556,11 @@ static void prelaunch_tab(float sc) {
             pthread_mutex_lock(&g_lock);
             g_look_busy = true, g_look_msg.clear();
             pthread_mutex_unlock(&g_lock);
+#ifdef __ANDROID__
             android_call("pickBackground");  // (then nativeLookDone)
+#else
+            pick_background(g_launcher_win);  // (a PNG of the player's)
+#endif
         }
         if (custom) {
             ImGui::SameLine();
@@ -2288,10 +2584,16 @@ static void prelaunch_tab(float sc) {
                 g_icon_tex_loaded = true;
                 for (int k = 0; k < N_ICONS; k++) tex[k] = load_png_texture(k_icon_files[k]);
             }
+#ifdef __ANDROID__
             if (current < 0) current = android_call_ret_int("appIcon", 0);
             ImGui::TextDisabled("%s", tr("The app's icon, on the home screen and in the app list. WSword starts "
                                          "again to change it; the home screen may drop the old icon - the new one is in "
                                          "the app list, to put back."));
+#else
+            current = g_settings.app_icon;
+            ImGui::TextDisabled("%s", tr("WSword's icon, on its window and in the taskbar (the file's own icon stays the "
+                                         "Sword)."));
+#endif
             ImGui::Text(tr("App icon: %s"), tr(names[pending >= 0 ? pending : current]));
             float side = 92 * sc;
             ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -2307,13 +2609,23 @@ static void prelaunch_tab(float sc) {
                 else if (k == pending)
                     dl->AddRect(ImVec2(a.x - 3 * sc, a.y - 3 * sc), ImVec2(b.x + 3 * sc, b.y + 3 * sc),
                                 IM_COL32(110, 235, 250, 255), 10 * sc, 0, 3 * sc);
+#ifdef __ANDROID__
                 if (chosen) pending = k == current ? -1 : k;
+#else
+                if (chosen && k != current) {  // (PC: at once - the window's icon)
+                    g_settings.app_icon = current = k;
+                    settings_save();
+                    ui_window_icon();
+                }
+#endif
                 ImGui::PopID();
             }
             if (pending >= 0) {
                 ImGui::Text(tr("Use the %s icon? WSword starts again."), tr(names[pending]));
                 if (ImGui::Button(tr("Use it"))) {
+#ifdef __ANDROID__
                     android_call_int("setAppIcon", pending);  // (then the app starts again)
+#endif
                     current = pending, pending = -1;
                 }
                 ImGui::SameLine();
@@ -2348,7 +2660,11 @@ static void prelaunch_tab(float sc) {
             pthread_mutex_lock(&g_lock);
             g_lsfg_busy = true, g_lsfg_msg.clear();
             pthread_mutex_unlock(&g_lock);
+#ifdef __ANDROID__
             android_call("pickLosslessDll");  // (then nativeLsfgDone)
+#else
+            pick_lsfg(g_launcher_win);  // (then picked_lsfg: you pick the file - it isn't looked for)
+#endif
         }
         if (have) {
             ImGui::SameLine();
@@ -2394,9 +2710,7 @@ extern "C" void launcher_run(const char *root) {
     g_root = root;
     g_start_screen = 1;
     static bool update_checked;  // (once per launch, not again after a "Title screen" reboot)
-#ifdef __ANDROID__
-    update_checked = true;  // (the PC releases: not for this app, and no curl on the phone)
-#endif
+    update_checked = true;  // (LAS Recomp's releases check: not WSword's - off)
     if (!update_checked && !getenv("LARECOMP_NO_UPDATE_CHECK")) {
         update_checked = true;
         pthread_t t;
@@ -2405,6 +2719,9 @@ extern "C" void launcher_run(const char *root) {
     ui_window_init();
     SDL_Window *win = ui_window();
     g_launcher_win = win;
+#ifdef _WIN32
+    ui_window_icon();
+#endif
 #ifdef __APPLE__
     CAMetalLayer *layer = (__bridge CAMetalLayer *)ui_metal_layer();
     id<MTLDevice> dev = (__bridge id<MTLDevice>)ui_metal_device();
@@ -2442,7 +2759,7 @@ extern "C" void launcher_run(const char *root) {
         g_font_title = io.Fonts->AddFontFromFileTTF(p, 92 * (b2 ? 2.3f : 1), NULL, ranges);
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     g_glass_bold = g_glass_text = g_set_text = g_set_big = NULL;
     {   // the Glass Slate start screen's: drawn at their sizes (a little under these), the menu language's letters merged;
         // and Settings' (Baloo 2's sizes there x0.72: Inter's letters are ~1.5x Baloo 2's at one size, a little larger)
@@ -2464,7 +2781,7 @@ extern "C" void launcher_run(const char *root) {
         fprintf(stderr, "[ui] the start screen's fonts didn't build: ImGui's default font instead\n");
         io.Fonts->Clear();
         g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
         g_glass_bold = g_glass_text = g_set_text = g_set_big = NULL;
 #endif
     }
@@ -2622,7 +2939,7 @@ extern "C" void launcher_run(const char *root) {
             float s = ds.y / 720.0f;  // layout scale (fonts are built for ~2x)
             ImGui::GetIO().FontGlobalScale = s * 0.5f;
             ImDrawList *bg = ImGui::GetBackgroundDrawList();
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
             if (g_bg_reload.exchange(false)) {  // (Settings > Look: a picture chosen, or the original back)
                 if (g_bg) vk_imgui_texture_free(g_bg);
                 g_bg = 0;
@@ -2640,7 +2957,7 @@ extern "C" void launcher_run(const char *root) {
                                             IM_COL32(12, 20, 24, 255), IM_COL32(8, 12, 16, 255));
             }
             bool glass = false;  // (Android's main page: the Glass Slate start screen, glass_main - its own panel and card)
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
             glass = page == MAIN;
 #endif
             if (!glass) {  // a shadow banner fading in from the left behind the menu, and one from the right behind the version
@@ -2712,7 +3029,7 @@ extern "C" void launcher_run(const char *root) {
             bool typing = typed_before || ui_text_busy();
 
             if (page == MAIN) {
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
                 int a = glass_main(ds, win, status, busy);
                 if (a == GA_PLAY) {  // first PLAY ever: the aspect ratio question, then how to reach our menu, then the game
                     if (!g_settings.aspect_asked) ImGui::OpenPopup("##aspect");
@@ -2794,14 +3111,14 @@ extern "C" void launcher_run(const char *root) {
                 // the in-game menu's tabs (runtime/ui/menu.mm), in a window like the in-game one; tabs that need a
                 // loaded game say so
                 float sc = ds.y / 1080.0f, w = fminf(ds.x * 0.9f, 1500 * sc), h = ds.y - 2 * 18 * sc;  // (all the height: a slim margin)
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
                 w = ds.x * 0.94f;  // (touch: the category rail and full-width rows, menu.mm)
 #endif
                 ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetWindowPos(), ImVec2(ImGui::GetWindowPos().x + ds.x,
                                                           ImGui::GetWindowPos().y + ds.y), IM_COL32(0, 0, 0, 110));
                 ImVec2 wp = ImGui::GetWindowPos();
                 ImGui::SetCursorScreenPos(ImVec2(wp.x + (ds.x - w) * 0.5f, wp.y + (ds.y - h) * 0.5f));
-#ifdef __ANDROID__  // (the Glass Slate look, menu.mm tabs_body: its own rail of tabs, title and BACK)
+#ifdef WS_SLATE_UI  // (the Glass Slate look, menu.mm tabs_body: its own rail of tabs, title and BACK)
                 ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.035f, 0.075f, 0.133f, 0.95f));
                 ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 22 * sc);
 #else
@@ -2812,14 +3129,14 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::BeginChild("##settings", ImVec2(w, h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NavFlattened);
                 ImGui::PopStyleVar(2);
                 ImGui::PopStyleColor();
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
                 ImFont *set_text = g_set_text ? g_set_text : g_font_small, *set_big = g_set_big ? g_set_big : g_font_menu;
 #else
                 ImFont *set_text = g_font_small, *set_big = g_font_menu;
 #endif
                 ImGui::PushFont(set_text);
                 bool back = false;
-#ifndef __ANDROID__
+#ifndef WS_SLATE_UI
                 ImGui::PushFont(g_font_menu);
                 ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Settings"));
                 ImGui::PopFont();
@@ -2841,7 +3158,7 @@ extern "C" void launcher_run(const char *root) {
 #endif
                 bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);  // (before the pages run, like the menu)
                 menu_tabs_draw(sc, set_text, set_big, false, prelaunch_tab);
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
                 extern bool menu_settings_back_requested();
                 back |= menu_settings_back_requested();
 #endif
@@ -3129,7 +3446,7 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddText(font, size, p, col, t);
                     if (bold) dl->AddText(font, size, ImVec2(p.x + 0.7f * s, p.y), col, t);
                 };
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
                 std::string ver = app_version();  // this app's versionName, not the PC version's tag
                 if (!ver.empty()) ver = tag_label(ver, true);  // "Version 0.2.0-beta", as the PC version shows its own
 #else
@@ -3201,7 +3518,7 @@ extern "C" void launcher_run(const char *root) {
     }
     // play: hand the window to the game
     settings_save();
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     for (auto &t : g_icon_tex)  // (their descriptors go with the backend: loaded again on the next start screen)
         if (t) vk_imgui_texture_free(t), t = 0;
     g_icon_tex_loaded = false;

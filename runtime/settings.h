@@ -46,6 +46,7 @@ typedef struct {
                           // Slate: 3 refreshes a frame at 120 Hz; the game's 30 fps way, its clock stepped 0.75 a frame)
     int display_refresh;  // the display's refresh rate (Sheikah Slate, android/.../SlateDisplay.java): 0 the highest at
                           // this resolution (120 Hz on the Galaxy Tab S10 Ultra), 1 60 Hz (saves battery), 2 the system's
+                          // (WSword PC: Exclusive fullscreen's - ui/menu.mm menu_apply_display_mode; 3 120 Hz)
     int shader_int32;     // shader address math in 32-bit words even where the driver offers 64-bit (vulkan/exec.c
                           // vk_shader_int32): -1 Automatic - on for Arm (Mali) GPUs, whose compilers got the 64-bit
                           // address math of the game's text and lighting shaders wrong on the Galaxy Tab S10 Ultra
@@ -95,6 +96,7 @@ typedef struct {
     float mouse_sens;     // 0: off; 1 = default speed
     bool mouse_invert_y;
     bool fullscreen_exclusive;  // PC: fullscreen takes the display's own mode (else borderless, at the desktop's)
+    int app_icon;         // PC: Settings > Look's icon - the window's and the taskbar's (ui/launcher.mm k_icon_files)
     int language;        // LANG_AUTO or an index into g_language_codes: the game's text language
     bool aspect_asked;   // the start screen's one-time "authentic 16:9 or unlocked?" question was answered
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)

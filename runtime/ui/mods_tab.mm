@@ -1,11 +1,14 @@
-// The menu's Mods page (Android; LASRecompAndroid's): the game mods in mods/ (runtime/mods.c), each on or off, its own
+// The menu's Mods page (Android and the PC build; LASRecompAndroid's): the game mods in mods/ (runtime/mods.c), each on or off, its own
 // note (its .txt: the authors, the credits) as the description, and Import a mod folder
 // (SheikahSlateActivity.importMod: the Android folder picker; the folder is copied into this game version's
 // mods/). On or off applies when the game starts again.
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(_WIN32)
 #include <SDL3/SDL.h>
+#ifdef __ANDROID__
 #include <jni.h>
+#endif
 #include <pthread.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <string.h>
 #include <string>
@@ -15,8 +18,10 @@
 #include "option_rows.h"
 
 extern "C" {
+#include "../platform.h"
 #include "../mods.h"
 #include "../paths.h"
+#include "../romfs_build.h"
 #include "../settings.h"
 }
 
@@ -24,6 +29,7 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::string g_msg;  // the last import's outcome (set from the activity's thread)
 static bool g_busy;
 
+#ifdef __ANDROID__
 extern "C" JNIEXPORT void JNICALL Java_com_sheikahslate_SheikahSlateActivity_nativeModImportDone(JNIEnv *env, jclass,
                                                                                                           jstring message) {
     const char *text = env->GetStringUTFChars(message, NULL);
@@ -58,6 +64,51 @@ static void import_mod(void) {
     g_msg = called ? "" : "0|Could not open the folder picker.";
     pthread_mutex_unlock(&g_lock);
 }
+#else
+// (WSword PC) Import a mod folder: Windows' folder picker, then the folder copied into this game version's mods/ on a
+// thread of its own - the one picked when it has a romfs folder inside, or the folder around a picked romfs
+static std::string g_pick;
+static void *copy_mod(void *) {
+    std::string src = g_pick;
+    for (char &c : src) if (c == '\\') c = '/';
+    while (src.size() > 3 && src.back() == '/') src.pop_back();
+    struct stat st;
+    std::string base = src.substr(src.find_last_of('/') + 1), msg;
+    if (!strcasecmp(base.c_str(), "romfs")) {  // (romfs itself picked: its folder is the mod)
+        src = src.substr(0, src.find_last_of('/'));
+        base = src.substr(src.find_last_of('/') + 1);
+    }
+    if (stat((src + "/romfs").c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+        msg = "0|That folder has no romfs folder inside: pick the mod's own folder (extracted from its ZIP / RAR).";
+    } else {
+        std::string dst = std::string(rt_data_root()) + "/mods";
+        mkdir(dst.c_str(), 0755);
+        dst += "/" + base;
+        msg = romfs_copy_tree(src.c_str(), dst.c_str(), NULL) ? "1|" + base : "0|Copying the mod failed (disk full?).";
+    }
+    pthread_mutex_lock(&g_lock);
+    g_msg = msg;
+    g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    return NULL;
+}
+static void SDLCALL picked_mod(void *, const char *const *files, int) {
+    pthread_mutex_lock(&g_lock);
+    bool go = files && files[0];
+    if (go) g_pick = files[0];
+    else g_busy = false, g_msg = "2|";
+    pthread_mutex_unlock(&g_lock);
+    if (!go) return;
+    pthread_t t;
+    if (pthread_create(&t, NULL, copy_mod, NULL) == 0) pthread_detach(t);
+}
+static void import_mod(void) {
+    pthread_mutex_lock(&g_lock);
+    g_busy = true, g_msg.clear();
+    pthread_mutex_unlock(&g_lock);
+    SDL_ShowOpenFolderDialog(picked_mod, NULL, NULL, NULL, false);
+}
+#endif
 
 extern "C" const char *fs_aoc_image(void);  // (runtime/services/fs.c: the DLC image, NULL when not set up)
 

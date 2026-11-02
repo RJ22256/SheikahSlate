@@ -345,6 +345,100 @@ int main(void) {
         printf("frame generation multipliers checked\n");
     }
 
+    // 10. (WSword PC) fill pacing without present times: a FIFO swapchain, each real frame's presents (its generated
+    // ones and itself) each presented k times in a burst (dp_fill_repeats), the game's clock on the display's grid from
+    // the rate Windows reports (a little off the true one). Every present should stay up for one refresh, the queue's
+    // depth stay bounded, and without the repeats frames go up unevenly.
+    {
+        expect(dp_fill_repeats(1e9 / 120, 30, 1, 6) == 4, "fill: 30 fps on 120 Hz, 4 presents a frame");
+        expect(dp_fill_repeats(1e9 / 60, 30, 1, 6) == 2, "fill: 30 fps on 60 Hz, 2");
+        expect(dp_fill_repeats(1e9 / 120, 30, 2, 6) == 2, "fill: 2x at 30 fps on 120 Hz, each twice");
+        expect(dp_fill_repeats(1e9 / 120, 30, 4, 6) == 1, "fill: 4x at 30 fps on 120 Hz, none needed");
+        expect(dp_fill_repeats(1e9 / 144, 60, 1, 6) == 1, "fill: 60 fps on 144 Hz, not whole");
+        expect(dp_fill_repeats(1e9 / 240, 30, 1, 6) == 1, "fill: 30 fps on 240 Hz, 8 needed - more than 6");
+        expect(dp_fill_repeats(1e9 / 59.94, 30, 1, 6) == 2, "fill: 30 fps on 59.94 Hz, 2");
+        struct { double hz, reported; int fps, presents, images; const char *what; } c[] = {
+            {120.0, 119.998, 30, 1, 6, "fill 30 fps on 120 Hz"},
+            {59.9401, 59.94, 30, 1, 4, "fill 30 fps on 59.94 Hz"},
+            {120.0, 120.0, 30, 2, 6, "fill 2x at 30 fps on 120 Hz"},
+            {60.0, 60.0, 30, 2, 4, "2x at 30 fps on 60 Hz (no repeats needed)"},
+        };
+        for (unsigned ci = 0; ci < sizeof c / sizeof c[0]; ci++) {
+            for (int fill = 0; fill < 2; fill++) {
+                double R = 1e9 / c[ci].hz, Rk = 1e9 / c[ci].reported;
+                int k = fill ? dp_fill_repeats(Rk, c[ci].fps, c[ci].presents, 6) : 1;
+                int burst = c[ci].presents * k;
+                double P = dp_locked_period(Rk, 1e9 / c[ci].fps);  // (the game's clock, locked to the reported rate)
+                int cap = c[ci].images - 1;  // (presents waiting in FIFO's queue at most: one image is on screen)
+                double q_ready[64];
+                int qn = 0;
+                double vb = R * 0.37;  // (the first vblank's phase)
+                double game_t = 0, next_present = 0;
+                int shown_for = 0, counts[10] = {0}, maxq = 0, frames_done = 0;
+                double lat_sum = 0;
+                int lat_n = 0;
+                double q_enq[64];
+                for (int n = 0; frames_done < 3000; n++) {
+                    // the game's frame n done on its grid (late when back-pressure held it), its presents queued
+                    double t = n * P + urand() * 4e6;
+                    if (t < game_t) t = game_t;
+                    for (int b = 0; b < burst; b++) {
+                        double enq = t + b * 0.2e6;
+                        while (qn >= cap) {  // (no image free: wait for a vblank to take one)
+                            if (q_ready[0] <= vb - 0.5e6) {
+                                if (shown_for) counts[shown_for < 9 ? shown_for : 9]++;
+                                shown_for = 0;
+                                lat_sum += vb - q_enq[0], lat_n++;
+                                memmove(q_ready, q_ready + 1, --qn * sizeof *q_ready);
+                                memmove(q_enq, q_enq + 1, qn * sizeof *q_enq);
+                            }
+                            shown_for++;
+                            vb += R;
+                            if (enq < vb) enq = vb;
+                        }
+                        double gpu = 1e6 + urand() * 5e6;  // (the present's GPU work: 1-6 ms)
+                        q_enq[qn] = enq;
+                        q_ready[qn++] = (next_present > enq ? next_present : enq) + gpu;
+                        next_present = q_ready[qn - 1];
+                        game_t = enq;
+                    }
+                    if (qn > maxq) maxq = qn;
+                    // vblanks up to the next frame's time
+                    double until = (n + 1) * P;
+                    while (vb < until) {
+                        if (qn && q_ready[0] <= vb - 0.5e6) {
+                            if (shown_for && n > 100) counts[shown_for < 9 ? shown_for : 9]++;
+                            shown_for = 0;
+                            if (n > 100) lat_sum += vb - q_enq[0], lat_n++;
+                            memmove(q_ready, q_ready + 1, --qn * sizeof *q_ready);
+                            memmove(q_enq, q_enq + 1, qn * sizeof *q_enq);
+                        }
+                        shown_for++;
+                        vb += R;
+                    }
+                    if (n > 100) frames_done++;
+                }
+                int total = 0;
+                for (int i = 0; i < 10; i++) total += counts[i];
+                double one = total ? (double)counts[1] / total : 0;
+                printf("%s %s: k %d, %.1f%% of presents up for 1 refresh (2: %.1f%%, 3+: %.1f%%), queue at most %d, "
+                       "latency %.1f ms\n", c[ci].what, fill ? "with repeats" : "without", k, 100 * one,
+                       total ? 100.0 * counts[2] / total : 0,
+                       total ? 100.0 * (total - counts[1] - counts[2]) / total : 0, maxq, lat_n ? lat_sum / lat_n / 1e6 : 0);
+                if (fill && (k > 1 || c[ci].presents * c[ci].fps >= c[ci].hz * 0.99)) {
+                    expect(one >= 0.97, c[ci].what);
+                    expect(lat_n && lat_sum / lat_n < 6 * R, "fill: the queue's delay stays bounded");
+                }
+                int each = (int)lround(c[ci].hz / ((double)c[ci].fps * c[ci].presents));
+                if (!fill && each >= 2 && each <= 9) {
+                    printf("  without repeats: %.1f%% of presents up for the %d refreshes each should be\n",
+                           total ? 100.0 * counts[each] / total : 0, each);
+                }
+            }
+        }
+        printf("fill pacing checked\n");
+    }
+
     // 9. The stats line.
     {
         DPace p;

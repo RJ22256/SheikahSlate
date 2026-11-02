@@ -17,6 +17,7 @@
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
+#include "slate_ui.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -272,9 +273,16 @@ bool menu_handle_event(const SDL_Event *e) {
     }
 }
 
+#ifdef _WIN32
+extern "C" void input_mouse_window(SDL_Window *w);  // (hle/input.c: the mouse camera's capture)
+extern "C" void menu_apply_display_mode(SDL_Window *w);  // (below: Video > Display mode)
+#endif
 void menu_apply_window_requests(void *win) {
     SDL_Window *w = (SDL_Window *)win;
     g_pixel_density = SDL_GetWindowPixelDensity(w);
+#ifdef _WIN32
+    input_mouse_window(w);
+#endif
     static bool text_input;
     bool want_text = capturing();
 #ifdef __ANDROID__
@@ -296,6 +304,8 @@ void menu_apply_window_requests(void *win) {
         first = false;
 #ifdef __ANDROID__
         SDL_SetWindowFullscreen(w, true);  // (always: there is no window to go back to)
+#elif defined(_WIN32)
+        menu_apply_display_mode(w);
 #else
         SDL_SetWindowFullscreen(w, g_settings.fullscreen);
 #endif
@@ -348,7 +358,7 @@ static void style_init(void) {
     c[ImGuiCol_NavCursor] = gold;
     c[ImGuiCol_Separator] = ImVec4(0.30f, 0.36f, 0.30f, 1);
     c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = c[ImGuiCol_WindowBg];
-#ifdef __ANDROID__  // (WSword's Glass Slate look, as the start screen: deep navy glass, cyan where something is picked)
+#ifdef WS_SLATE_UI  // (WSword's Glass Slate look, as the start screen: deep navy glass, cyan where something is picked)
     ImVec4 field(0.059f, 0.118f, 0.2f, 1), field_hot(0.078f, 0.157f, 0.259f, 1), field_on(0.071f, 0.2f, 0.286f, 1);
     ImVec4 cyan(0.369f, 0.902f, 0.961f, 1);
     c[ImGuiCol_WindowBg] = ImVec4(0.035f, 0.075f, 0.133f, 0.95f);
@@ -407,7 +417,7 @@ static void init(void) {
     // the menu window itself: Baloo 2 SemiBold, as on the start screen (shipped, OFL), at its Settings window's sizes; the
     // FPS counter, overlays and on-screen keyboard keep the fonts above
     char baloo[1024];
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     {   // (WSword, 0.2.8-slate.14) the Glass Slate look: Inter Medium / Bold, OFL, as the start screen - at Baloo 2's
         // letter height there (x0.72: Inter's letters are ~1.5x Baloo 2's at one size, a little larger)
         char im[1024], ib[1024];
@@ -471,7 +481,7 @@ static void drain_events(ImGuiIO &io) {
 
 // Section header in the big font (Android: the Sheikah look's heading).
 static void header(const char *t) {
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     ui_sheikah_heading(t, ImGui::GetFontSize() / 34);
     return;
 #endif
@@ -529,36 +539,95 @@ static bool toggle(const char *label, bool *v) {
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);  // (vulkan/textures.c: the 3D scene's)
 extern "C" void renderer_get_scale(float *sx, float *sy);        // (the final image's)
 extern "C" int input_pad_family(void);  // runtime/hle/input.c
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
 extern "C" void vk_fg_status(char *out, size_t n);  // (WSword: vulkan/device.c, frame generation's state)
 #endif
 extern "C" double output_scale_dynamic_factor(void);
+extern "C" void vk_gpuprof_request(int delay);  // (vulkan/device.c: Video > Capture a performance profile)
 #ifdef __ANDROID__
 extern "C" void android_set_display_refresh(int how);  // (platform/android.c: Video > Display refresh rate)
-extern "C" void vk_gpuprof_request(int delay);          // (vulkan/device.c: Video > Capture a performance profile)
+#else
+static void android_set_display_refresh(int) {}  // (PC: the refresh rate is Exclusive fullscreen's - menu_apply_display_mode)
+#endif
+#ifdef _WIN32
+extern "C" bool vk_display_timing_on(void);   // (vulkan/device.c: the driver reports when frames reach the screen)
+extern "C" double vk_display_refresh_hz(void);  // (the window's display's refresh rate)
+#endif
+
+#ifdef _WIN32
+// (WSword PC) Video > Display mode, at the start and whenever it changes: a window, borderless over the whole display at
+// the desktop's own mode, or exclusive fullscreen - the display's own mode at the desktop's resolution and Refresh rate's
+// choice (Highest; 60 Hz; the desktop's; 120 Hz, a whole number of refreshes at 30, 40 and 60 fps)
+static const SDL_DisplayMode *exclusive_mode(SDL_Window *w) {
+    SDL_DisplayID d = SDL_GetDisplayForWindow(w);
+    const SDL_DisplayMode *desk = SDL_GetDesktopDisplayMode(d);
+    if (!desk) return NULL;
+    int n = 0;
+    SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(d, &n);
+    const SDL_DisplayMode *best = NULL;
+    int how = g_settings.display_refresh;
+    float want = how == 1 ? 60.0f : how == 3 ? 120.0f : how == 2 ? desk->refresh_rate : 1e9f;
+    for (int i = 0; modes && i < n; i++) {
+        const SDL_DisplayMode *m = modes[i];
+        if (m->w != desk->w || m->h != desk->h || m->refresh_rate <= 0) continue;
+        if (how == 0) {  // (the highest; the desktop's pixel density first)
+            if (!best || m->refresh_rate > best->refresh_rate + 0.01f ||
+                (fabsf(m->refresh_rate - best->refresh_rate) < 0.01f && m->pixel_density == desk->pixel_density))
+                best = m;
+        } else if (!best || fabsf(m->refresh_rate - want) < fabsf(best->refresh_rate - want)) {
+            best = m;
+        }
+    }
+    static SDL_DisplayMode keep;  // (SDL frees the list; the mode is copied)
+    if (best) keep = *best;
+    SDL_free(modes);
+    return best ? &keep : desk;
+}
+
+extern "C" void menu_apply_display_mode(SDL_Window *w) {
+    if (!g_settings.fullscreen) {
+        SDL_SetWindowFullscreen(w, false);
+        return;
+    }
+    const SDL_DisplayMode *m = g_settings.fullscreen_exclusive ? exclusive_mode(w) : NULL;
+    SDL_SetWindowFullscreenMode(w, m);  // (NULL: borderless, at the desktop's mode)
+    SDL_SetWindowFullscreen(w, true);
+    if (m) fprintf(stderr, "[ui] exclusive fullscreen: %dx%d at %.2f Hz\n", m->w, m->h, m->refresh_rate);
+}
 #endif
 
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
-#ifdef __ANDROID__
-    {   // (Sheikah Slate: settings.c settings_apply_mode - three sets of the options below, from the tablet's logs)
+#ifdef WS_SLATE_UI
+    {   // (Sheikah Slate: settings.c settings_apply_mode - three sets of the options below, from the tablet's logs; PC: the
+        // same four made for a PC)
         static const char *modes[] = {"Battery", "Performance", "Turbo", "Turbo 60", "Custom"};
         int mi = settings_current_mode();
         // (Custom only while the options match none: from it either way goes to a mode, never back to Custom)
-        if (opt_choice("Mode", &mi, modes, mi == MODE_CUSTOM ? 5 : 4, MODE_PERFORMANCE,
-                       "Sets the options below, made from the Galaxy Tab S10 Ultra's performance logs (they work on "
-                       "phones too). Battery: 30 fps with the screen at 60 Hz, the game's lowest resolution held and the "
-                       "lighter Snapdragon GSR upscaler - the GPU stays cool and the battery lasts longest. Performance: "
-                       "30 fps, each frame shown for exactly 4 refreshes of a 120 Hz screen, the game's resolution "
-                       "steadied and AMD FSR 1, the sharpest upscaler - the best image. Turbo: 40 fps, each frame shown "
-                       "for exactly 3 refreshes - smoother, the resolution lowered as far as each frame needs. Turbo 60: "
-                       "60 fps, 2 refreshes a frame, the resolution lowered as far as 60 needs - the smoothest, the "
-                       "softest image and the most heat; the Tab's GPU may not hold 60 even at the lowest resolution, a "
-                       "Snapdragon phone's can. All of them: a 1080p image, no extra anti-aliasing, Sync lag on. Custom: "
-                       "shown once you change any of them below.") &&
-            mi != MODE_CUSTOM) {
+#ifdef __ANDROID__
+        const char *md = "Sets the options below, made from the Galaxy Tab S10 Ultra's performance logs (they work on "
+                         "phones too). Battery: 30 fps with the screen at 60 Hz, the game's lowest resolution held and the "
+                         "lighter Snapdragon GSR upscaler - the GPU stays cool and the battery lasts longest. Performance: "
+                         "30 fps, each frame shown for exactly 4 refreshes of a 120 Hz screen, the game's resolution "
+                         "steadied and AMD FSR 1, the sharpest upscaler - the best image. Turbo: 40 fps, each frame shown "
+                         "for exactly 3 refreshes - smoother, the resolution lowered as far as each frame needs. Turbo 60: "
+                         "60 fps, 2 refreshes a frame, the resolution lowered as far as 60 needs - the smoothest, the "
+                         "softest image and the most heat; the Tab's GPU may not hold 60 even at the lowest resolution, a "
+                         "Snapdragon phone's can. All of them: a 1080p image, no extra anti-aliasing, Sync lag on. Custom: "
+                         "shown once you change any of them below.";
+#else
+        const char *md = "Sets the options below. Battery: 30 fps, the Switch's 900p scene with the game's lowest "
+                         "resolution held and the lighter Snapdragon GSR upscaler - for a laptop on its battery. "
+                         "Performance: 60 fps where your PC keeps up, 30 where it doesn't, the scene at your window's "
+                         "resolution, the game's resolution steadied - the default. Turbo: 40 fps, each frame shown for "
+                         "exactly 3 refreshes of a 120 Hz monitor (on a 60 Hz one frames come unevenly: use Performance "
+                         "or Turbo 60 there). Turbo 60: always 60 fps, the game's resolution lowered as far as 60 needs. "
+                         "All of them: the image at your screen's resolution, no extra anti-aliasing. Custom: shown once "
+                         "you change any of them below.";
+#endif
+        if (opt_choice("Mode", &mi, modes, mi == MODE_CUSTOM ? 5 : 4, MODE_PERFORMANCE, md) && mi != MODE_CUSTOM) {
             settings_apply_mode(mi);
             android_set_display_refresh(g_settings.display_refresh);
         }
@@ -571,23 +640,68 @@ static void tab_display(void) {
                "when the game starts again (Quit -> Return to start, then Play). Original 16:9: the game's own framing, "
                "with bars. A screen taller than 16:9 (the Galaxy Tab S10 Ultra's 16:10) keeps 16:9 with thin bars "
                "above and below either way, so nothing is stretched.");
-#ifndef __ANDROID__  // (Android: always the whole screen)
+#if defined(_WIN32)
+    {   // (WSword PC: settings.h fullscreen / fullscreen_exclusive / display_refresh - menu_apply_display_mode)
+        static const char *dm[] = {"Windowed", "Borderless fullscreen", "Exclusive fullscreen"};
+        int di = !g_settings.fullscreen ? 0 : g_settings.fullscreen_exclusive ? 2 : 1;
+        if (opt_choice("Display mode", &di, dm, 3, 0,
+                       "Windowed: a window you can move and resize (an ultrawide or any shape: the view follows it with "
+                       "Aspect ratio Unlocked). Borderless fullscreen: the whole display at the desktop's own resolution "
+                       "and refresh rate - switching to other windows is instant. Exclusive fullscreen: the display's own "
+                       "mode at the refresh rate below, which also lets G-SYNC / FreeSync work on most PCs. Also: F11 or "
+                       "Alt+Enter.")) {
+            g_settings.fullscreen = di != 0;
+            g_settings.fullscreen_exclusive = di == 2;
+            g_want_fullscreen_apply.store(true);
+        }
+        static const char *hz[] = {"Highest", "60 Hz", "Desktop's", "120 Hz"};
+        char hd[700];
+        double now_hz = vk_display_refresh_hz();
+        snprintf(hd, sizeof hd, "%s", tr("Exclusive fullscreen's refresh rate. Highest: your monitor's top rate at its "
+                                           "resolution. 120 Hz: a whole number of refreshes for every frame at 30, 40 and 60 "
+                                           "fps - each frame on screen for the same time; the right choice on a 144 or 165 Hz "
+                                           "monitor without G-SYNC / FreeSync, where 30 and 60 fps can't be shown evenly. "
+                                           "60 Hz: the least work for the GPU. Desktop's: as Windows has it."));
+        if (now_hz > 1) {
+            size_t k = strlen(hd);
+            snprintf(hd + k, sizeof hd - k, tr("\n\nThe display is at %.0f Hz now."), now_hz);
+        }
+        int ri = g_settings.display_refresh >= 0 && g_settings.display_refresh <= 3 ? g_settings.display_refresh : 0;
+        if (!g_settings.fullscreen_exclusive || !g_settings.fullscreen) opt_disable_next();
+        if (opt_choice("Refresh rate", &ri, hz, 4, 0, hd, false)) {
+            g_settings.display_refresh = ri;
+            g_want_fullscreen_apply.store(true);
+        }
+    }
+#elif !defined(__ANDROID__)  // (Android: always the whole screen)
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
         g_want_fullscreen_apply.store(true);
     }
 #endif
+#ifdef WS_SLATE_UI
 #ifdef __ANDROID__
     opt_toggle("Show FPS", &g_settings.show_fps, false,
                "Shows the performance overlay: the frame rate and how the phone is doing. Drag it with a finger to move it.");
+#else
+    opt_toggle("Show FPS", &g_settings.show_fps, false,
+               "Shows the performance overlay: the frame rate and frame times, the CPU and GPU, memory and, on a laptop, "
+               "the battery. Drag it with the mouse to move it while this menu is closed and the game doesn't have the "
+               "mouse (Alt or Esc lets it go).");
+#endif
     {   // (ui/perf_overlay.mm; LASRecompAndroid's)
         static const char *styles[] = {"Full", "Compact"};
         if (!g_settings.show_fps) opt_disable_next();
         opt_choice("Overlay style", &g_settings.overlay_style, styles, 2, 0,
+#ifdef __ANDROID__
                    "Full: frame rate and frame times, CPU, GPU, memory, temperatures and power. Compact: one line - FPS, "
                    "the app's RAM, the SoC's and the battery's temperature. Either one can be dragged anywhere on the "
                    "screen with a finger.");
+#else
+                   "Full: frame rate and frame times, CPU, GPU, memory and the battery. Compact: one line - FPS and the "
+                   "app's RAM. Either one can be dragged anywhere on the screen.");
+#endif
     }
 #else
     opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
@@ -595,6 +709,8 @@ static void tab_display(void) {
 #ifdef __ANDROID__
     opt_toggle("Touch controls", &g_settings.touch_controls, false,
                "On-screen buttons and stick while no controller is connected. The back button opens this menu.");
+#endif
+#ifdef WS_SLATE_UI
     {
         // 1.8.2: up to 60 (hle/framepace.c keeps the game's clock right at any rate). 1.0.0 / 1.6.0 never run above
         // 30 - their frame loop picks 2 or 3 vsyncs - so a 60 there counts as 30. (On the start screen the version
@@ -606,14 +722,23 @@ static void tab_display(void) {
         static const char *fr60[] = {"Auto (30 / 60)", "30 fps", "40 fps", "60 fps"};
         static const int fr60_mode[] = {0, 1, 3, 2};  // (in the list's order; g_settings.fps_mode 3 is 40 fps)
         int fi = !sixty ? g_settings.fps_mode : g_settings.fps_mode == 3 ? 2 : g_settings.fps_mode == 2 ? 3 : g_settings.fps_mode;
+#ifdef __ANDROID__
+        const char *f60 = "Auto: 60 fps where your device keeps up, 30 where it doesn't (the game's clock stays right "
+                          "either way). 30 fps: steady and cooler. 40 fps: each frame shown for exactly 3 refreshes "
+                          "of a 120 Hz screen - smoother than 30, the resolution lowered where a frame needs it. 60 "
+                          "fps: always aims for 60 - the resolution comes down as far as the GPU needs, but on the "
+                          "Galaxy Tab S10 Ultra it usually lands under 60 (in its logs the GPU needed ~20 ms a frame "
+                          "even at the game's lowest resolution) and frames come unevenly; 40 is the smooth one there "
+                          "(game versions 1.8.2 and 1.9.0; 1.0.0 and 1.6.0 run at 30).";
+#else
+        const char *f60 = "Auto: 60 fps where your PC keeps up, 30 where it doesn't (the game's clock stays right either "
+                          "way). 30 fps: steady, the least work. 40 fps: each frame shown for exactly 3 refreshes of a "
+                          "120 Hz monitor (or 6 of a 240 Hz one) - smoother than 30; on a 60 Hz monitor it can't be shown "
+                          "evenly. 60 fps: always aims for 60, the game's resolution lowered where a frame needs it (game "
+                          "versions 1.8.2 and 1.9.0; 1.0.0 and 1.6.0 run at 30).";
+#endif
         if (opt_choice("Frame rate", &fi, sixty ? fr60 : fr, sixty ? 4 : 2, 1,
-                       sixty ? "Auto: 60 fps where your device keeps up, 30 where it doesn't (the game's clock stays right "
-                               "either way). 30 fps: steady and cooler. 40 fps: each frame shown for exactly 3 refreshes "
-                               "of a 120 Hz screen - smoother than 30, the resolution lowered where a frame needs it. 60 "
-                               "fps: always aims for 60 - the resolution comes down as far as the GPU needs, but on the "
-                               "Galaxy Tab S10 Ultra it usually lands under 60 (in its logs the GPU needed ~20 ms a frame "
-                               "even at the game's lowest resolution) and frames come unevenly; 40 is the smooth one there "
-                               "(game versions 1.8.2 and 1.9.0; 1.0.0 and 1.6.0 run at 30)."
+                       sixty ? f60
                              : "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in 30. "
                                "30 fps: always 30 - where a frame takes longer, the game runs slightly slower instead of "
                                "dropping to 20."))
@@ -624,6 +749,8 @@ static void tab_display(void) {
                        "and may run shorter or out of step with their sound (at 60 fps the new game's opening gave Link "
                        "control 2 s early). Videos and menus stay at 30. Applies at once.");
     }
+#endif
+#ifdef __ANDROID__
     {   // (Sheikah Slate: SlateDisplay.java applyRefresh, through platform/android.c; applies at once)
         static const char *hz[] = {"Highest", "60 Hz", "System"};
         if (opt_choice("Display refresh rate", &g_settings.display_refresh, hz, 3, 0,
@@ -634,42 +761,82 @@ static void tab_display(void) {
             android_set_display_refresh(g_settings.display_refresh);
         }
     }
+#endif
+#ifdef WS_SLATE_UI
     {   // (settings.h even_pacing: -1 Automatic, 1 on, 0 off - vulkan/device.c, display_pacing.c)
         static const char *ep[] = {"Automatic", "On", "Off"};
         int ei = g_settings.even_pacing < 0 ? 0 : g_settings.even_pacing ? 1 : 2;
-        if (opt_choice("Even frame pacing", &ei, ep, 3, 0,
-                       "Shows every frame for the same time: at 30 fps on a 120 Hz screen, exactly 4 refreshes each. "
-                       "Without it a frame goes up as soon as the GPU finishes it, so frames stay up for 3, 4 or 5 "
-                       "refreshes (25 to 42 ms) as that time varies - a judder even at a steady 30. Costs about 10 ms "
-                       "more delay. Automatic: on where the system reports when frames reach the screen (Android does). "
-                       "Off: as soon as ready, as before. Applies at once."))
+#ifdef __ANDROID__
+        const char *ed = "Shows every frame for the same time: at 30 fps on a 120 Hz screen, exactly 4 refreshes each. "
+                         "Without it a frame goes up as soon as the GPU finishes it, so frames stay up for 3, 4 or 5 "
+                         "refreshes (25 to 42 ms) as that time varies - a judder even at a steady 30. Costs about 10 ms "
+                         "more delay. Automatic: on where the system reports when frames reach the screen (Android does). "
+                         "Off: as soon as ready, as before. Applies at once.";
+#else
+        char edb[1400];
+        snprintf(edb, sizeof edb, "%s\n\n%s",
+                 tr("Shows every frame for the same time: at 30 fps on a 120 Hz monitor, exactly 4 refreshes each. Without it "
+                    "a frame goes up as soon as the GPU finishes it, so frames stay up for 3, 4 or 5 refreshes as that time "
+                    "varies - a judder even at a steady 30. With a driver that reports when frames reach the screen (AMD's) "
+                    "each frame is aimed at a refresh of its own; with others (NVIDIA's, Intel's) each frame is shown again "
+                    "for every refresh it stays up, from a copy, which holds it there - where the monitor's rate is a whole "
+                    "number of frames (60, 120, 240 Hz). Costs a refresh or two more delay and, without the reports, a "
+                    "little GPU time. With G-SYNC / FreeSync on, leave it off: the monitor follows the game by itself. "
+                    "Automatic: on where the driver reports the times. Applies at once."),
+                 tr(vk_display_timing_on() ? "This driver reports when frames reach the screen."
+                                           : "This driver doesn't report when frames reach the screen: On shows each frame "
+                                             "again from a copy."));
+        const char *ed = edb;
+#endif
+        if (opt_choice("Even frame pacing", &ei, ep, 3, 0, ed, false))
             g_settings.even_pacing = ei == 0 ? -1 : ei == 1 ? 1 : 0;
     }
     {   // (WSword: settings.h framegen / fg_flow / fg_perf - vulkan/device.c fg_present, the player's own Lossless.dll;
         // each change applies with the game's next frame)
         opt_section("Frame generation");
-        char st[480], fd[1400];
+        char st[480], fd[1600];
         vk_fg_status(st, sizeof st);
-        snprintf(fd, sizeof fd, "%s\n\n%s",
-                 tr("Lossless Scaling's frame generation, from your own copy of Lossless.dll: frames made between the game's "
-                    "real ones, so motion looks smoother. On a 120 Hz screen: 2x at 30 or 60 fps (60 or 120 shown), 3x at 40 "
-                    "(120), 4x at 30 (120). Never more frames than the screen shows: a choice past it is lowered (4x at 60 fps "
-                    "makes 2x), and on Auto (30 / 60) the extra frames follow the game's rate. It adds about half a real "
-                    "frame of delay and takes GPU time from the game - the line below says how much. Paused while this "
-                    "menu is open; the menus, the FPS counter and the touch controls are drawn on every frame, never "
-                    "generated. Add Lossless.dll on the start screen: Settings > Lossless Scaling."),
-                 tr(st));
+#ifdef __ANDROID__
+        const char *what = "Lossless Scaling's frame generation, from your own copy of Lossless.dll: frames made between the "
+                           "game's real ones, so motion looks smoother. On a 120 Hz screen: 2x at 30 or 60 fps (60 or 120 "
+                           "shown), 3x at 40 (120), 4x at 30 (120). Never more frames than the screen shows: a choice past "
+                           "it is lowered (4x at 60 fps makes 2x), and on Auto (30 / 60) the extra frames follow the game's "
+                           "rate. It adds about half a real frame of delay and takes GPU time from the game - the line below "
+                           "says how much. Paused while this menu is open; the menus, the FPS counter and the touch controls "
+                           "are drawn on every frame, never generated. Add Lossless.dll on the start screen: Settings > "
+                           "Lossless Scaling.";
+#else
+        const char *what = "Lossless Scaling's frame generation, from your own copy of Lossless.dll: frames made between the "
+                           "game's real ones, so motion looks smoother. 2x at 30 fps fills a 60 Hz monitor; on a 120 Hz one "
+                           "2x at 60, 3x at 40 or 4x at 30 fill it. Never more frames than the monitor shows: a choice past "
+                           "it is lowered (4x at 60 fps on 120 Hz makes 2x), and on Auto (30 / 60) the extra frames follow "
+                           "the game's rate. The frames go up one a refresh, so it works best where the monitor's rate is a "
+                           "whole number of the game's (60, 120, 240 Hz - Exclusive fullscreen at 120 Hz on a 144 Hz "
+                           "monitor); with G-SYNC / FreeSync the in-between frames come unevenly unless the driver reports "
+                           "frame times (AMD's). It adds about half a real frame of delay and takes GPU time from the game - "
+                           "the line below says how much. Paused while this menu is open; the menus and the FPS counter are "
+                           "drawn on every frame, never generated. Add Lossless.dll on the start screen: Settings > Lossless "
+                           "Scaling.";
+#endif
+        snprintf(fd, sizeof fd, "%s\n\n%s", tr(what), tr(st));
         static const char *fgn[] = {"Off", "2x", "3x", "4x"};
         opt_choice("Frame generation", &g_settings.framegen, fgn, 4, 0, fd, false);
         {   // (settings.h fg_flow: 0 Automatic, shown as the slider's lowest step)
             int fl = g_settings.fg_flow > 0 ? g_settings.fg_flow : 20;
             if (!g_settings.framegen) opt_disable_next();
-            if (opt_int("Flow scale", &fl, 20, 100, 5, 20, "%d%%",
-                        "The resolution motion is found at, as a share of the game's image - most of frame generation's GPU "
-                        "time. Automatic: Lossless Scaling's own advice by the image's height, about 1080 lines of motion "
-                        "(100% at 1080 lines, 75% at 1440, 60% for the Galaxy Tab S10 Ultra's 1848). Lower: less GPU time, "
-                        "motion found less finely (thin things can wobble); higher than Automatic costs more for little "
-                        "you'd see.", "Automatic"))
+#ifdef __ANDROID__
+            const char *fsd = "The resolution motion is found at, as a share of the game's image - most of frame generation's GPU "
+                              "time. Automatic: Lossless Scaling's own advice by the image's height, about 1080 lines of motion "
+                              "(100% at 1080 lines, 75% at 1440, 60% for the Galaxy Tab S10 Ultra's 1848). Lower: less GPU time, "
+                              "motion found less finely (thin things can wobble); higher than Automatic costs more for little "
+                              "you'd see.";
+#else
+            const char *fsd = "The resolution motion is found at, as a share of the game's image - most of frame generation's GPU "
+                              "time. Automatic: Lossless Scaling's own advice by the image's height, about 1080 lines of motion "
+                              "(100% at 1080 lines, 75% at 1440, 50% at 2160 - 4K). Lower: less GPU time, motion found less "
+                              "finely (thin things can wobble); higher than Automatic costs more for little you'd see.";
+#endif
+            if (opt_int("Flow scale", &fl, 20, 100, 5, 20, "%d%%", fsd, "Automatic"))
                 g_settings.fg_flow = fl <= 20 ? 0 : fl;
         }
         if (!g_settings.framegen) opt_disable_next();
@@ -795,6 +962,8 @@ static void tab_display(void) {
                        "flickers or draws in the wrong place, set it to Off. Applies at once."))
             g_settings.pass_overlap = pi == 0 ? -1 : pi == 1 ? 1 : 0;
     }
+#endif
+#ifdef WS_SLATE_UI
     {   // (settings.h drs_mode: 0 steadied, 1 hold sharp, 2 hold low, 3 as the game does - vulkan/exec.c drs_filter)
         static const char *dm[] = {"Steadied", "Hold sharp", "Hold low", "As the game does"};
         opt_choice("Game's resolution changes", &g_settings.drs_mode, dm, 4, 0,
@@ -804,12 +973,17 @@ static void tab_display(void) {
                    "GPU is busy). Hold low: always its lowest (blurrier; lighter on the GPU and the battery). As the "
                    "game does: every frame's time, as before. Applies at once.");
     }
-    if (opt_button("Capture a performance profile",
-                   "Writes where the time goes into the log file, starting about 10 seconds from now: the GPU's for each "
-                   "part of three frames, and the CPU's (the renderer's) for about 6 seconds. Close this menu and keep "
-                   "playing where it's slow. Turn on Settings > Prelaunch > Driver compatibility > Save a log file first, "
-                   "then send the log."))
-        vk_gpuprof_request(300);
+#ifdef __ANDROID__
+    const char *prof = "Writes where the time goes into the log file, starting about 10 seconds from now: the GPU's for each "
+                       "part of three frames, and the CPU's (the renderer's) for about 6 seconds. Close this menu and keep "
+                       "playing where it's slow. Turn on Settings > Prelaunch > Driver compatibility > Save a log file first, "
+                       "then send the log.";
+#else
+    const char *prof = "Writes where the time goes into the log file (WSword.log in WSword's folder), starting about 10 "
+                       "seconds from now: the GPU's for each part of three frames, and the CPU's (the renderer's) for about "
+                       "6 seconds. Close this menu and keep playing where it's slow, then send the log.";
+#endif
+    if (opt_button("Capture a performance profile", prof)) vk_gpuprof_request(300);
 #endif
     opt_end();
 }
@@ -886,6 +1060,42 @@ static void tab_about(void) {
     ImGui::Spacing();
     header("Controls");
     if (toggle("Motion controls", &g_settings.motion)) settings_save();  // (runtime/hle/motion.c)
+#ifdef _WIN32
+    hint("A controller's gyroscope (a DualSense or DualShock 4, a Switch Pro Controller or Joy-Con) aims the bow and the "
+         "Sheikah Slate's camera and tilts the shrines' motion puzzles, as the Switch's motion controls do. The game's "
+         "own options can turn motion aiming off.");
+    ImGui::Spacing();
+    header("Mouse");
+    {   // (WSword PC: hle/input.c - the mouse's speed tilts the right stick while the game has the mouse)
+        ImGui::PushID("mouse");
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(tr("Mouse camera"));
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.45f);
+        ImGui::SetNextItemWidth(-1);
+        int pct = (int)lroundf(g_settings.mouse_sens * 100);
+        char fmt[32];
+        snprintf(fmt, sizeof fmt, "%s", pct ? "%d%%" : tr("Off"));
+        if (ImGui::SliderInt("##sens", &pct, 0, 300, fmt, ImGuiSliderFlags_AlwaysClamp)) {
+            g_settings.mouse_sens = pct / 100.0f;
+            settings_save();
+        }
+        if (ImGui::IsItemFocused()) {  // (the d-pad / arrows in steps of 10)
+            int step = ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight) || ImGui::IsKeyPressed(ImGuiKey_RightArrow) ? 10
+                     : ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow) ? -10 : 0;
+            if (step) {
+                pct = pct + step < 0 ? 0 : pct + step > 300 ? 300 : pct + step;
+                g_settings.mouse_sens = pct / 100.0f;
+                settings_save();
+            }
+        }
+        ImGui::PopID();
+    }
+    if (toggle("Invert mouse up / down", &g_settings.mouse_invert_y)) settings_save();
+    hint("While you play, the game has the mouse: moving it turns the camera (as the right stick, faster the faster it "
+         "moves), the left button attacks (Y), the right one draws the bow (ZR: hold to aim, let go to shoot), the middle "
+         "one locks on or raises the shield (ZL), and the side buttons are L and R. Esc or F1 opens this menu and lets "
+         "the mouse go; holding Alt lets it go too (to drag the FPS overlay). Off: the mouse is left alone.");
+#else
     hint("The phone's gyroscope - or a controller's that has one - aims the bow and the Sheikah Slate's camera and tilts "
          "the shrines' motion puzzles, as the Switch's motion controls do. The game's own options can turn motion "
          "aiming off.");
@@ -895,6 +1105,7 @@ static void tab_about(void) {
     }
     hint("Auto: a controller's gyroscope once it sends live readings, the phone's otherwise. Phone: always the phone's - "
          "for a controller that says it has a gyroscope but doesn't. Controller: only the controller's.");
+#endif
     ImGui::Spacing();
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
@@ -1026,10 +1237,10 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
 // The tab bar and its pages, into the current window: the in-game menu, and the start screen's Settings (in_game
 // false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
 // first tab, game files and fonts, drawn by launcher.mm).
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
 extern "C" void mods_tab_draw(float scale);  // ui/mods_tab.mm
 #endif
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
 // The Sheikah menu's tab icons, drawn (r: half their size): files (a folder), video (a screen), audio (a speaker),
 // controls (two Joy-Con), mods (a box), quit (a door)
 static void settings_icon(ImDrawList *dl, int id, ImVec2 c, float r, ImU32 col, float scale) {
@@ -1125,13 +1336,13 @@ static void settings_page(int id, float scale, bool in_game, void (*prelaunch)(f
     case 1: tab_audio(); break;
     case 8: tab_about(); break;
     case 9: tab_quit(scale, in_game); break;
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     case 10: mods_tab_draw(scale); break;  // (ui/mods_tab.mm)
 #endif
     }
 }
 
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
 static bool g_touch_settings_back;
 extern "C" bool menu_settings_back_requested() { bool back = g_touch_settings_back; g_touch_settings_back = false; return back; }
 #endif
@@ -1144,14 +1355,14 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // ids (test hooks: LARECOMP_MENU_TAB) as in LAS Recomp, whose game-specific tabs (2-7) are gone
     static const char *names[] = {"Video", "Audio", "", "", "", "", "", "", "Controls", "Quit", "Mods"};
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     static const int order[] = {0, 1, 8, 10, 9};  // Video, Audio, Controls, Mods (runtime/mods.c), Quit
 #else
     static const int order[] = {8, 0, 1, 9};  // Controls, Video, Audio, Quit
 #endif
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT)
         if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, true};
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     // The Sheikah look (design/sheikah-settings-v1): the window's gold frame with cut corners, the eye over the title,
     // the pages as tabs along the top (an icon and the name, the open one underlined in cyan), the page (option rows
     // with their description on the right: option_rows.mm), and BACK / RESTORE DEFAULTS under it. The page ids stay
@@ -1478,7 +1689,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #endif
     ImGui::NewFrame();
 
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
     // (the full performance overlay: ui/perf_overlay.mm - hidden while the menu is open, as the touch controls: through
     // the menu's translucent panel it showed behind the options, #142)
     if (g_settings.show_fps && !g_open.load()) {
@@ -1506,16 +1717,16 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         // dim the game behind the menu
         ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 110));
         float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - 2 * 18 * scale;
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
         w = io.DisplaySize.x * 0.94f;
 #endif  // (all the height: a slim margin)
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.035f, 0.075f, 0.133f, 0.95f));  // (the Glass Slate look: tabs_body)
 #endif
         ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-#ifdef __ANDROID__
+#ifdef WS_SLATE_UI
         ImGui::PopStyleColor();
 #endif
         ImFont *keep_big = g_font_big;  // (the window in the menu's font; header() uses g_font_big)
@@ -1524,7 +1735,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         // header as on the start screen's Settings: the title, and a close X in the corner (B / Esc too). ("Title
         // screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user 2026-10-11.) Android: the
         // Sheikah frame's own title and BACK (tabs_body)
-#ifndef __ANDROID__
+#ifndef WS_SLATE_UI
         ImGui::PushFont(g_font_big);
         ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Settings"));
         ImGui::PopFont();

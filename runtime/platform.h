@@ -109,8 +109,9 @@ void plat_crash_handler_install(void);  // per thread where the OS needs it (alt
 bool rt_fault_watch(uint64_t fault_addr, uint64_t host_pc);
 void rt_fault_report(const char *what, uint64_t fault_addr, uint64_t host_pc, uint64_t host_lr) __attribute__((noreturn));
 
-#ifdef __ANDROID__
-// ---- device state for the performance overlay (runtime/ui/perf_overlay.mm); -1 / 0 where unknown
+#if defined(__ANDROID__) || defined(_WIN32)
+// ---- device state for the performance overlay (runtime/ui/perf_overlay.mm); -1 / 0 where unknown (WSword PC:
+// platform/windows.c - the process's CPU and memory, the system's free memory, a laptop's battery)
 typedef struct {
     int ncluster;                  // CPU clusters (cpufreq policies)
     uint32_t cluster_mhz[8];
@@ -122,6 +123,8 @@ typedef struct {
     float headroom;                // PowerManager thermal headroom (1.0 = throttling begins)
 } PlatDeviceStats;
 void plat_device_stats(PlatDeviceStats *out);
+#endif
+#ifdef __ANDROID__
 // ADPF: the calling thread's work for a frame (busy, ns) and its target (the frame time it must fit)
 void plat_frame_work(uint64_t work_ns, uint64_t target_ns);
 // (the presenting thread: cpu_ns is the frame's critical path - the longer of its own and the render thread's work -,

@@ -10,6 +10,8 @@
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
 #include <sys/system_properties.h>
+#elif defined(_WIN32)
+#include <SDL3/SDL.h>  // (WSword PC: the menus' and the game's language from Windows' preferred languages)
 #endif
 
 #define SETTINGS_FILE settings_file()
@@ -94,7 +96,7 @@ const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English"
 // change when the app starts again) - else the phone's first preferred language, which is the app's own when Android
 // 13+ has one set for it (res/xml/locales_config.xml)
 const char *settings_menu_language(void) {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(_WIN32)
     static const char *lang;
     if (!lang) {
         char l[16] = "", country[16] = "";
@@ -137,10 +139,23 @@ bool settings_host_portuguese(void) { return !strcmp(settings_menu_language(), "
 // LANG_AUTO: the host's own language (LANG=es_ES.UTF-8 -> es), en-US when it is none of the game's. Linux only:
 // macOS / Windows apps get no locale variables from the system, so Auto is English there (pick one in settings).
 static const char *host_language(void) {
-#ifndef __linux__
+#if !defined(__linux__) && !defined(_WIN32)
     return "en-US";
 #endif
-#ifdef __ANDROID__
+#ifdef _WIN32
+    // (WSword PC: Windows' first preferred language, "pt-BR", "es-MX", "zh-Hant-TW" - through SDL)
+    static char pref[32];
+    if (!pref[0]) {
+        int n = 0;
+        SDL_Locale **loc = SDL_GetPreferredLocales(&n);
+        if (loc && n > 0 && loc[0]->language)
+            snprintf(pref, sizeof pref, "%s%s%s", loc[0]->language, loc[0]->country ? "-" : "",
+                     loc[0]->country ? loc[0]->country : "");
+        SDL_free(loc);
+        if (!pref[0]) snprintf(pref, sizeof pref, "C");
+    }
+    const char *e = pref;
+#elif defined(__ANDROID__)
     // (Android: no locale variables. The app's preferred language first - the phone's, or the app's own one set in
     // Android 13+'s per-app languages - then the system's as a property, "pt-BR", "es-US", "zh-Hant-TW")
     static char prop[PROP_VALUE_MAX];
@@ -157,7 +172,7 @@ static const char *host_language(void) {
 #else
     const char *e = getenv("LC_ALL");
 #endif
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(_WIN32)
     if (!e || !*e) e = getenv("LC_MESSAGES");
     if (!e || !*e) e = getenv("LANG");
 #endif
@@ -253,10 +268,11 @@ bool settings_on_tab(void) {
 }
 static void mode_into(Settings *s, int mode) {
 #ifndef __ANDROID__
-    // (WSword PC) the same four for a PC's GPU: Battery - 30 fps, the game's lowest resolution held, a light upscaler
-    // (a laptop on its battery); Performance - 30 fps, the scene at the window's size; Turbo - 40 fps (3 refreshes of a
-    // 120 Hz monitor a frame); Turbo 60 - 60 fps, the resolution as far down as 60 needs. Even pacing automatic.
-    s->fps_mode = mode == MODE_TURBO60 ? 2 : mode == MODE_TURBO ? 3 : 1;
+    // (WSword PC) the four for a PC's GPU: Battery - 30 fps, the Switch's 900p scene and the game's lowest resolution
+    // held, the lighter upscaler (a laptop on its battery); Performance (the PC's defaults) - Auto: 60 fps where the PC
+    // keeps up, 30 where it doesn't, the scene at the window's size; Turbo - 40 fps (3 refreshes of a 120 Hz monitor a
+    // frame); Turbo 60 - always 60, the game's resolution as far down as 60 needs. Even pacing automatic.
+    s->fps_mode = mode == MODE_TURBO60 ? 2 : mode == MODE_TURBO ? 3 : mode == MODE_PERFORMANCE ? 0 : 1;
     s->display_refresh = 0;
     s->even_pacing = -1;
     s->res_mode = mode == MODE_BATTERY ? 1 : RES_MATCH;
@@ -332,11 +348,13 @@ void settings_load(void) {
         else if (!strcmp(key, "mouse_camera")) g_settings.mouse_sens = fminf(fmaxf((float)atof(val), 0), 5);
         else if (!strcmp(key, "mouse_invert_y")) g_settings.mouse_invert_y = atoi(val) != 0;
         else if (!strcmp(key, "fullscreen_exclusive")) g_settings.fullscreen_exclusive = atoi(val) != 0;
+        else if (!strcmp(key, "app_icon")) g_settings.app_icon = atoi(val) >= 0 && atoi(val) < 6 ? atoi(val) : 0;
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
         else if (!strcmp(key, "cutscenes_60")) g_settings.event_fps_unlock = atoi(val) != 0;
         else if (!strcmp(key, "frame_rate"))
             g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : !strcmp(val, "40") ? 3 : 0;
-        else if (!strcmp(key, "display_refresh")) g_settings.display_refresh = !strcmp(val, "60") ? 1 : !strcmp(val, "system") ? 2 : 0;
+        else if (!strcmp(key, "display_refresh"))  // (120: the PC's Exclusive fullscreen at 120 Hz)
+            g_settings.display_refresh = !strcmp(val, "60") ? 1 : !strcmp(val, "system") ? 2 : !strcmp(val, "120") ? 3 : 0;
         // (shader_math = auto | 32 | 64; upstream's shader_int32 = 1 still turns it on - its 0 was the default, now
         // Automatic, so a settings file from before keeps Automatic)
         else if (!strcmp(key, "shader_math")) g_settings.shader_int32 = !strcmp(val, "32") ? 1 : !strcmp(val, "64") ? 0 : -1;
@@ -439,11 +457,12 @@ void settings_save(void) {
     fprintf(f, "overlay = %s\n", g_settings.overlay_style == 1 ? "compact" : "full");
     fprintf(f, "overlay_pos = %.4f,%.4f\n", g_settings.overlay_pos[0], g_settings.overlay_pos[1]);
 #ifndef __ANDROID__
-    fprintf(f, "mouse_camera = %.2f\nmouse_invert_y = %d\nfullscreen_exclusive = %d\n", g_settings.mouse_sens,
-            g_settings.mouse_invert_y, g_settings.fullscreen_exclusive);
+    fprintf(f, "mouse_camera = %.2f\nmouse_invert_y = %d\nfullscreen_exclusive = %d\napp_icon = %d\n", g_settings.mouse_sens,
+            g_settings.mouse_invert_y, g_settings.fullscreen_exclusive, g_settings.app_icon);
 #endif
     fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : g_settings.fps_mode == 3 ? "40" : "auto");
-    fprintf(f, "display_refresh = %s\n", g_settings.display_refresh == 1 ? "60" : g_settings.display_refresh == 2 ? "system" : "max");
+    fprintf(f, "display_refresh = %s\n", g_settings.display_refresh == 1 ? "60" : g_settings.display_refresh == 2 ? "system"
+                                         : g_settings.display_refresh == 3 ? "120" : "max");
     fprintf(f, "shader_math = %s\n", g_settings.shader_int32 < 0 ? "auto" : g_settings.shader_int32 ? "32" : "64");
     fprintf(f, "pass_overlap = %s\n", g_settings.pass_overlap < 0 ? "auto" : g_settings.pass_overlap ? "on" : "off");
     {   static const char *const dm[] = {"steady", "sharp", "low", "game"};

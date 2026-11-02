@@ -1,10 +1,10 @@
-// See mods.h. Android only (this fork's scope): elsewhere there are none.
+// See mods.h. Android and the PC build (WSword); elsewhere there are none.
 #include "mods.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(_WIN32)
 #include <ctype.h>
 #include <dirent.h>
 #include <stdlib.h>

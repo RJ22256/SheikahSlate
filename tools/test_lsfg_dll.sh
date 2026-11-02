@@ -14,6 +14,7 @@ for f in $(find $L/lsfg-vk-common/src $L/lsfg-vk-backend/src -name '*.cpp' | sor
         -I$L/lsfg-vk-backend/src $VK "$f" -o "$o"
     objs="$objs $o"
 done
-clang++ -std=c++20 -O1 -DVK_NO_PROTOTYPES -I$L/lsfg-vk-backend/include $VK tools/test_lsfg_dll.cpp $objs -ldl \
+case "$(uname -s)" in MINGW*|MSYS*) LDL= ;; *) LDL=-ldl ;; esac  # (Windows: LoadLibrary, no libdl)
+clang++ -std=c++20 -O1 -DVK_NO_PROTOTYPES -I$L/lsfg-vk-backend/include $VK tools/test_lsfg_dll.cpp $objs $LDL \
     -o build/test_lsfg_dll
 build/test_lsfg_dll

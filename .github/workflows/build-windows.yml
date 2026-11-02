@@ -49,6 +49,13 @@ jobs:
             build/deps-win
             !build/deps-win/src
           key: ${{ steps.deps.outputs.cache-primary-key }}
+      - name: Tests (frame pacing - fill pacing's FIFO model too -, the Lossless.dll check)
+        run: |
+          mkdir -p build
+          clang -O1 -Wall -Iruntime/nvn/vulkan -o build/test_display_pacing.exe tools/test_display_pacing.c \
+              runtime/nvn/vulkan/display_pacing.c
+          build/test_display_pacing.exe
+          sh tools/test_lsfg_dll.sh /ucrt64/include
       - name: Game code generator helper
         run: make gen-helper GEN_PY="$(cygpath -u '${{ steps.py.outputs.python-path }}')"
       - name: Compiler for the player's PC

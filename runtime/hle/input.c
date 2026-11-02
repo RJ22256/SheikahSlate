@@ -185,6 +185,73 @@ static void pad_close(SDL_JoystickID id) {
     note_family();
 }
 
+#ifdef _WIN32
+// ---- (WSword PC) the mouse as the camera (settings.h mouse_sens / mouse_invert_y): while the game has the mouse (relative
+// mode: input_mouse_window), its speed tilts the right stick - a full tilt at 1,200 counts a second at 100%, a little
+// smoothed (events and frames come at different rates), past the stick's first 15% (the game's dead zone: slow moves
+// would turn nothing), as the touch drag camera (ui/touch_controls.mm drag_frame); its buttons are Y (attack), ZR (the
+// bow: held to aim, let go to shoot), ZL (lock on, the shield), L and R
+static _Atomic int64_t mouse_acc_x, mouse_acc_y;  // (counts x 1000 since mouse_frame: the main thread adds)
+static _Atomic int32_t mouse_rx, mouse_ry;
+static _Atomic uint64_t mouse_buttons;
+static _Atomic bool mouse_captured;
+#define MOUSE_BUTTONS mouse_buttons
+#define MOUSE_RX mouse_rx
+#define MOUSE_RY mouse_ry
+
+static void mouse_frame(void) {  // (the game's thread, once a presented frame)
+    static uint64_t last_ns;
+    static float vx, vy;
+    uint64_t now = SDL_GetTicksNS();
+    double dt = last_ns ? (double)(now - last_ns) / 1e9 : 0;
+    last_ns = now;
+    double dx = atomic_exchange(&mouse_acc_x, 0) / 1000.0, dy = atomic_exchange(&mouse_acc_y, 0) / 1000.0;
+    if (!mouse_captured || g_settings.mouse_sens <= 0) { vx = vy = 0, mouse_rx = mouse_ry = 0; return; }
+    if (dt <= 0 || dt > 0.25) dt = 1.0 / 30;
+    float full = 1200.0f / g_settings.mouse_sens;  // (counts a second for a full tilt)
+    float nx = (float)(dx / dt) / full, ny = (float)(-dy / dt) / full * (g_settings.mouse_invert_y ? -1 : 1);
+    vx = 0.5f * vx + 0.5f * nx, vy = 0.5f * vy + 0.5f * ny;
+    float m = sqrtf(vx * vx + vy * vy), out = m < 0.01f ? 0 : fminf(1.0f, 0.15f + 0.85f * m), k = m > 0 ? out / m : 0;
+    mouse_rx = (int32_t)(vx * k * 32767), mouse_ry = (int32_t)(vy * k * 32767);
+}
+
+// The main thread, each loop (ui/menu.mm menu_apply_window_requests): the game has the mouse while a game runs, its
+// window has the keyboard, the menu is closed, Alt isn't held and the mouse camera is on
+extern int g_start_screen;  // (runtime/hle/game.c)
+extern bool menu_input_captured(void);
+void input_mouse_window(SDL_Window *w) {
+    bool want = w && g_settings.mouse_sens > 0 && !g_start_screen && !menu_input_captured() && !host_test &&
+                (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) && !(SDL_GetModState() & SDL_KMOD_ALT);
+    if (want == mouse_captured) return;
+    SDL_SetWindowRelativeMouseMode(w, want);
+    mouse_captured = want;
+    if (!want) mouse_buttons = 0, mouse_acc_x = mouse_acc_y = 0;
+}
+
+static void mouse_event(const SDL_Event *e) {
+    extern bool perf_overlay_mouse(const SDL_Event *e);  // (ui/perf_overlay.mm: dragging the FPS overlay)
+    if (!mouse_captured) {
+        perf_overlay_mouse(e);
+        return;
+    }
+    if (e->type == SDL_EVENT_MOUSE_MOTION) {
+        mouse_acc_x += (int64_t)(e->motion.xrel * 1000);
+        mouse_acc_y += (int64_t)(e->motion.yrel * 1000);
+        return;
+    }
+    int b = e->button.button == SDL_BUTTON_LEFT ? BTN_Y : e->button.button == SDL_BUTTON_RIGHT ? BTN_ZR
+          : e->button.button == SDL_BUTTON_MIDDLE ? BTN_ZL : e->button.button == SDL_BUTTON_X1 ? BTN_L
+          : e->button.button == SDL_BUTTON_X2 ? BTN_R : -1;
+    if (b < 0) return;
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) mouse_buttons |= 1ull << b;
+    else mouse_buttons &= ~(1ull << b);
+}
+#else
+#define MOUSE_BUTTONS 0
+#define MOUSE_RX 0
+#define MOUSE_RY 0
+#endif
+
 void input_handle_event(const SDL_Event *e) {
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
     if (!scanned) {
@@ -204,6 +271,11 @@ void input_handle_event(const SDL_Event *e) {
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
         recompute_keyboard();
         break;
+#ifdef _WIN32
+    case SDL_EVENT_MOUSE_MOTION: case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
+        mouse_event(e);
+        break;
+#endif
     case SDL_EVENT_GAMEPAD_ADDED:
         pad_open(e->gdevice.which);
         break;
@@ -377,6 +449,9 @@ void input_frame(uint64_t frame) {
     extern void watch_arm(void);
     watch_arm();
     host_test_frame(frame);
+#ifdef _WIN32
+    mouse_frame();
+#endif
     const char *spec = getenv("LARECOMP_INPUT");
     if (!spec) return;
     static const char *const names[] = {"A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS",
@@ -429,7 +504,9 @@ extern _Atomic int32_t g_touch_lx, g_touch_ly, g_touch_rx, g_touch_ry;
 #define TOUCH_RX 0
 #define TOUCH_RY 0
 #endif
-uint64_t input_buttons_now(void) { return (menu_input_captured() ? 0 : key_buttons | pad_buttons | TOUCH_BUTTONS) | script_buttons; }
+uint64_t input_buttons_now(void) {
+    return (menu_input_captured() ? 0 : key_buttons | pad_buttons | TOUCH_BUTTONS | MOUSE_BUTTONS) | script_buttons;
+}
 
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 
@@ -453,7 +530,7 @@ static void fill_state(Cpu *c) {
         LOG("[input] watching controller object %llx\n", c->x[1] - 8);
     }
     bool menu = menu_input_captured();  // the overlay menu / name entry has the controls (typing there isn't for the game)
-    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | TOUCH_BUTTONS | script_buttons;
+    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | TOUCH_BUTTONS | MOUSE_BUTTONS | script_buttons;
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
         static uint64_t until;
@@ -461,7 +538,8 @@ static void fill_state(Cpu *c) {
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
     int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx + TOUCH_LX) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly + TOUCH_LY) + script_ly);
-    int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx + TOUCH_RX) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry + TOUCH_RY) + script_ry);
+    int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx + TOUCH_RX + MOUSE_RX) + script_rx),
+            ry = clamp_axis((menu ? 0 : key_ry + pad_ry + TOUCH_RY + MOUSE_RY) + script_ry);
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;
     if (ly > 16000) b |= 1ull << 17;

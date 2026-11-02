@@ -60,5 +60,10 @@ int dp_fg_frames(double refresh_ns, int want, int fps);
 // Of a context making n frames between two real ones, the passes for `eff` of them evenly between (4x's middle one for
 // 2x) into which[]: how many (eff lowered until n + 1 is a multiple of eff + 1).
 int dp_fg_subset(int n, int eff, int *which);
+// (WSword PC, a driver without present times) How many times to present each of a real frame's `presents` (it and its
+// generated ones) so a FIFO swapchain shows every present for one refresh: the refreshes each stays up at `fps` on this
+// display (30 fps on 120 Hz: 4; 2x at 30 on 120 Hz: 2) - 1 where that isn't a whole number (60 fps on 144 Hz), or where
+// more than max_burst presents a real frame would be needed.
+int dp_fill_repeats(double refresh_ns, int fps, int presents, int max_burst);
 // ", screen 4x 97% (3x 1%, 5x 2%), paced: late 3, ..." for the stats line; resets the counters. Returns its length.
 int dp_stats_take(DPace *p, char *out, int size, bool paced);
