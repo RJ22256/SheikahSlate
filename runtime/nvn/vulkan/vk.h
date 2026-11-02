@@ -27,6 +27,8 @@ void vk_device_fault_report(void);
 #ifdef __ANDROID__
 void vk_android_load(void);  // android_driver.c: the Vulkan driver (adrenotools / system) into volk
 const char *vk_driver_rejected(void);  // (the chosen driver package the system's stood in for; "" none)
+#endif
+#if defined(__ANDROID__) || defined(_WIN32)  // (WS_FORK - WSword's Android and PC)
 void vk_wait_ready(void);    // device.c: until the device exists (the window's thread makes it)
 #endif
 #define VK_CHECK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { if (r_ == VK_ERROR_DEVICE_LOST) vk_device_fault_report(); \

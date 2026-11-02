@@ -56,6 +56,7 @@ Settings g_settings = {
     .event_fps_unlock = false,  // (some events count frames: hle/framepace.c in_event)
     .sync_lag = true,           // (a few more fps; the CPU's reads of GPU results a frame old: nvn/objects.c nvnSyncWait)
     .mouse_sens = 1.0f,         // (PC: the mouse as the camera while the game has it; 0 off)
+    .render_thread = true,      // (PC: Android's render thread - LARECOMP_VK_ASYNC over it)
 #ifdef __ANDROID__
     .show_fps = true,  // (the performance overlay, ui/perf_overlay.mm: on until turned off in the menu)
     .touch_controls = true,
@@ -348,11 +349,13 @@ void settings_load(void) {
         else if (!strcmp(key, "mouse_camera")) g_settings.mouse_sens = fminf(fmaxf((float)atof(val), 0), 5);
         else if (!strcmp(key, "mouse_invert_y")) g_settings.mouse_invert_y = atoi(val) != 0;
         else if (!strcmp(key, "fullscreen_exclusive")) g_settings.fullscreen_exclusive = atoi(val) != 0;
+        else if (!strcmp(key, "render_thread")) g_settings.render_thread = atoi(val) != 0;
         else if (!strcmp(key, "app_icon")) g_settings.app_icon = atoi(val) >= 0 && atoi(val) < 6 ? atoi(val) : 0;
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
         else if (!strcmp(key, "cutscenes_60")) g_settings.event_fps_unlock = atoi(val) != 0;
         else if (!strcmp(key, "frame_rate"))
-            g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : !strcmp(val, "40") ? 3 : 0;
+            g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : !strcmp(val, "40") ? 3
+                                : !strcmp(val, "unlocked") ? 4 : 0;
         else if (!strcmp(key, "display_refresh"))  // (120: the PC's Exclusive fullscreen at 120 Hz)
             g_settings.display_refresh = !strcmp(val, "60") ? 1 : !strcmp(val, "system") ? 2 : !strcmp(val, "120") ? 3 : 0;
         // (shader_math = auto | 32 | 64; upstream's shader_int32 = 1 still turns it on - its 0 was the default, now
@@ -459,8 +462,10 @@ void settings_save(void) {
 #ifndef __ANDROID__
     fprintf(f, "mouse_camera = %.2f\nmouse_invert_y = %d\nfullscreen_exclusive = %d\napp_icon = %d\n", g_settings.mouse_sens,
             g_settings.mouse_invert_y, g_settings.fullscreen_exclusive, g_settings.app_icon);
+    fprintf(f, "render_thread = %d\n", g_settings.render_thread);
 #endif
-    fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : g_settings.fps_mode == 3 ? "40" : "auto");
+    fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : g_settings.fps_mode == 3 ? "40"
+                                    : g_settings.fps_mode == 4 ? "unlocked" : "auto");
     fprintf(f, "display_refresh = %s\n", g_settings.display_refresh == 1 ? "60" : g_settings.display_refresh == 2 ? "system"
                                          : g_settings.display_refresh == 3 ? "120" : "max");
     fprintf(f, "shader_math = %s\n", g_settings.shader_int32 < 0 ? "auto" : g_settings.shader_int32 ? "32" : "64");

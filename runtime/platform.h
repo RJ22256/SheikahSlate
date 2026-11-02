@@ -1,6 +1,12 @@
 // Host OS interface: runtime/platform/android.c, runtime/platform/windows.c (WSword's PC build, from LAS Recomp's).
 // Compatibility headers below also support isolated development harnesses on the host.
 #pragma once
+// WSword: the Android fork's runtime work - BOTW's core 0 discipline and the kernel's race fixes, the dispatch cache,
+// the renderer's translation speed-ups - on the PC build too (Windows). A macOS / Linux build of LAS Recomp's desktop
+// code keeps LAS's. (Android-only things - the moving guest window, ADPF, Turnip's placed heap - stay __ANDROID__.)
+#if defined(__ANDROID__) || defined(_WIN32)
+#define WS_FORK 1
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -124,8 +130,8 @@ typedef struct {
 } PlatDeviceStats;
 void plat_device_stats(PlatDeviceStats *out);
 #endif
-#ifdef __ANDROID__
-// ADPF: the calling thread's work for a frame (busy, ns) and its target (the frame time it must fit)
+#ifdef WS_FORK
+// ADPF (Android; no-ops on the PC): the calling thread's work for a frame (busy, ns) and its target (the frame time it must fit)
 void plat_frame_work(uint64_t work_ns, uint64_t target_ns);
 // (the presenting thread: cpu_ns is the frame's critical path - the longer of its own and the render thread's work -,
 // game_ns its own part, for the overlay; the GPU's time too, API 35+)

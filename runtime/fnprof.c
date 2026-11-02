@@ -47,7 +47,7 @@ static void bt_check(uint64_t a, uint64_t lr, uint64_t x0) {
 
 // (g_fnprof bit 0: profiling; bit 1: a thread of core 0 was preempted - runtime/kernel.c)
 void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (g_fnprof & 2) { extern void kernel_preempt_point(void); kernel_preempt_point(); }
 #endif
     if (!(g_fnprof & 1)) return;

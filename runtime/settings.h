@@ -42,7 +42,8 @@ typedef struct {
     int overlay_style;    // Show FPS's overlay (ui/perf_overlay.mm): 0 full, 1 compact (one line)
     float overlay_pos[2]; // its top left, a share of the screen, dragged there with a finger (negative: the corner)
     bool event_fps_unlock;  // in-game cutscenes and talks at the chosen frame rate, not 30 (hle/framepace.c)
-    int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps, 3: 40 fps (Sheikah
+    int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps, 3: 40 fps, 4: unlocked
+                          // (WSword PC: no limit - hle/framepace.c's own, up to 300 - with the game's clock right) (Sheikah
                           // Slate: 3 refreshes a frame at 120 Hz; the game's 30 fps way, its clock stepped 0.75 a frame)
     int display_refresh;  // the display's refresh rate (Sheikah Slate, android/.../SlateDisplay.java): 0 the highest at
                           // this resolution (120 Hz on the Galaxy Tab S10 Ultra), 1 60 Hz (saves battery), 2 the system's
@@ -96,6 +97,7 @@ typedef struct {
     float mouse_sens;     // 0: off; 1 = default speed
     bool mouse_invert_y;
     bool fullscreen_exclusive;  // PC: fullscreen takes the display's own mode (else borderless, at the desktop's)
+    bool render_thread;         // PC: the game's command lists translated on a thread of their own (nvn/vulkan/async.c)
     int app_icon;         // PC: Settings > Look's icon - the window's and the taskbar's (ui/launcher.mm k_icon_files)
     int language;        // LANG_AUTO or an index into g_language_codes: the game's text language
     bool aspect_asked;   // the start screen's one-time "authentic 16:9 or unlocked?" question was answered

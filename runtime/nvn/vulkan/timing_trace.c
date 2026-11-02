@@ -1,5 +1,6 @@
 // Opt-in CPU-side diagnostics using the GPU queries already issued for the game's counters.
-#ifdef __ANDROID__
+#include "../../platform.h"  // (WS_FORK)
+#ifdef WS_FORK
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>

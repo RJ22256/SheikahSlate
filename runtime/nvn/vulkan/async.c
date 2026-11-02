@@ -1,4 +1,4 @@
-// Android: the game's command lists translated on a render thread of their own (LARECOMP_VK_ASYNC=0: off).
+// Android and PC: the game's command lists translated on a render thread of their own (LARECOMP_VK_ASYNC=0: off).
 //
 // The game's thread records its commands into its own command memory (cmdbuf.c) and, at submit, used to translate
 // them to Vulkan right there: 3.5-5.5 ms of each frame, a third of a 60 fps frame on top of the game's own work. Here
@@ -11,7 +11,8 @@
 // tests - stays on the game's thread), FENCE (nvnQueueFenceSync). Everything else that reaches into the renderer from
 // the game's thread (a texture destroyed, a movie frame, the heap, a reset) first waits for the queue to empty
 // (vk_async_drain): those are rare, and so they run as before, with the render thread idle.
-#ifdef __ANDROID__
+#include "../../platform.h"  // (WS_FORK: WSword's Android and PC)
+#ifdef WS_FORK
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -22,6 +23,7 @@
 #include "../nvn.h"
 #include "../../platform.h"
 #include "../../rt.h"
+#include "../../settings.h"
 
 enum { REQ_EXEC, REQ_PRESENT, REQ_FENCE };
 typedef struct { int type; uint64_t a; void *p; uint64_t id; } Req;
@@ -58,6 +60,9 @@ bool vk_async_on(void) {
     if (on < 0) {
         const char *e = getenv("LARECOMP_VK_ASYNC");  // (on by default: =0 turns it off)
         on = !e || atoi(e) != 0;
+#ifdef _WIN32
+        if (!e) on = g_settings.render_thread;  // (WSword PC: Settings > Video > Render thread)
+#endif
         const char *a = getenv("LARECOMP_VK_ASYNC_AHEAD");
         if (a && atoi(a) > 0) ahead = atoi(a);
         if (on) LOG("[vk] async: command lists translated on a render thread (%d frame%s ahead)\n", ahead, ahead > 1 ? "s" : "");
@@ -76,8 +81,10 @@ static uint64_t render_cpu_ns(void) {
 
 static void *render_main(void *arg) {
     (void)arg;
+#ifdef __ANDROID__
     extern void plat_thread_unpin(void);
     plat_thread_unpin();
+#endif
     // Keep the established ADPF signal by default. CPU-only timing is an explicit experiment:
     // excluding descheduling/waits can understate the work seen by Android's frequency governor.
     const char *timing = getenv("LARECOMP_ADPF_CPU_TIME");
@@ -237,5 +244,5 @@ uint64_t vk_async_fence(uint64_t guest_sync) {
     return id;
 }
 #else
-typedef int vk_async_unused;  // (Android only)
+typedef int vk_async_unused;  // (WSword's Android and PC only)
 #endif

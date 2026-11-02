@@ -2,7 +2,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#ifdef __ANDROID__
+#include "../../platform.h"  // (WS_FORK)
+#ifdef WS_FORK
 enum { VK_TIMING_TIMELINE, VK_TIMING_SLOT, VK_TIMING_ACQUIRE, VK_TIMING_PRESENT, VK_TIMING_SUBMIT, VK_TIMING_WAITS };
 typedef struct {
     uint64_t address, frame, seq, host_ns;

@@ -163,7 +163,7 @@ static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
     return (p.optimalTilingFeatures & want) == want;
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // BC textures on a GPU without BC (Mali, and others outside Adreno): decoded on the CPU at upload (bcdec, MIT /
 // Unlicense) into the smallest plain format that holds them - BC4 R8, BC5 RG8 (2x the size), BC1/2/3/7 RGBA8 (4-8x),
 // BC6H RGBA16F. They used to become RGBA8 images left unwritten: colored 4x4 garbage on every BC texture (a
@@ -341,7 +341,7 @@ typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq;
 static Dead *dead;
 static int ndead, cap_dead;
 static void views_forget(TexBackend *b);
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // (the render thread (vulkan/async.c) collects and defers too, the game thread meanwhile: the list grew under a
 // collection - a crash in free() after a level change)
 static pthread_mutex_t dead_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -400,7 +400,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkFormat vf = mf.vf;
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     b->astc_bw = b->astc_bh = 0;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     b->bc_vf = VK_FORMAT_UNDEFINED;
     static int no_bc = -1;  // LARECOMP_NO_BC=1 (a test): as a GPU without BC - the CPU decode on an Adreno
     if (no_bc < 0) no_bc = getenv("LARECOMP_NO_BC") != NULL;
@@ -410,7 +410,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
 #endif
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
         const FormatInfo *fi = t->layout.fmt;
-#ifdef __ANDROID__
+#ifdef WS_FORK
         uint32_t bpp;
         if (is_bc(vf) && fi && (fi->bpb == 8 || fi->bpb == 16) && fi->bw == 4 && fi->bh == 4 &&
             format_supports(bc_target(vf, &bpp), need)) {
@@ -627,7 +627,7 @@ static void texture_snapshot_forget(TexBackend *b);
 void backend_texture_destroyed(NvnTexture *t) {
     TexBackend *b = t->backend;
     if (!b) return;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     extern void vk_async_drain(void);
     vk_async_drain();  // (the render thread idle: vulkan/async.c)
 #endif
@@ -653,13 +653,13 @@ void vk_texture_memory(uint64_t *rt_bytes, int *nrt, uint64_t *tex_bytes, int *n
         vmaGetAllocationInfo(g_vk.vma, b->mem, &ai);
         if (b->gpu_owned) *rt_bytes += ai.size, (*nrt)++;
         else *tex_bytes += ai.size, (*ntex)++;
-#ifdef __ANDROID__
+#ifdef WS_FORK
         if (b->bc_vf) *bc_bytes += ai.size, (*nbc)++;
 #endif
     }
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // The game's textures (not render targets) by the format they came in: the BC ones by kind with what their decoded
 // images take (this GPU can't sample BC - each decoded to RGBA8, RG8, R8 or RGBA16F: up to 8x the size), the ASTC ones
 // (sampled as they are), the rest. For the performance capture's [gpumem]: where converting them would save most.
@@ -936,7 +936,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     b->uploaded = true;
     extern uint64_t vk_sig_uploads;  // (exec.c vk_frame_check)
     vk_sig_uploads++;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (b->format != mf.vf && !b->astc_bw && !b->bc_vf) return;  // unsupported format: nothing sensible to copy
 #else
     if (b->format != mf.vf && !b->astc_bw) return;  // unsupported format: nothing sensible to copy
@@ -972,7 +972,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                 texture_trace_record(TEX_TRACE_ASTC, (uint64_t)l.wb * l.hb * 16, (uint64_t)l.w * l.h * 4, decode_ns);
                 continue;
             }
-#ifdef __ANDROID__
+#ifdef WS_FORK
             if (b->bc_vf) {  // blocks -> linear block rows -> texels (bc_decode)
                 uint32_t bsize = fi->bpb, bpp;
                 bc_target(b->bc_vf, &bpp);
@@ -1114,7 +1114,7 @@ void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size
 
 // Host-produced texel data (decoded video, any thread): applied on the render thread at the texture's next use.
 void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     extern void vk_async_drain(void);
     vk_async_drain();  // (the render thread idle: vulkan/async.c)
 #endif
@@ -1195,7 +1195,7 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (v && (v->setmask & 4) && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
         VkFormat vf = fmt_of(v->format).vf;
         if (vk_format(t->format) == b->format) fmt = vf;  // (fallback images keep their own format)
-#ifdef __ANDROID__
+#ifdef WS_FORK
         else if (b->bc_vf && is_bc(vf)) { uint32_t bpp; fmt = bc_target(vf, &bpp); }  // (decoded BC: its sRGB / UNORM view)
 #endif
         if (b->fixed_fmt && fmt != b->format && fmt != b->view_alt) {  // (not in its format list: create_image)

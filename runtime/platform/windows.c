@@ -998,3 +998,13 @@ void plat_device_stats(PlatDeviceStats *out) {
     if (GetSystemPowerStatus(&ps) && !(ps.BatteryFlag & 128) && ps.BatteryFlag != 255 && ps.BatteryLifePercent <= 100)
         out->batt_pct = ps.BatteryLifePercent;
 }
+
+// (WSword PC) Android's performance hints (ADPF): none on Windows - the renderer's calls are no-ops here
+void plat_frame_work(uint64_t work_ns, uint64_t target_ns) { (void)work_ns, (void)target_ns; }
+void plat_frame_work_gpu(uint64_t cpu_ns, uint64_t gpu_ns, uint64_t target_ns, uint64_t game_ns) {
+    (void)cpu_ns, (void)gpu_ns, (void)target_ns, (void)game_ns;
+}
+void plat_adpf_stats(PlatAdpfStats *out) { memset(out, 0, sizeof *out); out->state = -1; }
+void plat_render_work(uint64_t work_ns, uint64_t target_ns) { (void)work_ns, (void)target_ns; }  // (vulkan/async.c)
+// (the fps line's write-tracking faults: Windows tracks the game's writes with MEM_WRITE_WATCH, no faults)
+uint64_t plat_wt_faults(void) { return 0; }

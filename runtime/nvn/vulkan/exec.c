@@ -20,6 +20,30 @@
 #include "../renderer.h"
 #include "../../settings.h"
 #include "../../paths.h"
+#ifndef __ANDROID__
+// (WSword PC: the Vulkan loader exports only core functions - the extensions' come from the device, where Android's
+// volk has them; each used only once its extension is on: the placed heap, LARECOMP_SHADER_STATS)
+static PFN_vkVoidFunction ws_dev_fn(const char *name) { return g_vk.dev ? vkGetDeviceProcAddr(g_vk.dev, name) : NULL; }
+static VkResult ws_vkMapMemory2KHR(VkDevice d, const VkMemoryMapInfoKHR *i, void **p) {
+    PFN_vkMapMemory2KHR f = (PFN_vkMapMemory2KHR)ws_dev_fn("vkMapMemory2KHR");
+    return f ? f(d, i, p) : VK_ERROR_EXTENSION_NOT_PRESENT;
+}
+static VkResult ws_vkGetPipelineExecutablePropertiesKHR(VkDevice d, const VkPipelineInfoKHR *i, uint32_t *n,
+                                                        VkPipelineExecutablePropertiesKHR *p) {
+    PFN_vkGetPipelineExecutablePropertiesKHR f =
+        (PFN_vkGetPipelineExecutablePropertiesKHR)ws_dev_fn("vkGetPipelineExecutablePropertiesKHR");
+    return f ? f(d, i, n, p) : VK_ERROR_EXTENSION_NOT_PRESENT;
+}
+static VkResult ws_vkGetPipelineExecutableStatisticsKHR(VkDevice d, const VkPipelineExecutableInfoKHR *i, uint32_t *n,
+                                                        VkPipelineExecutableStatisticKHR *s) {
+    PFN_vkGetPipelineExecutableStatisticsKHR f =
+        (PFN_vkGetPipelineExecutableStatisticsKHR)ws_dev_fn("vkGetPipelineExecutableStatisticsKHR");
+    return f ? f(d, i, n, s) : VK_ERROR_EXTENSION_NOT_PRESENT;
+}
+#define vkMapMemory2KHR ws_vkMapMemory2KHR
+#define vkGetPipelineExecutablePropertiesKHR ws_vkGetPipelineExecutablePropertiesKHR
+#define vkGetPipelineExecutableStatisticsKHR ws_vkGetPipelineExecutableStatisticsKHR
+#endif
 bool vk_shader_int32(void);  // (device.c: Video > 32-bit shader math, Automatic on Arm GPUs)
 
 // LARECOMP_AB (vk_ab, below): AB() costs no call while it is not set - it is asked per constant buffer and per pass
@@ -65,7 +89,7 @@ void vk_collect_dead(void);
 
 // ================================================================== submissions
 // A submission = optional upload command buffer + the main one, signalling the timeline with its number.
-#ifdef __ANDROID__
+#ifdef WS_FORK
 #define SUBS 16  // (LARECOMP_VK_ASYNC submits a frame in chunks: more submissions in flight)
 #else
 #define SUBS 8
@@ -82,7 +106,7 @@ static Sub subs[SUBS];
 static int cur_sub;
 static void ss_forget(void);
 static uint64_t submit_seq;  // last submitted
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // The last submission with the game's commands in it (backend_execute's), and whether some are not submitted yet.
 // The game's fences (nvnQueueFenceSync) right after its submission went to the next one - the window's present,
 // which waits for a window image: its waits followed the compositor (SyncWait 8-17 ms a frame) rather than its own
@@ -128,9 +152,9 @@ static void wait_account(uint64_t ns) {
 static void cq_resolve_done(uint64_t done);
 static void wb_apply(uint64_t done);
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 static bool gcopy_mode;   // (no heap import: global memory copied by the CPU, gcopy_prepare)
-#ifdef __ANDROID__
+#ifdef WS_FORK
 static bool gwin_mode;    // (heap placed, larger than a storage buffer reaches: draws get a window of it, gwin_prepare)
 #endif
 static VkSpan gc_span;    // this draw's / dispatch's copy, gc_size bytes (0: none)
@@ -150,12 +174,12 @@ void vk_wait_seq(uint64_t seq) {
     stat_wait_ns += SDL_GetTicksNS() - t0;
     cum_wait += SDL_GetTicksNS() - t0;
     wait_account(SDL_GetTicksNS() - t0);
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (vk_timing_trace_on()) vk_timing_trace_wait(VK_TIMING_TIMELINE, SDL_GetTicksNS() - t0);
 #endif
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
     else if (r == VK_SUCCESS) cq_resolve_done(seq);  // (the game reads its timing counters after waiting)
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (r == VK_SUCCESS) gcopy_retire(seq);
 #endif
     else {
@@ -183,7 +207,7 @@ static void note_gmem_store(int stage);  // (below: it reads the bound storage b
 // done). LARECOMP_VK_COUNTER=cpu: host clock only; =frozen: one value per presented frame (test); =legacy: the host
 // clock in ns instead of GPU ticks, as before (test: reproduces the locked 30).
 #define CQ_MAX 64
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // (Android) The game's pair of counters spans several of our submissions, and the GPU idles between them while the
 // CPU translates the next: that idle counted as GPU time (copy mode outdoors: ~15 ms a pair, the game's 30 fps
 // mode). So each submission's start and end are timestamped too (queries CQ_MAX, CQ_MAX + 1), and a pair's end
@@ -193,7 +217,7 @@ static void note_gmem_store(int stage);  // (below: it reads the bound storage b
 #define CQ_QUERIES (CQ_MAX + 2)
 static _Atomic uint64_t gpu_busy_total;  // (GPU ns working, all submissions so far: ADPF's GPU time per frame)
 static double g_pace_gpu_ms;  // (the last presented frame's GPU busy time: LARECOMP_LOG_PACE)
-#ifdef __ANDROID__
+#ifdef WS_FORK
 static void drs_rate_follow(double gpu_ms);  // (drs_rate_scale's factor, kept by the GPU's real time a frame)
 #endif
 #else
@@ -201,7 +225,7 @@ static void drs_rate_follow(double gpu_ms);  // (drs_rate_scale's factor, kept b
 #endif
 typedef struct {
     VkQueryPool pool; uint32_t n; uint64_t seq; uint64_t *out[CQ_MAX]; bool ts;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     uint64_t frame[CQ_MAX], host_ns[CQ_MAX];  // opt-in diagnostics: identity at command execution, not query resolution
     bool presentation;
 #endif
@@ -214,7 +238,7 @@ static int64_t cq_offset;  // host ns - GPU ns (the smallest seen)
 static uint64_t ns_to_gpu_ticks(uint64_t ns) { return (uint64_t)((unsigned __int128)ns * 384 / 625); }
 static bool cq_calibrated;
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // ---- LARECOMP_FRAME_TIMELINE=<frame>: four frames from that one, every step in time order - the game's lists, fences,
 // waits and presents, the render thread's translation and submissions, the GPU's start and end of each submission (its
 // clock moved onto the CPU's: cq_offset) - in ms from the first. Where a frame's time goes between the three.
@@ -281,7 +305,7 @@ static _Atomic int pace_on = -1;
 
 // The last presented frame's GPU busy time in ms, -1 unknown (Video > Internal resolution > Dynamic: output_scale.c)
 double vk_frame_gpu_ms(void) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     return g_pace_gpu_ms > 0 ? g_pace_gpu_ms : -1;
 #else
     return -1;
@@ -298,7 +322,7 @@ void vk_pace_frame(void) {
     static uint8_t over[60];
     static int idx, nover, calm;
     static double avg;  // busy ms, moving average (~20 frames)
-#ifdef __ANDROID__
+#ifdef WS_FORK
     static uint64_t slow_since, probe_at, probe_wait = 10000000000ull;
     static int last_mode = -1, last_resolution = -1;
     // A failed trial describes the old workload. Reconsider Auto immediately when the user changes resolution
@@ -324,7 +348,7 @@ void vk_pace_frame(void) {
     last = now, last_wait = w;
     if (first || p > 100000000ull) return;  // (loading, a hitch: not a pace)
     double busy = (p > wt ? p - wt : 0) / 1e6;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     // LARECOMP_VK_ASYNC: the frame is two threads' work - the game's (busy) and the render thread's (its last frame)
     extern bool vk_async_on(void);
     extern uint64_t vk_async_frame_work_ns(void);
@@ -332,7 +356,7 @@ void vk_pace_frame(void) {
     double game_busy = busy;
     if (render_busy > busy) busy = render_busy;
 #endif
-#ifdef __ANDROID__
+#ifdef WS_FORK
     // (ADPF: clocks for 60 fps even in the 30 fps mode - with that mode's 33 ms as the target, a 21 ms frame looked
     // comfortable, the clocks stayed low and so did the mode)
     static int follow = -1;  // LARECOMP_ADPF_FOLLOW=1: the old target (the mode's own)
@@ -373,7 +397,7 @@ void vk_pace_frame(void) {
                             (uint64_t)(game_busy * 1e6));
     }
 #endif
-#ifdef __ANDROID__
+#ifdef WS_FORK
     // Per world step: the game picks its present interval frame by frame (1: one step, 60 fps; 2: two steps, 30 fps),
     // and a 2-step frame's ~19 ms counted as a 60 fps frame over its budget - the pacer forced the 30 fps mode, which
     // made the game choose more 2-step frames, which kept it forced (2026-10-16, standing still in Mabe Village: left
@@ -392,7 +416,7 @@ void vk_pace_frame(void) {
     if (log < 0) log = getenv("LARECOMP_LOG_PACE") != NULL;
     if (log) {  // (with LARECOMP_VK_PROF also the frame's command translation and, of it, texture checks / uploads)
         static uint64_t le, lu;
-#ifdef __ANDROID__
+#ifdef WS_FORK
         extern int g_present_interval;
         extern int vk_ab(const char *what);
         LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f interval %d slow %d game %.2f render %.2f gpu %.2f ab %d\n",
@@ -404,7 +428,7 @@ void vk_pace_frame(void) {
 #endif
         le = cum_exec, lu = prof_up_cum;
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     // (or one that missed its vsync, whatever held it: with the render thread both halves can fit and the frame still
     // take two vsyncs - slow motion all the same)
     int o = steps == 1 && (busy > 16.2 || p > 20000000ull);
@@ -440,7 +464,7 @@ void vk_pace_frame(void) {
     over[idx] = (uint8_t)o;
     idx = (idx + 1) % 60;
     if (!pace_on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (g_settings.fps_mode) {  // (Video: Frame rate 30 / 40 / 60) fixed: no measuring, no trials
         bool slow = g_settings.fps_mode == 1 || g_settings.fps_mode == 3;  // (40: the game's 30 fps way, 0.75 of its step)
         if (slow != pace_slow)
@@ -449,7 +473,7 @@ void vk_pace_frame(void) {
         return;
     }
 #endif
-#ifdef __ANDROID__
+#ifdef WS_FORK
     // Trials: a 30 fps frame carries more of the game's CPU work than a 60 fps one, so the headroom test below rarely
     // passes there - one hitch (a pipeline compile) kept the overworld at 30 for good. Every probe_wait seconds at
     // 30 the game's own choice comes back for a trial; frames that don't fit within 3 s bring the 30 back (each
@@ -461,7 +485,7 @@ void vk_pace_frame(void) {
     if (!pace_slow && nover >= 12) {
         pace_slow = true, calm = 0;
         LOG("[pace] frames don't fit 60 fps (%d of the last 60 over 16.2 ms busy): the game's 30 fps mode\n", nover);
-#ifdef __ANDROID__
+#ifdef WS_FORK
         if (probe_at && now - probe_at < 3000000000ull && probe_wait < 80000000000ull) probe_wait *= 2;
         probe_at = 0;
         slow_since = now;
@@ -469,7 +493,7 @@ void vk_pace_frame(void) {
     } else if (pace_slow) {
         // headroom: busy well under a 60 fps frame on average, hardly a frame over (single spikes are normal play)
         calm = avg < 13.0 && nover <= 2 ? calm + 1 : 0;
-#ifdef __ANDROID__
+#ifdef WS_FORK
         // (headroom at 30 doesn't mean 60 fits: in the overworld this went back and forth every few seconds, slow
         // motion each time - it is a trial too, so a quick failure doubles the wait, and it waits a quarter of it)
         if (calm >= 120 && now - slow_since >= probe_wait / 4) {
@@ -485,7 +509,7 @@ void vk_pace_frame(void) {
             LOG("[pace] 2 s with headroom: back to the game's own choice\n");
         }
 #endif
-#ifdef __ANDROID__
+#ifdef WS_FORK
         else if (now - slow_since >= probe_wait) {
             pace_slow = false, nover = 0;
             memset(over, 0, sizeof over);
@@ -498,7 +522,7 @@ void vk_pace_frame(void) {
 }
 
 // a pair's end counter (the 16 bytes after its start) is at least PACE_SLOW_NS after it while pace_slow
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // LARECOMP_FAST_COUNTERS=1 (a test): at most PACE_FAST_NS after it otherwise, so the game always tries its 60 fps
 // mode and the pacer alone brings the 30 back. In the overworld its 60 fps frames averaged 10.5 ms busy, but 4.5%
 // went over 16 ms in bursts: slow motion (the game steps its world once per frame), which the game's own threshold
@@ -523,7 +547,7 @@ void vk_pace_frame(void) {
 // needed - 68% of the pixels where 77% held 60.)
 static _Atomic int g_drs_k;  // (thousandths; 0: 1)
 static double drs_rate_scale(void) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (g_settings.fps_mode != 2 && g_settings.fps_mode != 3) return 1;
     extern int framepace_current_fps(void);
     int fps = framepace_current_fps();
@@ -534,7 +558,7 @@ static double drs_rate_scale(void) {
     return 1;
 #endif
 }
-#ifdef __ANDROID__
+#ifdef WS_FORK
 static void drs_rate_follow(double gpu_ms) {
     static double sum;
     static int n, last_mode = -1;
@@ -590,7 +614,7 @@ static uint64_t drs_filter(const uint64_t *start_entry, uint64_t value, bool rec
 static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *entry, uint64_t value, bool record) {
     if (!start_entry || (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
     value = drs_filter(start_entry, value, record);
-#ifdef __ANDROID__
+#ifdef WS_FORK
     static int fast = -1;
     if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") ? atoi(getenv("LARECOMP_FAST_COUNTERS")) : 0;
     // (Sheikah Slate) not at Frame rate 60 with the frame pacer (1.8.2, 1.9.0): there the counters only feed the game's
@@ -609,7 +633,7 @@ static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *en
 
 static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: its counters get their GPU times
     CounterQ *q = &cq[i];
-#ifdef __ANDROID__
+#ifdef WS_FORK
     static int keep_idle = -1;
     if (keep_idle < 0) keep_idle = getenv("LARECOMP_COUNTER_IDLE") != NULL;
     static int64_t last_end = -1, idle;  // (GPU ns: the previous submission's end; the idle between submissions so far)
@@ -669,7 +693,7 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
         for (uint32_t k = 0; k < q->n; k++) {
             uint64_t gpu = ns_to_gpu_ticks((uint64_t)((int64_t)((double)t[k] * per) + cq_offset));
             const uint64_t *start = k ? q->out[k - 1] : NULL;
-#ifdef __ANDROID__
+#ifdef WS_FORK
             bool idle_matched = false;
             {   // a pair's end (16 bytes after a start seen before): the start's value + the busy time in between
                 static struct { uint64_t *out; uint64_t val; int64_t raw, idle; } seen[4];
@@ -694,7 +718,7 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
             if (log) LOG("[counter] seq %llu #%u at %llx host %.3f gpu %.3f ms\n", (unsigned long long)q->seq, k,
                          (unsigned long long)(uintptr_t)q->out[k], q->out[k][1] * 625.0 / 384 / 1e6, gpu * 625.0 / 384 / 1e6);
             uint64_t delivered = pace_end_counter(start, q->out[k], gpu, true);
-#ifdef __ANDROID__
+#ifdef WS_FORK
             if (vk_timing_trace_on()) {
                 VkTimingCounter sample = {.address = (uint64_t)(uintptr_t)q->out[k], .frame = q->frame[k],
                     .seq = q->seq, .host_ns = q->host_ns[k], .raw_ns = (int64_t)((double)t[k] * per), .idle_ns = idle,
@@ -706,7 +730,7 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
         }
         stat_counters_gpu += q->n;
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     else vk_timing_trace_query_failure(result, q->n, q->seq);
 #endif
     q->n = 0;
@@ -715,7 +739,7 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
 static void cq_resolve_done(uint64_t done) {  // every slot whose submission is done
     wb_apply(done);
     pthread_mutex_lock(&cq_lock);
-#ifdef __ANDROID__
+#ifdef WS_FORK
     for (;;) {  // oldest first
         int best = -1;
         for (int i = 0; i < SUBS; i++)
@@ -772,7 +796,7 @@ static void begin_cb(Sub *s, VkCommandBuffer *cb, bool *begun) {
 
 static void gp_mark(VkCommandBuffer cb, const char *fmt, ...);
 static void upload_begin_barrier(VkCommandBuffer cb) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     static int narrow = -1;
     if (narrow < 0) {
         const char *e = getenv("LARECOMP_VK_UPLOAD_BARRIER");
@@ -813,7 +837,7 @@ VkCommandBuffer vk_cmd(void) {
             q->seq = s->seq;
             pthread_mutex_unlock(&cq_lock);
             if (q->pool) vkCmdResetQueryPool(s->main, q->pool, 0, CQ_QUERIES);
-#ifdef __ANDROID__
+#ifdef WS_FORK
             if (q->pool) vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_NONE, q->pool, CQ_MAX);  // (the start)
 #endif
         }
@@ -854,7 +878,7 @@ void vc_flush(void);
 bool g_gpuprof_frame;
 static VkQueryPool gp_qp;
 static int gp_n;
-#ifdef __ANDROID__
+#ifdef WS_FORK
 #define GP_MAX 8192  // (LARECOMP_GPUPROF_DRAWS=1: a mark after every draw too - its shaders, size and GPU time; ~2,700 a 1.8.2 frame)
 #else
 #define GP_MAX 512
@@ -971,7 +995,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     VkCommandBufferSubmitInfo cbs[2];
     int n = 0;
     vc_flush();
-#ifdef __ANDROID__
+#ifdef WS_FORK
     ga_flush_dirty();  // (the arena's CPU writes, before the GPU reads them)
 #endif
     if (s->upload_begun) {
@@ -980,7 +1004,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
         cbs[n++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->upload};
     }
     vk_cmd();  // (an empty main buffer still carries the semaphores)
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (vk_counter_mode() == 2 && cq[cur_sub].pool) {  // the submission's end (cq_resolve: the idle between submissions)
         vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, cq[cur_sub].pool, CQ_MAX + 1);
         pthread_mutex_lock(&cq_lock);
@@ -1015,11 +1039,11 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     {
         PROF_T0();
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
-#ifdef __ANDROID__
+#ifdef WS_FORK
         uint64_t trace_start = vk_timing_trace_on() ? SDL_GetTicksNS() : 0;
 #endif
         VkResult sr = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
-#ifdef __ANDROID__
+#ifdef WS_FORK
         tl_add((int64_t)plat_now_ns(), wait || signal ? "render: submitted (present)" : "render: submitted", submit_seq + 1, 0);
         if (trace_start) vk_timing_trace_wait(VK_TIMING_SUBMIT, SDL_GetTicksNS() - trace_start);
 #endif
@@ -1029,7 +1053,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     }
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     last_submit_ns = SDL_GetTicksNS();
     if (game_pending) work_seq = submit_seq;  // (cleared when backend_execute is done: flushes inside it come first)
 #endif
@@ -1065,7 +1089,7 @@ void renderer_sync(void) {
 uint64_t renderer_fence_seq(void) {
     pthread_mutex_lock(&seq_lock);
     uint64_t q = submit_seq + (subs[cur_sub].main_begun || subs[cur_sub].upload_begun ? 1 : 0);
-#ifdef __ANDROID__
+#ifdef WS_FORK
     static int fence_present = -1;
     if (fence_present < 0) fence_present = getenv("LARECOMP_FENCE_PRESENT") != NULL;
     if (!game_pending && work_seq && !fence_present) q = work_seq;
@@ -1073,7 +1097,12 @@ uint64_t renderer_fence_seq(void) {
     if (log < 0) log = getenv("LARECOMP_LOG_SYNCSEQ") != NULL;
     if (log) LOG("[syncseq] t %.2f fence -> seq %llu (submitted %llu, work %llu, begun %d/%d, tid %d)\n", SDL_GetTicksNS() / 1e6,
                  (unsigned long long)q, (unsigned long long)submit_seq, (unsigned long long)work_seq, subs[cur_sub].main_begun,
-                 subs[cur_sub].upload_begun, (int)pthread_gettid_np(pthread_self()));
+                 subs[cur_sub].upload_begun,
+#ifdef __ANDROID__
+                 (int)pthread_gettid_np(pthread_self()));
+#else
+                 gettid());
+#endif
 #endif
     pthread_mutex_unlock(&seq_lock);
     return q;
@@ -1085,7 +1114,7 @@ void renderer_wait_seq(uint64_t seq) {
     uint64_t s = submit_seq;
     pthread_mutex_unlock(&seq_lock);
     wait_why = seq > s ? "SyncWait (fence not submitted yet)" : "SyncWait";
-#ifdef __ANDROID__
+#ifdef WS_FORK
     vk_timing_trace_fence(seq, s);
 #endif
     static int log = -1;  // LARECOMP_LOG_SYNCSEQ=1: which submission each SyncWait waits for (vs the last one) and how long
@@ -1167,7 +1196,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
         }
     }
     uint64_t done = vk_completed_seq();
-#ifdef __ANDROID__
+#ifdef WS_FORK
     gcopy_retire(done);  // (copies back out of chunks about to be reused)
 #endif
     // Chunks idle for 10 s go back to the driver: a burst of copies (hundreds of MB a frame after a load on a Mali, #89)
@@ -1230,7 +1259,7 @@ VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
 // Per-draw constants that usually repeat the previous draw's (scale table, tint, driver constants): reuse that copy
 // while it's identical, within one submission. slot: one per kind of data.
 enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_CBP_V, DEDUPE_CBP_F, DEDUPE_SLOTS };
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // This draw's gmap table (gmap_tab) in transient memory, shared with the draws of the submission that have the same
 // one (the last 8 kept): the copy mode gives every draw that reaches global memory a table, and a new copy each time
 // made each of their descriptor sets new too - the overworld's lit draws all have the same table, and Qualcomm's
@@ -1360,7 +1389,7 @@ static void run_job(void (*fn)(void *), void *arg) {
         // first entry into an area builds dozens of pipelines at once: use most of the CPU (draws wait for them)
         int cores = SDL_GetNumLogicalCPUCores();
         int n = cores - 4;
-#ifdef __ANDROID__
+#ifdef WS_FORK
         n = cores / 2;
         if (n > 4) n = 4;  // leave CPU capacity for the game and Vulkan translation
 #endif
@@ -1508,7 +1537,7 @@ const char *renderer_stats(void) {
     stat_tile_reads = 0;
     stat_light_barriers = stat_vs_restarts = 0;
     if (!getenv("LARECOMP_LOG_CBUF_BYTES")) stat_cb_copied = 0;  // (else the [cbuf] line's, below)
-#ifdef __ANDROID__
+#ifdef WS_FORK
     {   // (page write tracking: the game's threads trapping on tracked pages - a signal and an mprotect each)
         extern uint64_t plat_wt_faults(void);
         static uint64_t last;
@@ -1641,7 +1670,7 @@ static void st_defaults(void) {
 
 void vk_exec_init(void) {
     prof = getenv("LARECOMP_VK_PROF") != NULL;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     gcopy_mode = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GCOPY");
     if (gcopy_mode) LOG("[vk] no heap import: shader global memory through CPU copies\n");
     // (for good, without placed memory: the vertex cache and the texture checks fed by write tracking - vc_flush)
@@ -2081,7 +2110,7 @@ static bool pass_overlap_on(void) {
     static int env = -2;
     if (env == -2) { const char *e = getenv("LARECOMP_PASS_OVERLAP"); env = e ? atoi(e) != 0 : -1; }
     int v = env >= 0 ? env : g_settings.pass_overlap;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     extern bool vk_gpu_is_arm(void);
     return v < 0 ? vk_gpu_is_arm() : v != 0;
 #else
@@ -2119,7 +2148,7 @@ static void begin_pass(void) {
                 st.viewport[0][3], st.rt.color[0]->width, st.rt.color[0]->height);
         last_w = st.viewport[0][2], last_h = st.viewport[0][3];
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     {   // LARECOMP_VK_ASYNC: the GPU starts on a frame while the render thread still translates the rest of it - a
         // submission at a pass boundary (no pass split: on a tiler that would store and reload its tiles) once
         // LARECOMP_VK_CHUNK_US of translation has gone by. Translating a whole frame and then running it on the GPU
@@ -2598,7 +2627,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
 
 // ================================================================== programs
 #define MAX_BIND 96
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // Reflection is immutable once a program is published. Partition its bindings once, rather than scanning both
 // stages twice per draw. Only metadata is reused: live buffers, texture views and UBO contents are still resolved.
 typedef struct { uint8_t regular[MAX_BIND], deferred[MAX_BIND]; int nregular, ndeferred; } DescriptorPlan;
@@ -2624,7 +2653,7 @@ typedef struct {
     VkShaderModule vs, fs;
     VkBindingInfo binds[MAX_BIND];
     int nbinds;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     DescriptorPlan descriptor_plans[2];
 #endif
     VkDescriptorSetLayout set_layout[2];
@@ -2639,7 +2668,7 @@ typedef struct {
 } Prog;
 
 static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, VkShaderStageFlags s1) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     for (int set = 0; set < nsets; set++) descriptor_plan(p->binds, p->nbinds, (uint32_t)set, &p->descriptor_plans[set]);
 #endif
     p->set_layout[0] = vk_set_layout(p->binds, p->nbinds, 0, s0);
@@ -2653,7 +2682,7 @@ static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, V
 
 static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
     if (!getenv("LARECOMP_SAVE_MSL")) return;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     char path[1100];  // (in the data folder, where adb reads it: <external files>/build/glsl)
     snprintf(path, sizeof path, "%s/build", rt_data_root());
     mkdir(path, 0755);
@@ -2669,7 +2698,7 @@ static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
     if (f) { fputs(src, f); fclose(f); }
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // LARECOMP_SHADER_SUBST=<folder>: a translated shader replaced by <folder>/<code address>_<vs|fs>.glsl when there is
 // one (the names build/glsl uses), for measuring a hand-edited variant in the game (GPU times, LARECOMP_SHADER_STATS)
 static void subst_glsl(ShaderInfo *si, uint64_t addr, const char *suffix) {
@@ -2712,7 +2741,7 @@ static void compile_program(void *arg) {
         atomic_store(&p->state, 2);
         return;
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     {   // Dynamic uniform buffers: every draw copies its constant buffers to a new place in transient memory, and with
         // the offsets inside the sets hardly any set matched the previous draw's - one allocated and written per stage
         // per draw (Qualcomm's driver: ~18% of the render thread). With the offsets given at bind time (stage_set),
@@ -2737,11 +2766,11 @@ static void compile_program(void *arg) {
     atomic_store(&p->state, p->vs && p->fs ? 1 : 2);
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 static uint64_t hmix(uint64_t h, const void *p, size_t n);  // (below; LARECOMP_DUMP_FS)
 #endif
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // The structured control flow (maxwell_structured) unless LARECOMP_NO_STRUCTURE - and not on Qualcomm's own driver,
 // whose shader compiler crashed on it inside vkCreateGraphicsPipelines (libllvm-qgl, 2026-10-16: the overworld) -
 // LARECOMP_STRUCTURE=1 there anyway
@@ -2767,7 +2796,7 @@ static bool qcom_no_switch(void) {
     return on;
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 static bool cbwin_wanted(void);  // (below gmem_placed)
 #endif
 
@@ -2776,7 +2805,7 @@ static void translate_program(void *arg) {
     pthread_mutex_lock(&translate_lock);
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     maxwell_no_int64 = !g_vk.shader_int64 || vk_shader_int32() || getenv("LARECOMP_VK_INT32") != NULL;
     maxwell_gmem_map_all = gcopy_mode || gwin_mode;
     maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
@@ -2809,7 +2838,7 @@ static void translate_program(void *arg) {
         atomic_store(&p->state, 2);
         return;
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     {   // LARECOMP_DUMP_FS=<fs hash, as [gpuprof] / [fshash] print it>: that fragment shader's GLSL (and its vertex
         // shader's) to build/fs_<hash>.glsl, for looking at a slow one
         const char *want = getenv("LARECOMP_DUMP_FS");
@@ -2891,7 +2920,7 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     for (int i = 0; i < 2; i++) { uint64_t a = np->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
     h = hash_words(h, vkey, sizeof *vkey);  // (8 bytes a step: the table is in memory only)
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (fkey->no_ds_write) { h ^= 0xE1; h *= 0x100000001B3ull; }  // (keys without it hash as before)
 #endif
     if (!h) h = 1;
@@ -3246,7 +3275,7 @@ static void build_pipeline(void *arg) {
         VkRenderPass crp = vk_rp_compat(k->ncolor, k->color, k->depth, k->stencil, ms.rasterizationSamples);
         if (crp) pi.pNext = ri.pNext, pi.renderPass = crp;
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (g_vk.exec_stats) pi.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
     {   // LARECOMP_LOG_PIPE=1: each pipeline's shaders before the driver compiles them (a crash in its compiler: the
         // last line names the pair; their sources with LARECOMP_SAVE_MSL, build/glsl/<address>_vs|fs.glsl)
@@ -3260,7 +3289,7 @@ static void build_pipeline(void *arg) {
         static int n;
         if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (r == VK_SUCCESS && g_vk.exec_stats) {  // (LARECOMP_SHADER_STATS) one line per compiled stage
         uint64_t fsh = hmix(1469598103934665603ull, (const void *)(uintptr_t)(k->prog->code[1] + 0x30), 0x200);
         VkPipelineInfoKHR pinfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = pp->pipe};
@@ -4033,7 +4062,7 @@ static VkDescriptorBufferInfo ubo_span(VkSpan s, uint64_t size) {
     return (VkDescriptorBufferInfo){s.buf, s.off, size > max ? max : size};
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // Constant buffers read in place (LARECOMP_UBO_DIRECT=1): with the guest heap placed in GPU memory (vk_heap_place) a
 // constant buffer there can be bound as it is, at its offset in the heap buffer, instead of copied for every draw
 // (~3 ms of a 60 fps frame in BOTW 1.8.2's world, ~8000 copies). Not the ones the game rewrites inside a command list
@@ -4314,7 +4343,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         VkDescriptorBufferInfo d;                       //  in-place reads, which would bind the game's own values)
         if (stage == 0 ? up_patch(r.addr, size, &d) : up_patch_frag(r.addr, size, &d)) return d;
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     {
         VkDescriptorBufferInfo d;
         if (ubo_direct(r.addr, size, &d)) return d;
@@ -4396,7 +4425,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             }
         }
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (si->cbwin_mask >> k & 1u) {
         VkDescriptorBufferInfo d;
         if (cbwin_bind(stage, k, r.addr, size, &d)) return d;
@@ -4426,7 +4455,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 static VkBuffer gmem_buf;
 static VkDeviceMemory gmem_mem;
 static uint64_t gmem_size;
-#ifdef __ANDROID__
+#ifdef WS_FORK
 static bool gmem_placed;  // (gmem_buf is the guest heap itself, usable as a uniform buffer: vk_heap_place)
 
 static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
@@ -4527,7 +4556,7 @@ static bool gmem_import(uint64_t size) {
                                             .pHostPointer = (void *)(uintptr_t)HEAP_BASE};
     // (a host-coherent type: the CPU's writes - the game's vertices, its text - reach the GPU without a flush; the
     // first type the driver lists may be cached and not coherent. None: no import, device.c host_import_probe)
-#ifdef __ANDROID__
+#ifdef WS_FORK
     extern int vk_coherent_type(uint32_t bits);
     int type = vk_coherent_type(mp.memoryTypeBits);
     if (type < 0) return false;
@@ -4560,7 +4589,7 @@ static bool gmem_import(uint64_t size) {
 
 static uint64_t gmem_tried;  // heap size the import was last attempted for (gmem_info imports / re-imports)
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // Turnip (VK_EXT_map_memory_placed): the guest heap *is* GPU memory. When the game sets its heap size (kernel.c
 // SetHeapSize, before it writes there), host-visible device memory is mapped over the heap's range at HEAP_BASE itself
 // (replacing the window's anonymous pages) and becomes the global memory buffer: shaders read and write the guest's
@@ -4568,7 +4597,7 @@ static uint64_t gmem_tried;  // heap size the import was last attempted for (gme
 // draw reads (the game's lighting: lights listed by compute, read by the fragment shaders). Freed on reset (vkFreeMemory
 // unmaps it; runtime/main.c then remaps the whole window). LARECOMP_VK_NO_PLACED=1: off (CPU copies).
 bool vk_heap_place(uint64_t size) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     extern void vk_async_drain(void);
     vk_async_drain();  // (the render thread idle: vulkan/async.c)
 #endif
@@ -4670,7 +4699,7 @@ static VkDescriptorBufferInfo gmem_info(void) {
     if (!off && want > gmem_size && !gmem_import(want)) {
         LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
         off = 1;
-#ifdef __ANDROID__
+#ifdef WS_FORK
         // (the shaders are translated for the import already: from the next start on, this driver takes the CPU
         // copies from the beginning - device.c host_import_probe reads this)
         mkdir("cache", 0755);
@@ -4682,7 +4711,7 @@ static VkDescriptorBufferInfo gmem_info(void) {
         }
 #endif
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (gmem_buf) {  // (a storage buffer's range is limited: 2 GB on Adreno; the heap may be larger)
         uint64_t range = gmem_size < g_vk.props.limits.maxStorageBufferRange ? gmem_size : g_vk.props.limits.maxStorageBufferRange & ~3ull;
         return (VkDescriptorBufferInfo){gmem_buf, 0, range};
@@ -4709,12 +4738,12 @@ static uint32_t gmap_tab[(GMAP_MAX + 1) * 4];  // this dispatch's table (stage_s
 static VkBufferCopy gfast_cp[GMAP_MAX];       // its copies heap -> gfast_buf (reversed after a storing dispatch)
 static int gfast_n;
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 static VkDescriptorBufferInfo gfast_win;  // (gfast_prepare, heap placed: a window of the heap instead of a copy)
 #endif
 
 static VkDescriptorBufferInfo gfast_info(void) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if ((gcopy_mode || gwin_mode) && gc_size) return (VkDescriptorBufferInfo){gc_span.buf, gc_span.off, gc_size};
     if (gfast_win.buffer) return gfast_win;
 #endif
@@ -4733,7 +4762,7 @@ static void gfast_prepare(VkCommandBuffer cb) {
     if (on < 0) { const char *e = getenv("LARECOMP_VK_GMEM_FAST"); on = !e || atoi(e) != 0; }
     memset(gmap_tab, 0, sizeof gmap_tab);
     gfast_n = 0;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     gfast_win = (VkDescriptorBufferInfo){0};
     if (!gcopy_mode) gc_size = 0;  // (a draw's gsnap_prepare copy: not this dispatch's)
 #endif
@@ -4756,7 +4785,7 @@ static void gfast_prepare(VkCommandBuffer cb) {
         if (m && r[i].lo <= r[m - 1].hi + 4096) { if (r[i].hi > r[m - 1].hi) r[m - 1].hi = r[i].hi; }
         else r[m++] = r[i];
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     // The heap placed in GPU memory (vk_heap_place) is already where the GPU works best (one memory, no bus): a
     // copy of the ranges and back, with full barriers around each dispatch, only cost time (~3 ms a frame of the
     // overworld's light lists). Only its descriptor's reach is limited (maxStorageBufferRange, 2 GB on Adreno, the
@@ -4828,7 +4857,7 @@ static bool dchain_keeps(uint32_t op) {  // (records no GPU work: binds, state, 
 
 // After a storing dispatch: its ranges back to the heap (before anything else reads them: draws, the CPU after the fence).
 static void gfast_finish(VkCommandBuffer cb) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (gfast_win.buffer) {  // (stored into the heap itself: visible to what follows)
         if (dchain_ok()) dchain_after = true;
         else vk_full_barrier(cb);
@@ -4844,7 +4873,7 @@ static void gfast_finish(VkCommandBuffer cb) {
     gfast_n = 0;
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // ---- global memory without the heap import (Android: neither the Qualcomm driver nor Turnip has
 // VK_EXT_external_memory_host). Every stage then reaches global memory through the GMap table (translate.c,
 // maxwell_gmem_map_all): before a draw or dispatch whose shaders access it, the storage buffers bound to their stages
@@ -5689,7 +5718,7 @@ static bool vcache_lookup(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceS
             vc_on = 0;
         }
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     bool cpu_fill = !gmem_buf && gcopy_mode;  // (Qualcomm's driver: filled from the CPU - vc_flush)
 #else
     bool cpu_fill = false;
@@ -5810,7 +5839,7 @@ static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSi
     static int copy = -1;
     if (copy < 0) copy = getenv("LARECOMP_VK_COPY_VERTICES") != NULL;
     if (copy || addr < HEAP_BASE) return false;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (gcopy_mode && !gmem_buf) return addr + size <= HEAP_BASE + HEAP_MAX && vcache_lookup(addr, size, buf, off);  // (else copied)
 #endif
     if (addr + size > HEAP_BASE + gmem_size && kernel_heap_size() != gmem_tried) { gmem_tried = kernel_heap_size(); gmem_info(); }
@@ -5842,7 +5871,7 @@ void vk_exec_reset(void) {
     }
     gmem_size = gmem_tried = 0;
     g_inplace_copy = -1;  // (the next boot reads the setting again: resolve_feedback)
-#ifdef __ANDROID__
+#ifdef WS_FORK
     gcopy_mode = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GCOPY");  // (until the next heap is placed: vk_heap_place)
     gres_reset();  // (the arena's resident ranges: keyed by the old heap's addresses)
 #endif
@@ -5955,7 +5984,7 @@ static bool is_ubo(VkDescriptorType t) { return t == VK_DESCRIPTOR_TYPE_UNIFORM_
 static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
                                  const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
                                  uint32_t *dyn, uint32_t *ndyn) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     VkDescriptorSet ds = VK_NULL_HANDLE;  // (allocated at the end, unless this submission already wrote the same set)
 #else
     VkDescriptorSet ds = vk_alloc_set(layout);
@@ -5965,7 +5994,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     VkDescriptorImageInfo ii[MAX_BIND];
     int n = 0;
     int sg = stage == 1 ? 1 : 0;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     static int planned = -1;
     if (planned < 0) {
         const char *e = getenv("LARECOMP_VK_DESCRIPTOR_PLAN");
@@ -5973,14 +6002,14 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     }
     const DescriptorPlan *plan = &p->descriptor_plans[set];
 #endif
-#ifdef __ANDROID__
+#ifdef WS_FORK
     float rs[66][4];  // (filled when the shader has the table: binding 18 below)
 #else
     float rs[66][4] = {{1, 1, 0, 0}};  // ([65]: mirror mode, renderer.m)
     if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
     rs[65][0] = g_mirror_w;
 #endif
-#ifdef __ANDROID__
+#ifdef WS_FORK
     int regular_count = planned ? plan->nregular : p->nbinds;
     for (int i = 0; i < regular_count; i++) {
         VkBindingInfo *b = &p->binds[planned ? plan->regular[i] : i];
@@ -6008,13 +6037,13 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             if (prof > 0) prof_cbuf += plat_now_ns() - tc_;
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
             if (b->binding == GMISS_BUFFER_INDEX) bi[n] = gmiss_info();
             else
 #endif
             bi[n] = b->binding == GFAST_BUFFER_INDEX ? gfast_info() : gmem_info();
             w[n].pBufferInfo = &bi[n];
-#ifdef __ANDROID__
+#ifdef WS_FORK
             if (!gmem_buf && b->binding != GFAST_BUFFER_INDEX && b->binding != GMISS_BUFFER_INDEX) {  // (diagnostic: global memory without the heap import)
                 static const void *seen[256];
                 static int nseen;
@@ -6032,7 +6061,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         }
         n++;
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     int deferred_count = planned ? plan->ndeferred : p->nbinds;
     for (int i = 0; i < deferred_count; i++) {
         VkBindingInfo *b = &p->binds[planned ? plan->deferred[i] : i];
@@ -6048,13 +6077,13 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_CBP_F : DEDUPE_CBP_V, &cbw_patch[sg], sizeof cbw_patch[sg], 256),
                              sizeof cbw_patch[sg]);
         } else if (b->binding == GMAP_BUFFER_INDEX) {  // (compute) this dispatch's fast-copy table: gfast_prepare
-#ifdef __ANDROID__
+#ifdef WS_FORK
             bi[n] = ubo_span(gmap_copy(), sizeof gmap_tab);
 #else
             bi[n] = ubo_span(vk_transient_copy(gmap_tab, sizeof gmap_tab, 256), sizeof gmap_tab);
 #endif
         } else if (b->binding == 18) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
             memset(rs, 0, sizeof rs);
             rs[0][0] = rs[0][1] = 1;  // ([65]: mirror mode, renderer.m)
             if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
@@ -6081,7 +6110,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         }
         if (ndyn) *ndyn = nd;
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     // Draws of one material in a row write the same set over and over (same buffers / offsets / views / samplers): a
     // set written this submission with the same contents (two independent 64-bit hashes of them) is bound again
     // instead of allocating and writing another - the descriptor writes were a good part of the driver's time per
@@ -6168,7 +6197,7 @@ static CsProg *compute_program(NvnProgram *np) {
     pthread_mutex_lock(&translate_lock);  // (the translator's globals too: the translator thread sets them for graphics)
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     maxwell_no_int64 = !g_vk.shader_int64 || vk_shader_int32() || getenv("LARECOMP_VK_INT32") != NULL;
     maxwell_gmem_map_all = gcopy_mode || gwin_mode;
     maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
@@ -6185,7 +6214,7 @@ static CsProg *compute_program(NvnProgram *np) {
 #endif
     ShaderKey k = {0};
     k.glsl = 1;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     {   // Keep the cached binary lookup for graphics and Turnip; Qualcomm rejects it in large compute shaders.
         extern bool vk_driver_is_qualcomm(void);
         k.gmem_linear_lookup = vk_driver_is_qualcomm();
@@ -6268,7 +6297,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
         }
         LOG("\n");
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (gcopy_mode && cp->si->uses_gmem_map) gcopy_prepare(1u << 5, cp->si->uses_gmem_store);
     else
 #endif
@@ -6280,7 +6309,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) gfast_finish(cb);
     if (cp->si->uses_gmem_store) vc_mark_sbufs(5), note_gmem_store(5);
     stat_dispatches++;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     dchain = !gcopy_mode && !gfast_n;  // (a copy mode's ranges go through gfast_buf: those keep their barriers)
 #endif
     dchain_cb = cb;
@@ -6433,7 +6462,7 @@ static void draw_(CmdRec *r, bool indexed) {
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (maxwell_gmem_miss_log)  // (copy mode: early depth tests for the shaders that log misses - ShaderKey)
         fkey.no_ds_write = !st.rt.depth || !((st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF)));
 #endif
@@ -6466,7 +6495,7 @@ static void draw_(CmdRec *r, bool indexed) {
         uint64_t fs = st.program->stages[1].code_addr;
         if (fs != last_fs) {
             last_fs = fs;
-#ifdef __ANDROID__
+#ifdef WS_FORK
             // (memoized per shader address, checked against a copy of its bytes: the byte-serial hash on every
             // fragment-shader change was ~40% of draw_)
             // (1024 slots: BOTW draws a few hundred fragment shaders a frame, and 64 kept colliding)
@@ -6947,7 +6976,7 @@ static void draw_(CmdRec *r, bool indexed) {
         memcpy(k.tile_slot, cur_tl_slot, sizeof k.tile_slot);
         memcpy(k.tile_loc, cur_tl_loc, sizeof k.tile_loc);
         for (int j = cur_ntl; j < 4; j++) k.tile_slot[j] = k.tile_loc[j] = 0;
-#ifdef __ANDROID__
+#ifdef WS_FORK
         // (consecutive draws mostly share their pipeline: a compare instead of the serial hash of the ~700-byte key)
         static PipeKey last_k;
         static uint64_t last_ph;
@@ -7051,7 +7080,7 @@ static void draw_(CmdRec *r, bool indexed) {
     // build the vertex set now and the fragment set after the decision (stage_set fills tex_sc for stage 1).
     if (prof) prof_dyn += SDL_GetTicksNS() - prof_td_;
     PROF_T0();
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (gcopy_mode && (pr->vi->uses_gmem_map || pr->fi->uses_gmem_map))  // (the table both stages' sets use)
         gcopy_prepare((pr->vi->uses_gmem_map ? 1u : 0u) | (pr->fi->uses_gmem_map ? 2u : 0u),
                       pr->vi->uses_gmem_store || pr->fi->uses_gmem_store);
@@ -7195,7 +7224,7 @@ static void draw_(CmdRec *r, bool indexed) {
                 scan_src = src; scan_isz = isz; scan_restart = restart;  // max_index only if a stream gets copied
             } else {
                 ib = vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
-#ifdef __ANDROID__
+#ifdef WS_FORK
                 // (no primitive restart - most draws: a plain maximum, which the compiler vectorizes; the scalar
                 // loop with the restart test was ~9% of the render thread in the copy mode, every indexed draw)
                 if (!st.prim_restart) {
@@ -7312,7 +7341,7 @@ static void draw_(CmdRec *r, bool indexed) {
             if (!pr->fi->ntex && w > 0 && w < (int)sizeof gp_what[0]) snprintf(gp_what[k] + w, sizeof gp_what[0] - (size_t)w, " nothing");
         }
         gp_draws[gp_n - 1]++;
-#ifdef __ANDROID__
+#ifdef WS_FORK
         static int per_draw = -1;
         if (per_draw < 0) per_draw = getenv("LARECOMP_GPUPROF_DRAWS") != NULL;
         if (per_draw)
@@ -8128,7 +8157,7 @@ void vk_memory_report(void) {
     vmaGetMemoryProperties(g_vk.vma, &mp);
     uint64_t used = 0, budget = 0;
     for (uint32_t i = 0; i < mp->memoryHeapCount; i++) used += bud[i].usage, budget += bud[i].budget;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     PlatDeviceStats ds;
     plat_device_stats(&ds);
     LOG("[gpumem] %.0f MB in use (budget %.0f MB): render targets %d %.0f MB, textures %d %.0f MB (of which BC decoded %d %.0f MB), "
@@ -8306,7 +8335,7 @@ int vk_ab(const char *what) {
 }
 
 static void split_long_pass(void) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
     static long split = -1;
     if (split < 0) {  // (3 ms by default; not on Qualcomm's driver, as LARECOMP_VK_CHUNK_US)
         extern bool vk_driver_is_qualcomm(void);
@@ -8592,12 +8621,12 @@ static void exec_list(uint64_t handle, int depth) {
                 pthread_mutex_lock(&cq_lock);
                 if (q->pool && q->n < CQ_MAX) {
                     vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, q->pool, q->n);
-#ifdef __ANDROID__
+#ifdef WS_FORK
                     if (vk_timing_trace_on()) { q->frame[q->n] = vk_frame_counter(); q->host_ns[q->n] = plat_now_ns(); }
 #endif
                     q->out[q->n++] = out;
                 }
-#ifdef __ANDROID__
+#ifdef WS_FORK
                 else vk_timing_trace_query_failure(-1, 1, q->seq);
 #endif
                 pthread_mutex_unlock(&cq_lock);
@@ -8632,7 +8661,7 @@ static void exec_list(uint64_t handle, int depth) {
     }
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // LARECOMP_VK_ASYNC=1: queued for the render thread (vulkan/async.c), which runs vk_execute_now
 bool vk_async_on(void);
 void vk_async_execute(uint64_t handle);
@@ -8646,7 +8675,7 @@ void vk_execute_now(uint64_t handle) {
 void backend_execute(uint64_t handle) {
 #endif
     PROF_T0();
-#ifdef __ANDROID__
+#ifdef WS_FORK
     game_pending = true;  // (renderer_fence_seq)
 #endif
     static int log_lists = -1;  // LARECOMP_LOG_LISTS=1: the command lists of one frame in 120 (draws, passes, time)
@@ -8663,7 +8692,7 @@ void backend_execute(uint64_t handle) {
     if (sync_submit < 0) sync_submit = getenv("LARECOMP_SYNC_SUBMIT") ? 1 : 0;
     if (sync_submit) renderer_flush();
     else renderer_submit();
-#ifdef __ANDROID__
+#ifdef WS_FORK
     game_pending = false;
 #endif
 }

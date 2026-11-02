@@ -196,7 +196,7 @@ void rt_unwind_point(void) {
     if (__builtin_expect(g_rt_unwind, 0) && t_cur) longjmp(t_cur->unwind, 1);
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // ---- core 0, one thread at a time (LARECOMP_NO_CORE0=1: off)
 // On the Switch the threads of one core take turns: one runs until it blocks in the kernel (a wait, a sleep, a yield,
 // an IPC request), and only then does another of that core run. The game relies on it. Its job workers are created
@@ -372,7 +372,7 @@ static void *thread_main(void *arg) {
 #endif
     crash_handler_install();
     rt_set_fpcr(0);
-#ifdef __ANDROID__
+#ifdef WS_FORK
     if (!setjmp(t->unwind)) {
         core0_acquire(t);
         rt_unwind_point();
@@ -427,11 +427,11 @@ static uint32_t thread_set_core_mask(KThread *t, int ideal, uint64_t mask) {
         if (!(mask & (1ull << core))) core = ideal >= 0 ? ideal : __builtin_ctzll(mask);
         t->ideal_core = ideal;
         t->core_mask = mask;
-#ifdef __ANDROID__
+#ifdef WS_FORK
         pthread_mutex_lock(&c0_m);
 #endif
         __atomic_store_n(&t->core, core, __ATOMIC_RELEASE);
-#ifdef __ANDROID__
+#ifdef WS_FORK
         if (core != old_core && t->started && c0_on && !t->core0_evicted) {
             __atomic_store_n(&t->core0_evicted, true, __ATOMIC_RELEASE);
             if (c0_nevicted++ == 0) __atomic_fetch_or(&g_fnprof, 2, __ATOMIC_SEQ_CST);
@@ -523,8 +523,10 @@ static uint32_t block_current(int64_t timeout_ns) {
     struct timespec ts;
     if (timeout_ns >= 0) deadline(&ts, timeout_ns);
     waitlist_add(t);
+#ifdef WS_FORK
+    int kind0 = t->wait_kind;  // (the wait's kind: a timeout racing a waker, below)
+#endif
 #ifdef __ANDROID__
-    int kind0 = t->wait_kind;
     {   // LARECOMP_KWAIT_SPIN_US=<us>: a short wait first without sleeping (the kernel lock let go meanwhile) - the
         // main thread hands work to its job workers and waits for their results many times a frame, each wake-up a
         // futex and maybe a sleeping core brought back. A/B in one run (LARECOMP_AB=<n>:kspin), 1.9.0 with FSR 1 +
@@ -556,7 +558,7 @@ static uint32_t block_current(int64_t timeout_ns) {
             break;
         }
         if (!kwait(timeout_ns, &ts)) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
             // the wait ended while the timeout fired: a waker got there first (woken: wait_kind is NONE and the
             // loop ends with its result - a condition variable's thread may own the mutex by now) or moved it on
             // (a condition variable's thread signalled, now waiting for its mutex: no timeout for that part)
@@ -600,7 +602,7 @@ static uint32_t svc_arbitrate_unlock(uint64_t addr) {
 static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t tag, int64_t timeout) {
     pthread_mutex_lock(&g_klock);
     KThread *t = t_cur;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     // the key says "waiters" before the mutex goes: once it's released, a thread that takes it, changes the state
     // and checks the key must see this waiter (else it skips the signal and the wakeup is lost)
     __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
@@ -666,7 +668,7 @@ static uint32_t svc_wait_for_address(uint64_t addr, uint32_t type, int32_t value
     if (type == ARB_WAIT_LESS) wait = cur < value;
     else if (type == ARB_DEC_WAIT_LESS) {
         wait = cur < value;
-#ifdef __ANDROID__
+#ifdef WS_FORK
         while (wait && !__atomic_compare_exchange_n(u32p(addr), (uint32_t *)&cur, (uint32_t)(cur - 1), false,
                                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
             wait = cur < value;  // (cur reloaded by the failed exchange)
@@ -705,7 +707,7 @@ static uint32_t svc_signal_to_address(uint64_t addr, uint32_t type, int32_t valu
     if (type == ARB_SIGNAL) {
         arbiter_wake(addr, count);
     } else if (type == ARB_SIGNAL_INC_EQ) {
-#ifdef __ANDROID__
+#ifdef WS_FORK
         uint32_t expect = (uint32_t)value;
         if (!__atomic_compare_exchange_n(u32p(addr), &expect, (uint32_t)value + 1, false, __ATOMIC_SEQ_CST,
                                          __ATOMIC_SEQ_CST)) r = R_INVALID_STATE;
@@ -721,7 +723,7 @@ static uint32_t svc_signal_to_address(uint64_t addr, uint32_t type, int32_t valu
         int32_t nv;
         if (count <= 0) nv = waiting > 0 ? value - 2 : value + 1;
         else nv = waiting == 0 ? value + 1 : (waiting <= count ? value - 1 : value);
-#ifdef __ANDROID__
+#ifdef WS_FORK
         uint32_t expect = (uint32_t)value;
         if (!__atomic_compare_exchange_n(u32p(addr), &expect, (uint32_t)nv, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
             r = R_INVALID_STATE;
@@ -798,10 +800,7 @@ static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc);
 
 // LARECOMP_WATCHDOG=<seconds>: every that many seconds, the game's threads stuck in one svc for longer, with its
 // arguments and caller, and where each of the others is (its guest lr) - for hangs.
-static void *watchdog_main(void *arg) {
-    uint64_t every = (uint64_t)(uintptr_t)arg;
-    for (;;) {
-        sleep((unsigned)every);
+static void watchdog_dump(uint64_t every) {
         uint64_t now = plat_now_ns();
         LOG("[watchdog] threads:\n");
         for (KThread *t = g_threads; t; t = t->anext) {
@@ -817,12 +816,57 @@ static void *watchdog_main(void *arg) {
                 LOG("[watchdog]  t%llu prio %d: running%s, pc %llx lr %llx\n", (unsigned long long)t->id, t->prio,
                     n ? " (short svc)" : "", (unsigned long long)t->cpu.pc, (unsigned long long)t->cpu.x[30]);
         }
+}
+static void *watchdog_main(void *arg) {
+    uint64_t every = (uint64_t)(uintptr_t)arg;
+    for (;;) {
+        sleep((unsigned)every);
+        watchdog_dump(every);
     }
     return NULL;
 }
 
+#ifdef _WIN32
+// (WSword PC) a game that stops presenting: the threads and core 0's state into the log once it has been 8 s without a
+// frame (again at 30 s and 120 s) - what the log needs to tell a hang's cause, without LARECOMP_WATCHDOG
+static void *hang_main(void *arg) {
+    (void)arg;
+    extern uint64_t renderer_present_count(void);
+    extern int g_start_screen;
+    uint64_t last = 0, since = plat_now_ns();
+    int dumps = 0;
+    for (;;) {
+        sleep(1);
+        uint64_t n = renderer_present_count(), now = plat_now_ns();
+        if (n != last || g_start_screen || !n) { last = n, since = now, dumps = 0; continue; }
+        uint64_t stalled = (now - since) / 1000000000ull;
+        if ((dumps == 0 && stalled >= 8) || (dumps == 1 && stalled >= 30) || (dumps == 2 && stalled >= 120)) {
+            dumps++;
+            pthread_mutex_lock(&c0_m);
+            KThread *h = c0_holder;
+            int q = 0;
+            for (KThread *k = c0_head; k; k = k->core0_next) q++;
+            LOG("[hang] no frame for %llu s (frame %llu): core 0 held by t%llu for %llu ms, %d waiting for it\n",
+                (unsigned long long)stalled, (unsigned long long)n, h ? (unsigned long long)h->id : 0ull,
+                h ? (unsigned long long)((now - c0_since) / 1000000) : 0ull, q);
+            pthread_mutex_unlock(&c0_m);
+            watchdog_dump(1);
+        }
+    }
+    return NULL;
+}
+#endif
+
 static void watchdog_start(void) {
     static int started;
+#ifdef _WIN32
+    static int hang_started;
+    if (!hang_started) {
+        hang_started = 1;
+        pthread_t hth;
+        if (pthread_create(&hth, NULL, hang_main, NULL) == 0) pthread_detach(hth);
+    }
+#endif
     const char *e = getenv("LARECOMP_WATCHDOG");
     if (started || !e || atoi(e) <= 0) return;
     started = 1;
@@ -856,7 +900,7 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
         me->svc_lr = c->x[30];
         me->svc_now = imm + 1;
     }
-#ifdef __ANDROID__
+#ifdef WS_FORK
     kernel_preempt_point();
     bool blocks = svc_blocks(imm);
     if (blocks) core0_release(t_cur);
@@ -1012,11 +1056,15 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
             // took ~30 us - each look at the job queue came that much later (TOTKRecompAndroid, 2026-10-31: +6% fps,
             // +14% with core 0's too, whose yield still hands the core on: its queue, svc_blocks).
             // LARECOMP_HOST_YIELD=1: the host's yield as before; =2: skipped off core 0 only. LARECOMP_AB=<n>:yield.
-#ifdef __ANDROID__
+#ifdef WS_FORK
             static int host_yield = -1;
             if (host_yield < 0) host_yield = getenv("LARECOMP_HOST_YIELD") ? atoi(getenv("LARECOMP_HOST_YIELD")) : 0;
+#ifdef __ANDROID__
             extern int vk_ab(const char *what);
             int ab = vk_ab("yield");
+#else
+            int ab = -1;
+#endif
             bool c0 = t_cur && __atomic_load_n(&t_cur->core, __ATOMIC_ACQUIRE) == 0;
             if (ab >= 0 ? ab == 1 : host_yield == 0 || (host_yield == 2 && !c0)) break;
 #endif
@@ -1263,7 +1311,7 @@ void kernel_stop_threads(void (*idle)(void)) {
             if (t->started && !t->finished) { live++; wake(t); }
         pthread_cond_broadcast(&g_nothread_cond);
         pthread_mutex_unlock(&g_klock);
-#ifdef __ANDROID__
+#ifdef WS_FORK
         pthread_mutex_lock(&c0_m);
         pthread_cond_broadcast(&c0_cv);
         pthread_mutex_unlock(&c0_m);
@@ -1292,7 +1340,7 @@ void kernel_stop_threads(void (*idle)(void)) {
 // can still point at some (vi.c's vsync event, signalled by its host timer thread).
 void kernel_reset(void) {
     pthread_mutex_lock(&g_klock);
-#ifdef __ANDROID__
+#ifdef WS_FORK
     pthread_mutex_lock(&c0_m);
     c0_head = c0_tail = c0_holder = NULL;
     c0_nevicted = 0;
@@ -1302,7 +1350,7 @@ void kernel_reset(void) {
     for (KThread *t = g_threads, *next; t; t = next) {
         next = t->anext;
         pthread_cond_destroy(&t->cond);
-#ifdef __ANDROID__
+#ifdef WS_FORK
         free(t->dcache);
 #endif
         free(t);

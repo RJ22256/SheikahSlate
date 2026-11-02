@@ -13,6 +13,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <SDL3/SDL_cpuinfo.h>
+#endif
 
 // a decoder: wb x hb blocks (bsize bytes each, rows of blocks) -> texels, rows of wb * 4 texels of bpp bytes
 typedef void (*BcDecodeFn)(int fmt, const uint8_t *blocks, uint32_t wb, uint32_t hb, uint32_t bsize, uint8_t *out,
@@ -65,7 +68,11 @@ static void *bcp_thread(void *arg) {
 
 static int bcp_wanted(void) {  // (bcp.m held)
     const char *e = getenv("LARECOMP_BC_THREADS");
+#ifdef _WIN32
+    long cores = SDL_GetNumLogicalCPUCores();  // (SDL3/SDL_cpuinfo.h)
+#else
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
     int n = e ? atoi(e) : (int)(cores / 2 < 3 ? cores / 2 : 3);
     return n < 0 ? 0 : n > BCP_MAX_WORKERS ? BCP_MAX_WORKERS : n;
 }

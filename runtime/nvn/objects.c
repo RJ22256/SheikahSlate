@@ -229,7 +229,7 @@ NVN(nvnQueueSubmitCommands) {
     for (int i = 0; i < n; i++) backend_execute(handles[i]);
 }
 NVN(nvnQueueFlush) { (void)c; }
-#ifdef __ANDROID__
+#ifdef WS_FORK
 bool vk_async_on(void);
 void vk_async_drain(void);
 uint64_t vk_async_fence(uint64_t guest_sync);
@@ -254,7 +254,7 @@ static NvnSync *sync_of(uint64_t guest) {
 }
 uint64_t renderer_fence_seq(void);
 void renderer_wait_seq(uint64_t seq);
-#ifdef __ANDROID__
+#ifdef WS_FORK
 static uint64_t g_newest_fence_lseq;  // (sync lag, nvnSyncWait: the render thread's request of the newest fence placed)
 NVN(nvnQueueFenceSync) {
     NvnSync *s = sync_of(A(1));
@@ -282,7 +282,7 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     if (getenv("LARECOMP_LOG_SYNC") && n++ % 60 == 0) LOG("[nvn] SyncWait #%llu (lr %llx)\n", (unsigned long long)n, c->x[30]);
     static int whole = -1;  // LARECOMP_SYNC_ALL=1: old behaviour, wait for all submitted work
     if (whole < 0) whole = getenv("LARECOMP_SYNC_ALL") ? 1 : 0;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     uint64_t t0 = plat_now_ns();
     extern void vk_tl(const char *what, uint64_t a, uint64_t b);  // (vulkan/exec.c: LARECOMP_FRAME_TIMELINE)
     vk_tl("game: SyncWait begin (fence id, submission)", sync_of(A(0))->lseq, sync_of(A(0))->seq);
@@ -293,7 +293,7 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     }
     uint64_t t1 = plat_now_ns();
 #endif
-#ifdef __ANDROID__
+#ifdef WS_FORK
     // Sync lag (MacNativeGames PR #680, for TOTK): every frame the game waits for the fence it placed with the frame it
     // has just sent, so its next frame never overlaps the GPU's work on this one (~2.7 ms a frame of an idle GPU while
     // it records, LARECOMP_FRAME_TIMELINE). For that newest fence the wait goes to the GPU's end of the previous frame's
@@ -381,7 +381,7 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     if (flush) renderer_flush();
     else if (whole) renderer_sync();
     else renderer_wait_seq(sync_of(A(0))->seq);  // only the submission that holds this fence
-#ifdef __ANDROID__
+#ifdef WS_FORK
     kernel_blocking_end();
     vk_tl("game: SyncWait end", sync_of(A(0))->lseq, sync_of(A(0))->seq);
     // LARECOMP_LOG_SYNC: waits over a millisecond in the world (frame 1500 on, 40 of them) - how old the fence was,
@@ -1184,7 +1184,7 @@ NVN(nvnTexturePoolInitialize) {
 NVN(nvnTexturePoolFinalize) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     if (!d) return;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     vk_async_drain();
 #endif
     NvnTexEntry *entries = d->entries;
@@ -1210,7 +1210,7 @@ static void register_texture(Cpu *c) {
     g_tex_stat_reg++;
     NvnTexEntry *e = &((NvnTexEntry *)d->entries)[id];
     NvnTexture *old = e->tex, *t = HOST(NvnTexture, A(2));
-#ifdef __ANDROID__
+#ifdef WS_FORK
     // An asynchronous draw must finish reading the previous descriptor before its slot is replaced.
     if (old) {
         extern uint64_t g_tex_drain_ns, g_tex_drains;  // (LARECOMP_LOG_TEXDIAG: the game's threads' wait in these)
@@ -1266,7 +1266,7 @@ static void register_sampler(NvnSamplerDesc *e, const NvnSamplerDesc *n) {
     NvnSamplerDesc o = *e;
     o.backend = NULL;
     if (!memcmp(&o, &v, sizeof v)) return;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     static int off = -1;
     if (off < 0) off = getenv("LARECOMP_NO_SMP_DRAIN") != NULL;
     if (!off) vk_async_drain();
@@ -1392,7 +1392,7 @@ int64_t rt_frame_ticks(int64_t ticks) {
     return ticks > cap ? cap : ticks;
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 int g_present_interval = 1;  // the game's latest (1: 60 fps, 2: 30 fps): the frame pacer (vulkan/exec.c)
 NVN(nvnWindowSetPresentInterval) {
     static int force = -1;  // (LARECOMP_FORCE_INTERVAL=<n>, diagnosis: the game's choice replaced - slow motion if it doesn't fit)

@@ -1633,7 +1633,7 @@ static int fg_fps_floor(void) {
 }
 static int fg_fps_ceiling(void) {
     bool sixty = g_game_version == 0 || g_game_version >= 182;
-    return !sixty ? 30 : g_settings.fps_mode == 1 ? 30 : g_settings.fps_mode == 3 ? 40 : 60;
+    return !sixty ? 30 : g_settings.fps_mode == 1 ? 30 : g_settings.fps_mode == 3 ? 40 : 60;  // (unlocked: as Auto's)
 }
 
 // The frames made between two real ones at a frame rate: the setting's, never more than the screen shows - frames past
@@ -1954,7 +1954,7 @@ static uint64_t fg_total_frames(void) { return total_frames; }
 #endif
 static long g_gpuprof_req_at;  // (vk_gpuprof_request: the next capture's frame, 0 none)
 static int g_gpuprof_req_left;
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // LARECOMP_VK_ASYNC (vulkan/async.c): the game's threads count the presents they queued, the render thread the ones
 // it ran - each side's "this frame" stays its own
 static uint64_t g_game_frames;
@@ -1982,7 +1982,7 @@ static NvnTexture *g_last_presented;
 const float *vk_shot_crop(void) { return g_shot_crop; }
 
 void backend_present(NvnTexture *t);
-#ifdef __ANDROID__
+#ifdef WS_FORK
 // The game's half of a present: pacing, input, tests - on the game's thread (its frame: renderer_present_count)
 static void present_game_half(void) {
     extern void vk_pace_frame(void);
@@ -2016,7 +2016,7 @@ void backend_represent(void) {
     else SDL_Delay(16);
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 void vk_present_now(NvnTexture *t) {  // (the window's half of backend_present)
 #else
 void backend_present(NvnTexture *t) {
@@ -2126,7 +2126,7 @@ void backend_present(NvnTexture *t) {
     frames++;
     total_frames++;
     g_frame_counter++;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     vk_timing_trace_frame(total_frames);
     if (!vk_async_on()) present_game_half();  // (same place as before; LARECOMP_VK_ASYNC: on the game's thread)
 #else
@@ -2783,7 +2783,7 @@ void backend_init(void) {
 // ---- in-place reboot (runtime/main.c teardown; main thread, guest threads stopped)
 void backend_reset(void) {
     if (!g_vk.dev) return;
-#ifdef __ANDROID__
+#ifdef WS_FORK
     vk_async_drain();
 #endif
     vkDeviceWaitIdle(g_vk.dev);
@@ -2796,13 +2796,13 @@ void backend_reset(void) {
 void backend_guest_memory_reset(void) {}  // (exec.c re-imports the heap on first use)
 void backend_clear_window(void) {
     static const float black[4] = {0, 0, 0, 1};
-#ifdef __ANDROID__
+#ifdef WS_FORK
     vk_async_drain();
 #endif
     if (g_vk.dev && vk_frame_begin(black)) vk_frame_end(NULL);
 }
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 void vk_wait_ready(void) {
     while (!atomic_load(&ui_ready)) SDL_Delay(1);
 }
@@ -2844,7 +2844,7 @@ int ui_run(void) {
         extern void motion_open(void);  // (runtime/hle/motion.c: the phone's sensors, once the setting is on)
         motion_open();
         menu_apply_window_requests(window);
-#ifdef __ANDROID__
+#ifdef WS_FORK  // (PC too: a frozen game closed from Task Manager never ran quick_exit_handler)
         {   // the pipeline cache to disk now and then while it grows: an app is killed rather than exited, so
             // quick_exit_handler never saves it (every start compiled every shader again: missing objects at first)
             static uint64_t last;

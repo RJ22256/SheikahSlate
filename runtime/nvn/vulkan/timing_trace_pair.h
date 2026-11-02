@@ -2,7 +2,7 @@
 #pragma once
 #include "timing_trace.h"
 
-#ifdef __ANDROID__
+#ifdef WS_FORK
 #define VK_TIMING_HISTORY 128
 typedef struct { VkTimingCounter entries[VK_TIMING_HISTORY]; unsigned next, count; } VkTimingHistory;
 static inline bool vk_timing_pair(VkTimingHistory *h, const VkTimingCounter *s, VkTimingCounter *start) {

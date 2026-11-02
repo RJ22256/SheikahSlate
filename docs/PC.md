@@ -60,6 +60,13 @@ motion controls where it has one.
   rate is a whole number of frames (60, 120, 240 Hz), at the cost of a refresh or two of delay. With G-SYNC / FreeSync
   leave it off: the monitor follows the game by itself.
 - **Game's resolution changes**: Steadied (the default) stops one slow frame from swinging the game's resolution.
+- **Frame rate**: Auto (30 / 60), 30, 40, 60 fps, or **Unlocked** - as fast as your PC goes (up to 300), the menus,
+  cutscenes and movies still at the game's 30. Unlocked suits a G-SYNC / FreeSync or high refresh monitor; on a 60 Hz
+  one without it, 60 fps is smoother.
+- **Render thread** (on): the game's drawing is turned into Vulkan work on a thread of its own while the game goes on
+  with its next frame - much faster. Off only to check whether it causes a problem. **Sync lag** (on, needs the render
+  thread): the game starts its next frame while the GPU finishes the last one; Link's legs can sink into the ground
+  standing still - turn it off if that bothers you.
 
 ## Frame generation (Lossless Scaling)
 
@@ -94,5 +101,10 @@ in the data folder and stay; game code already built is kept unless the new rele
   `botwgen\botwgen.exe` run; the reason is on the setup page and in the log ("compiling ... failed:" with the
   compiler's own message). Set up game files again goes on where it stopped. (0.2.8-pc.1's compiler lacked a header
   the game's code needs - "the game code didn't compile": fixed in 0.2.8-pc.2.)
+- **Slow, or the game stops a few seconds into play** (0.2.8-pc.2 and before): the PC ran LAS Recomp's desktop paths,
+  which never ran BOTW - fixed in 0.2.8-pc.3, which runs the Android release's game fixes and speed-ups on the PC too
+  (the threads' hand-over that BOTW's job system needs, the waits the game could miss, the render thread, the function
+  cache, the game's 20 fps step taken out). Unzip it over the old folder - the game code stays as built. If the game
+  still stops, wait 10 seconds before closing it: the log gets a `[hang]` report of what each thread was doing.
 - **Frame generation says "Stopped"**: the reason follows - usually a Lossless.dll that isn't one, or a driver that
   can't build its shaders. Choose the DLL again, or update the driver.

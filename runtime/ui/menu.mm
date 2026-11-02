@@ -719,9 +719,17 @@ static void tab_display(void) {
         bool sixty = g_game_version == 0 || g_game_version >= 182;
         if (!sixty && g_settings.fps_mode > 1) g_settings.fps_mode = 1;
         static const char *fr[] = {"Auto (20 / 30)", "30 fps"};
+#ifdef _WIN32  // (WSword PC: Unlocked too - hle/framepace.c's no limit)
+        static const char *fr60[] = {"Auto (30 / 60)", "30 fps", "40 fps", "60 fps", "Unlocked"};
+        static const int fr60_mode[] = {0, 1, 3, 2, 4};  // (in the list's order; g_settings.fps_mode 3 is 40 fps, 4 unlocked)
+        const int n60 = 5;
+#else
         static const char *fr60[] = {"Auto (30 / 60)", "30 fps", "40 fps", "60 fps"};
         static const int fr60_mode[] = {0, 1, 3, 2};  // (in the list's order; g_settings.fps_mode 3 is 40 fps)
+        const int n60 = 4;
+#endif
         int fi = !sixty ? g_settings.fps_mode : g_settings.fps_mode == 3 ? 2 : g_settings.fps_mode == 2 ? 3 : g_settings.fps_mode;
+        if (fi >= (sixty ? n60 : 2)) fi = 0;
 #ifdef __ANDROID__
         const char *f60 = "Auto: 60 fps where your device keeps up, 30 where it doesn't (the game's clock stays right "
                           "either way). 30 fps: steady and cooler. 40 fps: each frame shown for exactly 3 refreshes "
@@ -734,10 +742,12 @@ static void tab_display(void) {
         const char *f60 = "Auto: 60 fps where your PC keeps up, 30 where it doesn't (the game's clock stays right either "
                           "way). 30 fps: steady, the least work. 40 fps: each frame shown for exactly 3 refreshes of a "
                           "120 Hz monitor (or 6 of a 240 Hz one) - smoother than 30; on a 60 Hz monitor it can't be shown "
-                          "evenly. 60 fps: always aims for 60, the game's resolution lowered where a frame needs it (game "
-                          "versions 1.8.2 and 1.9.0; 1.0.0 and 1.6.0 run at 30).";
+                          "evenly. 60 fps: always aims for 60, the game's resolution lowered where a frame needs it. "
+                          "Unlocked: as fast as your PC goes (up to 300), the game's clock still right - for a high-refresh "
+                          "or G-SYNC / FreeSync monitor; menus, cutscenes and videos stay at 30 (game versions 1.8.2 and "
+                          "1.9.0; 1.0.0 and 1.6.0 run at 30).";
 #endif
-        if (opt_choice("Frame rate", &fi, sixty ? fr60 : fr, sixty ? 4 : 2, 1,
+        if (opt_choice("Frame rate", &fi, sixty ? fr60 : fr, sixty ? n60 : 2, 1,
                        sixty ? f60
                              : "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in 30. "
                                "30 fps: always 30 - where a frame takes longer, the game runs slightly slower instead of "
@@ -933,6 +943,16 @@ static void tab_display(void) {
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
                "blends only along them, so textures stay sharp. FXAA: a single, cheaper pass that also softens the image "
                "a little. Most useful at a lower internal resolution.");
+#ifdef _WIN32  // (WSword PC: Android's render thread and sync lag run here too - nvn/vulkan/async.c, nvn/objects.c)
+    opt_toggle("Render thread", &g_settings.render_thread, true,
+               "The game's drawing is turned into Vulkan work on a thread of its own, while the game goes on with its next "
+               "frame: much faster. Turn it off only to check whether it causes a problem. Applies the next time the game "
+               "starts.");
+    opt_toggle("Sync lag", &g_settings.sync_lag, true,
+               "The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads "
+               "back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands "
+               "still. Turn it off if that bothers you. Applies at once. (Needs the render thread.)");
+#endif
 #ifdef __ANDROID__
     opt_toggle("Sync lag", &g_settings.sync_lag, true,
                "The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads "
