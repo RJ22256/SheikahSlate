@@ -18,7 +18,7 @@ window or fullscreen, high-refresh and ultrawide monitors.
 
 ## Installing and the first start
 
-1. Unzip `WSword-0.2.8-pc.1-windows.zip` anywhere you can write to (not `Program Files`; a folder synced by OneDrive
+1. Unzip `WSword-<version>-windows.zip` anywhere you can write to (not `Program Files`; a folder synced by OneDrive
    works but is slower). Keep everything in the `WSword` folder together.
 2. Run `WSword.exe`. On the start screen choose **Set up game files** and pick the folder with your `exefs` and
    `romfs`. WSword copies the files, builds the game's data image, then **builds the game's code on your PC** with the
@@ -79,6 +79,11 @@ WSword's menu is open; the menus and the FPS overlay are drawn on every frame, n
 Frame generation is lsfg-vk's backend (GPL-3.0, `third_party/lsfg-vk`) running Lossless Scaling's shaders from your
 DLL. WSword isn't made by or affiliated with Lossless Scaling's developers.
 
+## Updating
+
+Unzip the new release over the old `WSword` folder (replace the files). Your saves, settings and set-up game files are
+in the data folder and stay; game code already built is kept unless the new release says it needs building again.
+
 ## If something goes wrong
 
 - **The log**: `WSword.log` next to `WSword.exe` (Settings > Files > Graphics > Show the log in Explorer); after a
@@ -86,6 +91,8 @@ DLL. WSword isn't made by or affiliated with Lossless Scaling's developers.
 - **"Vulkan 1.3 driver" errors**: update the GPU's driver from its maker's site. On a laptop with two GPUs WSword picks
   the dedicated one.
 - **The game code build fails**: it needs a few GB free on the drive and an antivirus that lets `zig\zig.exe` and
-  `botwgen\botwgen.exe` run; the reason is on the setup page and in the log.
+  `botwgen\botwgen.exe` run; the reason is on the setup page and in the log ("compiling ... failed:" with the
+  compiler's own message). Set up game files again goes on where it stopped. (0.2.8-pc.1's compiler lacked a header
+  the game's code needs - "the game code didn't compile": fixed in 0.2.8-pc.2.)
 - **Frame generation says "Stopped"**: the reason follows - usually a Lossless.dll that isn't one, or a driver that
   can't build its shaders. Choose the DLL again, or update the driver.
