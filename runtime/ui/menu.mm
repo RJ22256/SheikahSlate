@@ -1375,6 +1375,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
     if (!popup && !ui_text_busy()) {
         int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) ? 1 : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) ? -1 : 0;
+#ifdef _WIN32
+        if (!step) step = ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1 : ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;  // (PC: Q / E)
+#endif
         if (step) {
             int index = 0;
             for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) index = i;
