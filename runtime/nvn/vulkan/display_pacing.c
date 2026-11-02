@@ -57,6 +57,20 @@ double dp_locked_period(double refresh_ns, double period_ns) {
 }
 
 static void regrid(DPace *p, uint32_t id, uint64_t actual) {
+    // (WSword) its latency: from when it was presented - or the time it asked for, if later - to when it went up. At 60
+    // fps on 120 Hz a frame's lead on its slot is that plus the slack, and a compositor taking over 1.5 refreshes (the
+    // Galaxy Tab S10 Ultra's, often) put every frame "ahead" (more than n + 0.5 refreshes): a new grid each frame, 60-120
+    // in 2 s, the frames up for 1, 2 or 3 refreshes as unpaced (2026-11-02's log). At 30 fps the same latency was within
+    // its 4.5 refreshes.
+    unsigned s = id % DP_SENT;
+    double lat = 0;
+    if (p->sent[s].id == id && p->sent[s].at) {
+        uint64_t from = p->sent[s].desired > p->sent[s].at ? p->sent[s].desired : p->sent[s].at;
+        lat = (double)actual - (double)from;
+        if (lat < 0) lat = 0;
+        if (p->refresh > 0 && lat > 4 * p->refresh) lat = 4 * p->refresh;
+    }
+    p->anchor_lat = lat;
     p->anchored = true;
     p->gen++;
     p->anchor_id = id;
@@ -79,7 +93,7 @@ uint64_t dp_desired(DPace *p, uint32_t id, uint64_t now_ns, double period_ns, bo
             p->late++;
             p->tight_n = 0;
             if (++p->late_run >= DP_RUN) p->anchored = false;
-        } else if (slot - now > (n * (p->burst_n > 1 ? p->burst_n + p->burst_pos : 1) + 0.5) * p->refresh) {
+        } else if (slot - now > (n * (p->burst_n > 1 ? p->burst_n + p->burst_pos : 1) + 0.5) * p->refresh + p->anchor_lat) {
             // (more than a frame ahead of its present: a new grid from the next frame shown. WSword, frame generation:
             // a group's presents come together, a real frame's time apart - a frame there is the real one's, and the
             // k-th after the first is k slots further on)
@@ -94,6 +108,7 @@ uint64_t dp_desired(DPace *p, uint32_t id, uint64_t now_ns, double period_ns, bo
     p->sent[s].id = id;
     p->sent[s].gen = p->gen;
     p->sent[s].desired = desired;
+    p->sent[s].at = now_ns;
     p->sent[s].pos = (uint8_t)(p->burst_pos > 0 ? p->burst_pos : 0);
     p->sent[s].group = (uint8_t)(p->burst_n > 1 ? p->burst_n : 1);
     return desired;

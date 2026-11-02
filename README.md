@@ -32,9 +32,9 @@ It installs as its own app (`com.sheikahslate.tab`), so it can sit next to upstr
 | Camera notch | Not handled (on Android 14, the window stopped short of it) | Window drawn under it on every version; on-screen controls move out from under it, also with the tablet turned around |
 | On-screen controls | Sized as % of screen height: on a 14.6" panel, 3 cm buttons 5 cm from the corners | Sized in millimetres on big screens (~14 mm buttons, near the edges); phones unchanged |
 | Refresh rate | Left to One UI | Video > Display refresh rate: Highest (120 Hz), 60 Hz or System |
-| Graphics settings | Made on an Adreno phone | Video > Mode, from the tablet's own logs: **Battery** (30 fps at 60 Hz, lowest resolution held), **Performance** (the default: 30 fps paced to the 120 Hz screen, 900p scene steadied, FSR 1 to 1080p), **Turbo** (40 fps, 3 refreshes of 120 Hz a frame), **Turbo 60** (60 fps, the resolution lowered as far as needed) |
+| Graphics settings | Made on an Adreno phone | Video > Mode, from the tablet's own logs: **Performance** (the default: 60 fps, 2 refreshes of 120 Hz a frame, the resolution lowered as far as 60 needs, GSR 1 to 1080p) and **Quality** (30 fps, 4 refreshes a frame, the game's native 900p held, FSR 1 onto the screen's own 2960 x 1848); with frame generation Performance runs at 120 Hz over the multiplier (3x at 40) |
 | Frame rate 40 / 60 | (0.2.8-slate.9/10: the frame pacer stayed off after the start screen, so every game ran at 30) | The frame pacer on; the game's resolution follows the GPU's real time, down only as far as 40 or 60 needs |
-| Start screen | Title and menu over the artwork | The Glass Slate screen: a glass panel (PLAY, Saves, Mods, Settings, Quit), live chips, a card with the last save and the four modes a tap away |
+| Start screen | Title and menu over the artwork | The Glass Slate screen: a glass panel (PLAY, Saves, Mods, Settings, Quit), live chips, a card with the last save and the two modes a tap away |
 | Settings | Gold Sheikah frame, tabs along the top | The Glass Slate look: a rail of pages down the left, rows as glass tiles, the description in a card |
 | Look | The bundled background and icon | Settings > Look: your own start screen background, and the app's real icon - the player's picture by default, five more to choose |
 | Frame pacing | A frame goes up when the GPU finishes it: 3, 4 or 5 refreshes at 30 fps | Video > Even frame pacing: each frame aimed at a refresh of its own, 4 apart (VK_GOOGLE_display_timing) |
@@ -45,7 +45,7 @@ It installs as its own app (`com.sheikahslate.tab`), so it can sit next to upstr
 | Texture streaming | BC textures decoded on one thread | Big levels decoded on 3 worker threads too (same output, tested) |
 | Performance capture | GPU time per pass | Also the CPU per thread with callers, memory by kind, the heaviest shaders, why passes break (Video > Capture a performance profile) |
 | Driver error text | "Install a Turnip driver" (Adreno only) | Says Mali runs the system driver only |
-| Name, icon | BOTWRecompAndroid, Triforce | WSword (0.2.8-slate.17; the project is still Sheikah Slate), the player's own picture as the icon |
+| Name, icon | BOTWRecompAndroid, Triforce | WSword (0.2.8-slate.18; the project is still Sheikah Slate), the player's own picture as the icon |
 | Frame generation | None | Video > Frame generation 2x / 3x / 4x with **your own Lossless.dll** (start screen > Settings > Lossless Scaling; none is included): Lossless Scaling's shaders through lsfg-vk's backend (GPL-3.0) on WSword's own Vulkan device |
 
 **Licence note:** builds include `third_party/lsfg-vk` (the last GPL-3.0 version of lsfg-vk), so an APK built from this

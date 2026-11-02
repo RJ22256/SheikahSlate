@@ -112,10 +112,16 @@ void settings_save(void);
 // The menu's RESTORE DEFAULTS: the Video and Audio options back to the defaults (the language, the controls, the touch
 // layout, mods and the one-time questions stay)
 void settings_reset_defaults(void);
-// (Sheikah Slate) Video > Mode: three sets of the Video options for the Galaxy Tab S10 Ultra, from its performance logs
-// (settings.c mode_into). Performance is the tablet's default (and was applied once over earlier settings on the first
-// start of 0.2.8-slate.9: sheikahslate.ini tab_preset). (WSword PC: the same four, made for a PC - settings.c.)
-enum { MODE_BATTERY = 0, MODE_PERFORMANCE = 1, MODE_TURBO = 2, MODE_TURBO60 = 3, MODE_CUSTOM = 4 };
+// (Sheikah Slate) Video > Mode: sets of the Video options for the Galaxy Tab S10 Ultra, from its performance logs
+// (settings.c mode_into). Performance is the tablet's default (applied once over earlier settings on the first start of
+// 0.2.8-slate.9 and of 0.2.8-slate.18: sheikahslate.ini tab_preset). Android (0.2.8-slate.18, the Tab's own release): two -
+// Performance, 60 fps, and Quality, 30 fps at the game's native resolution on the screen's. (WSword PC: four, made for a
+// PC - settings.c.)
+#ifdef __ANDROID__
+enum { MODE_PERFORMANCE = 0, MODE_QUALITY = 1, MODE_COUNT = 2, MODE_CUSTOM = 2 };
+#else
+enum { MODE_BATTERY = 0, MODE_PERFORMANCE = 1, MODE_TURBO = 2, MODE_TURBO60 = 3, MODE_COUNT = 4, MODE_CUSTOM = 4 };
+#endif
 bool settings_on_tab(void);             // the device profile is the Tab S10 Ultra's (SlateDisplay.java)
 void settings_apply_mode(int mode);
 int settings_current_mode(void);        // the mode the options are now, MODE_CUSTOM if none

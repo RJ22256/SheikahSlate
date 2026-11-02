@@ -603,20 +603,22 @@ static void tab_display(void) {
 #ifdef WS_SLATE_UI
     {   // (Sheikah Slate: settings.c settings_apply_mode - three sets of the options below, from the tablet's logs; PC: the
         // same four made for a PC)
+#ifdef __ANDROID__
+        static const char *modes[] = {"Performance", "Quality", "Custom"};
+#else
         static const char *modes[] = {"Battery", "Performance", "Turbo", "Turbo 60", "Custom"};
+#endif
         int mi = settings_current_mode();
         // (Custom only while the options match none: from it either way goes to a mode, never back to Custom)
 #ifdef __ANDROID__
-        const char *md = "Sets the options below, made from the Galaxy Tab S10 Ultra's performance logs (they work on "
-                         "phones too). Battery: 30 fps with the screen at 60 Hz, the game's lowest resolution held and the "
-                         "lighter Snapdragon GSR upscaler - the GPU stays cool and the battery lasts longest. Performance: "
-                         "30 fps, each frame shown for exactly 4 refreshes of a 120 Hz screen, the game's resolution "
-                         "steadied and AMD FSR 1, the sharpest upscaler - the best image. Turbo: 40 fps, each frame shown "
-                         "for exactly 3 refreshes - smoother, the resolution lowered as far as each frame needs. Turbo 60: "
-                         "60 fps, 2 refreshes a frame, the resolution lowered as far as 60 needs - the smoothest, the "
-                         "softest image and the most heat; the Tab's GPU may not hold 60 even at the lowest resolution, a "
-                         "Snapdragon phone's can. All of them: a 1080p image, no extra anti-aliasing, Sync lag on. Custom: "
-                         "shown once you change any of them below.";
+        const char *md = "Sets the options below, made from the Galaxy Tab S10 Ultra's performance logs. Performance: 60 fps, "
+                         "each frame shown for exactly 2 refreshes of the 120 Hz screen, the game's resolution lowered as "
+                         "far as 60 needs, the lighter Snapdragon GSR upscaler, a 1080p image - the smoothest. Quality: 30 "
+                         "fps, each frame shown for exactly 4 refreshes, the game's native resolution held (the Switch's "
+                         "900p, never lowered) and AMD FSR 1, the sharpest upscaler, onto the screen's own 2960 x 1848 - the "
+                         "best image. With frame generation on, Performance runs the game at 120 Hz over its multiplier "
+                         "(2x 60, 3x 40, 4x 30) and Quality's image is 1080p, so the made frames have the GPU time they "
+                         "need. Both: no extra anti-aliasing, Sync lag on. Custom: shown once you change any of them below.";
 #else
         const char *md = "Sets the options below. Battery: 30 fps, the Switch's 900p scene with the game's lowest "
                          "resolution held and the lighter Snapdragon GSR upscaler - for a laptop on its battery. "
@@ -627,7 +629,8 @@ static void tab_display(void) {
                          "All of them: the image at your screen's resolution, no extra anti-aliasing. Custom: shown once "
                          "you change any of them below.";
 #endif
-        if (opt_choice("Mode", &mi, modes, mi == MODE_CUSTOM ? 5 : 4, MODE_PERFORMANCE, md) && mi != MODE_CUSTOM) {
+        if (opt_choice("Mode", &mi, modes, mi == MODE_CUSTOM ? MODE_COUNT + 1 : MODE_COUNT, MODE_PERFORMANCE, md) &&
+            mi != MODE_CUSTOM) {
             settings_apply_mode(mi);
             android_set_display_refresh(g_settings.display_refresh);
         }
@@ -811,10 +814,12 @@ static void tab_display(void) {
                            "game's real ones, so motion looks smoother. On a 120 Hz screen: 2x at 30 or 60 fps (60 or 120 "
                            "shown), 3x at 40 (120), 4x at 30 (120). Never more frames than the screen shows: a choice past "
                            "it is lowered (4x at 60 fps makes 2x), and on Auto (30 / 60) the extra frames follow the game's "
-                           "rate. It adds about half a real frame of delay and takes GPU time from the game - the line below "
-                           "says how much. Paused while this menu is open; the menus, the FPS counter and the touch controls "
-                           "are drawn on every frame, never generated. Add Lossless.dll on the start screen: Settings > "
-                           "Lossless Scaling.";
+                           "rate. With Mode Performance the game runs at the screen's 120 Hz over the multiplier - 2x at 60, "
+                           "3x at 40, 4x at 30 - and 3x fits the Tab best: at 60 its GPU has no time left for the made frames. "
+                           "With Quality: 30 fps, 2x (60 shown) or 4x (120), the image 1080p while it's on. It adds about "
+                           "half a real frame of delay and takes GPU time from the game - the line below says how much. "
+                           "Paused while this menu is open; the menus, the FPS counter and the touch controls are drawn on "
+                           "every frame, never generated. Add Lossless.dll on the start screen: Settings > Lossless Scaling.";
 #else
         const char *what = "Lossless Scaling's frame generation, from your own copy of Lossless.dll: frames made between the "
                            "game's real ones, so motion looks smoother. 2x at 30 fps fills a 60 Hz monitor; on a 120 Hz one "
@@ -830,16 +835,24 @@ static void tab_display(void) {
 #endif
         snprintf(fd, sizeof fd, "%s\n\n%s", tr(what), tr(st));
         static const char *fgn[] = {"Off", "2x", "3x", "4x"};
+#ifdef __ANDROID__
+        {   // (settings.c mode_into: Performance's frame rate and Quality's image follow frame generation)
+            int m0 = settings_current_mode();
+            if (opt_choice("Frame generation", &g_settings.framegen, fgn, 4, 0, fd, false) && m0 != MODE_CUSTOM)
+                settings_apply_mode(m0);
+        }
+#else
         opt_choice("Frame generation", &g_settings.framegen, fgn, 4, 0, fd, false);
+#endif
         {   // (settings.h fg_flow: 0 Automatic, shown as the slider's lowest step)
             int fl = g_settings.fg_flow > 0 ? g_settings.fg_flow : 20;
             if (!g_settings.framegen) opt_disable_next();
 #ifdef __ANDROID__
             const char *fsd = "The resolution motion is found at, as a share of the game's image - most of frame generation's GPU "
                               "time. Automatic: Lossless Scaling's own advice by the image's height, about 1080 lines of motion "
-                              "(100% at 1080 lines, 75% at 1440, 60% for the Galaxy Tab S10 Ultra's 1848). Lower: less GPU time, "
-                              "motion found less finely (thin things can wobble); higher than Automatic costs more for little "
-                              "you'd see.";
+                              "(100% at 1080 lines, 75% at 1440) - on a Mali GPU (the Galaxy Tab S10 Ultra's) 25%: at 100% "
+                              "frame generation took 20 ms of its GPU a frame, at 25% under 5. Lower: less GPU time, motion "
+                              "found less finely (thin things can wobble); higher costs more for little you'd see.";
 #else
             const char *fsd = "The resolution motion is found at, as a share of the game's image - most of frame generation's GPU "
                               "time. Automatic: Lossless Scaling's own advice by the image's height, about 1080 lines of motion "

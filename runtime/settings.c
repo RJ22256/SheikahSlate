@@ -249,19 +249,21 @@ void settings_reset_defaults(void) {
     g_settings.files_in_place = d->files_in_place;
 }
 
-// ---- (Sheikah Slate) Video > Mode, from the Galaxy Tab S10 Ultra's logs (0.1.9-slate.4 to .8; docs/TAB-S10-ULTRA.md):
-// the GPU took 25-28 ms of a frame at the game's top resolution and ~20 at its lowest; the CPU had room.
-//   - Battery: 30 fps on the screen at 60 Hz (each frame up for 2 refreshes), the game's lowest resolution held, the
-//     lighter upscaler (Snapdragon GSR 1, one pass) - the GPU well under its budget, its clock low;
-//   - Performance (the default): 30 fps paced to the 120 Hz screen (4 refreshes a frame), the game's resolution
-//     steadied (1440x810 most of the time in the logs, half-second dips in busy moments), AMD FSR 1 - the sharpest;
-//   - Turbo: 40 fps (3 refreshes of 120 Hz a frame, the game's clock stepped 0.75 a frame), the resolution steadied
-//     and aimed at 25 ms (exec.c drs_rate_scale: it comes down as far as a frame needs), Snapdragon GSR 1;
-//   - Turbo 60 (0.2.8-slate.11): Turbo at 60 fps (2 refreshes of 120 Hz a frame), the resolution aimed at 16.7 ms -
-//     on the Tab's Mali it may not hold 60 even at the game's lowest; a Snapdragon (the Galaxy S25's) has the room.
-// All: Output resolution Auto (1080 lines on the 1848-line panel), no extra anti-aliasing (its GPU time is better spent
-// on the scene), overlapping render passes and 32-bit shader math automatic (on for Mali), Sync lag on.
-#define TAB_PRESET_REV 9  // (the version that applied Performance once over earlier settings: 0.2.8-slate.9)
+// ---- (Sheikah Slate) Video > Mode, from the Galaxy Tab S10 Ultra's logs (0.1.9-slate.4 to .8; docs/TAB-S10-ULTRA.md).
+// Until 0.2.8-slate.17 four: Battery (30 fps at 60 Hz, the lowest resolution), Performance (30 fps paced to 120 Hz, FSR 1),
+// Turbo (40), Turbo 60. From 0.2.8-slate.18 (the Tab's own release, the player's choice) two:
+//   - Performance (the default): 60 fps, 2 refreshes of the 120 Hz screen a frame, the game's resolution lowered as far as
+//     60 needs (vulkan/exec.c drs_rate_follow), Snapdragon GSR 1 (one pass), the final image 1080p (Auto). With frame
+//     generation the game runs at the screen's 120 Hz over the multiplier - 2x at 60, 3x at 40, 4x at 30 - so the made
+//     frames fill the screen evenly: the 2026-11-02 log had the GPU at 15.5-16.9 ms of a 60 fps frame's 16.7 at the
+//     game's lowest resolution, and frame generation's 4.5 ms (2x, flow 25%, performance mode) on top took the game to
+//     36-52 fps; at 40 it has the 25 ms a frame it needs.
+//   - Quality: 30 fps, 4 refreshes a frame, the game's own resolution held at its top - the Switch's native 900p, never
+//     lowered (Game's resolution changes: hold sharp) - AMD FSR 1, the sharpest, onto the final image at the screen's own
+//     2960 x 1848. With frame generation (2x: 60 on screen, 4x: 120) the final image is 1080p: frame generation at the
+//     screen's lines costs more GPU time than a 30 fps frame has left.
+// Both: no extra anti-aliasing, overlapping render passes and 32-bit shader math automatic (on for Mali), Sync lag on.
+#define TAB_PRESET_REV 10  // (the versions that applied Performance once over earlier settings: 0.2.8-slate.9, .18)
 static int g_tab_preset_rev;  // (sheikahslate.ini tab_preset: the last revision applied)
 bool settings_on_tab(void) {
     const char *p = getenv("LARECOMP_DEVICE_PROFILE");
@@ -285,28 +287,30 @@ static void mode_into(Settings *s, int mode) {
     s->shader_int32 = -1;
     s->sync_lag = true;
     s->event_fps_unlock = false;
-    return;
-#endif
-    s->fps_mode = mode == MODE_TURBO60 ? 2 : mode == MODE_TURBO ? 3 : 1;
-    s->display_refresh = mode == MODE_BATTERY ? 1 : 0;
+#else
+    bool q = mode == MODE_QUALITY;
+    int fg = s->framegen;  // (0 off, 1 2x, 2 3x, 3 4x)
+    s->fps_mode = q || fg == 3 ? 1 : fg == 2 ? 3 : 2;  // (30 / 40 / 60)
+    s->display_refresh = 0;
     s->even_pacing = -1;
     s->res_mode = 1;
-    s->upscaler = mode == MODE_PERFORMANCE ? UPSCALE_FSR1 : UPSCALE_SGSR1;
-    s->out_lines = OUT_AUTO;
+    s->upscaler = q ? UPSCALE_FSR1 : UPSCALE_SGSR1;
+    s->out_lines = q && !fg ? 0 : OUT_AUTO;
     s->antialias = AA_OFF;
-    s->drs_mode = mode == MODE_BATTERY ? 2 : 0;
+    s->drs_mode = q ? 1 : 0;
     s->pass_overlap = -1;
     s->shader_int32 = -1;
     s->sync_lag = true;
     s->event_fps_unlock = false;
+#endif
 }
 void settings_apply_mode(int mode) {
-    if (mode < MODE_BATTERY || mode > MODE_TURBO60) return;
+    if (mode < 0 || mode >= MODE_COUNT) return;
     mode_into(&g_settings, mode);
     g_tab_preset_rev = TAB_PRESET_REV;
 }
 int settings_current_mode(void) {
-    for (int m = MODE_BATTERY; m <= MODE_TURBO60; m++) {
+    for (int m = 0; m < MODE_COUNT; m++) {
         Settings p = g_settings;
         mode_into(&p, m);
         if (p.fps_mode == g_settings.fps_mode && p.display_refresh == g_settings.display_refresh &&
@@ -322,7 +326,11 @@ int settings_current_mode(void) {
 void settings_load(void) {
     static bool loaded;
 #ifdef __ANDROID__
-    if (!g_have_defaults && settings_on_tab()) settings_apply_mode(MODE_PERFORMANCE);  // (the tablet's defaults)
+    if (!g_have_defaults && settings_on_tab()) {  // (the tablet's defaults)
+        settings_apply_mode(MODE_PERFORMANCE);
+        g_settings.fg_perf = true;  // (frame generation's lighter passes: a third of the GPU time on its Mali - 20 ms against 62
+                                    // a real frame at 1080 lines, the 2026-11-02 log)
+    }
 #endif
     if (!g_have_defaults) g_defaults = g_settings, g_have_defaults = true;
     if (loaded) return;
@@ -440,7 +448,8 @@ void settings_load(void) {
 #ifdef __ANDROID__
     if (settings_on_tab() && g_tab_preset_rev < TAB_PRESET_REV) {  // (once, over settings from before the modes)
         settings_apply_mode(MODE_PERFORMANCE);
-        LOG("[settings] Video > Mode: Performance, the Galaxy Tab S10 Ultra's (once, over earlier settings)\n");
+        LOG("[settings] Video > Mode: Performance, the Galaxy Tab S10 Ultra's (once, over earlier settings: rev %d)\n",
+            TAB_PRESET_REV);
         settings_save();
     }
 #endif

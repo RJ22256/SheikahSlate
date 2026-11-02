@@ -540,7 +540,8 @@ void vk_pace_frame(void) {
 // counters were capped at 8 ms instead - upstream's, for an Adreno where frames fit: on the Tab S10 Ultra's Mali the
 // resolution then never came down, a frame took 25-28 ms, and 60 fps stayed at ~30.)
 // (0.2.8-slate.11) The factor follows the GPU's real time a frame (drs_rate_follow, twice a second): it starts at 1,
-// grows 8% while the GPU's frames average over 92% of the frame and shrinks while they're under 75% - so the resolution
+// grows 8% while the GPU's frames average over 92% of the frame (86% at 60 fps) and shrinks while they're under 75% (70%)
+// - so the resolution
 // comes down only as far as the frame rate needs, wherever the game's own budget really is, and stays at the top where
 // frames fit. Between 1 and 3. (Simulated against a model of the game's resolution, budget 33 or 16.7 ms, GPU 10-28 ms
 // at the top: 60 held wherever the lowest resolution allows it; starting at budget / frame, 2, took it lower than
@@ -574,8 +575,11 @@ static void drs_rate_follow(double gpu_ms) {
     sum = 0, n = 0;
     int k0 = atomic_load(&g_drs_k);
     double k = k0 > 0 ? k0 / 1000.0 : 1;
-    if (avg > want * 0.92) k *= 1.08;
-    else if (avg < want * 0.75) k /= 1.08;
+    // (0.2.8-slate.18) at 60 fps a band lower - 86% / 70%: the Tab S10 Ultra's frames averaged 15.5-16.9 ms of the 16.7,
+    // so the ones over it (a refresh late each) came every second or so; at 40 the 25 ms budget has the room
+    double hi = fps >= 55 ? 0.86 : 0.92, lo = fps >= 55 ? 0.70 : 0.75;
+    if (avg > want * hi) k *= 1.08;
+    else if (avg < want * lo) k /= 1.08;
     k = k < 1 ? 1 : k > 3 ? 3 : k;
     int k1 = (int)(k * 1000 + 0.5);
     atomic_store(&g_drs_k, k1);

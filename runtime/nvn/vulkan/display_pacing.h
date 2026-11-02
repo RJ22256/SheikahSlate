@@ -27,12 +27,15 @@ typedef struct {
                             // group is judged by its first present (the least time to be ready); slots up to burst_pos
                             // frames ahead are a later one's own
     double bias;            // a steady offset between when the system says frames went up and when they were asked for
+    double anchor_lat;      // the grid's first frame: from its present (or the time it asked for) to on screen - frames
+                            // present that far ahead of their slots all the time (the compositor's own latency), so only
+                            // more than a frame beyond it is a frame ahead (dp_desired)
     int tight_n;            // aimed frames in a row on their slots, and of them the least spare (could have gone up
     double tight_min;       // that much earlier: the system's earliest time): a refresh or more over 300 - a slot earlier
     bool have_last;
     uint32_t last_id;
     uint64_t last_t;
-    struct { uint32_t id, gen; uint64_t desired; uint8_t pos, group; } sent[DP_SENT];  // the last frames' requests, by id
+    struct { uint32_t id, gen; uint64_t desired, at; uint8_t pos, group; } sent[DP_SENT];  // the last frames' requests, by id
     // since dp_stats_take:
     uint32_t shown[9];      // frames by how long the one before stayed up: [k] k refreshes (1..7), [8] longer, [0] other
     uint32_t aimed, on_time, late, early, regrids, ahead, missing, tightened, offsets;

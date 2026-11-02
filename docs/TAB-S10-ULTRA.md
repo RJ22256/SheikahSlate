@@ -651,6 +651,56 @@ Slate.15 always wrote its default, 75, so that value is read as Automatic. Any o
 
 **Tests:** `tools/test_display_pacing.c` has the multiplier table and the subsets. `tools/test_modes.c` has the flow scale's Automatic and the slate.15 key.
 
+## Update 18 (0.2.8-slate.18): the Tab's own release - two modes, even 60, frame generation that fits
+
+From the 2026-11-02 log: 1.8.2 on the Great Plateau at Turbo 60, then frame generation 2x.
+
+### 45. Even frame pacing at 60 fps (`display_pacing.c` regrid / dp_desired)
+
+At 30 fps the frames went up 4 refreshes apart (100% in the log). At 60 they were up for 1, 2 or 3 refreshes (70-90% at 2) even at a steady 60.0 fps: the stats lines read `regrids 72, ahead 72` and up to `regrids 120, ahead 120` in 2 s - a new grid for every frame, so frames went up unpaced.
+
+**Why.** A frame is "ahead" (a hitch's catch-up: a new grid) when its slot is more than n + 0.5 refreshes after its present - 2.5 at 60 fps. A frame's steady lead on its slot is its own latency to the screen plus the one refresh of slack, and One UI's compositor often takes over 1.5 refreshes: every frame read as ahead. At 30 fps the bound is 4.5 refreshes, which the same latency never reached.
+
+**Now** the grid's first frame records that latency (from its present, or the time it asked for, to on screen; at most 4 refreshes), and only frames more than a frame ahead of *that* start a new grid.
+
+**Tests:** `tools/test_display_pacing.c` 60 fps on 120 Hz with frames done 8-14 ms after their present: 100% at 2 refreshes (was 79%, 6,559 new grids in 2 minutes), and across a 150 ms hitch with slow frames now and then. The cases before keep their random sequences, and all pass as before.
+
+### 46. Video > Mode: Performance and Quality (`settings.c` mode_into)
+
+| | Performance (default) | Quality |
+|---|---|---|
+| Frame rate | 60 (2 refreshes of 120 Hz) | 30 (4 refreshes) |
+| Game's resolution | lowered as far as 60 needs | held at its top, the Switch's native 900p |
+| Upscaler | Snapdragon GSR 1 (one pass) | AMD FSR 1 (the sharpest) |
+| Final image | 1080p (Auto) | the screen's own 2960 x 1848 |
+| With frame generation | the game at 120 Hz over the multiplier: 2x 60, 3x 40, 4x 30 | 30 fps: 2x (60 shown), 4x (120); the image 1080p |
+
+Both: no extra anti-aliasing, Sync lag on, overlapping render passes and 32-bit shader math automatic. The start screen's card has the two. Performance is applied once over earlier settings (`tab_preset = 10`), slate.17's four modes included.
+
+### 47. Frame generation that fits (`device.c` fg_flow_for, create_device; `settings.c`)
+
+In the log, at 1080 lines:
+
+| Flow scale | Performance mode | Frame generation's GPU time a real frame |
+|---|---|---|
+| 100% (Automatic) | off | 62.6 ms |
+| 100% | on | 20.1 ms |
+| 25% | on | 4.5 ms |
+
+The game's own frames took 15.5-16.9 ms of the 16.7 at 60. With frame generation the game fell to 36-52 fps.
+
+What changed:
+- **Automatic flow scale on Arm GPUs is 25%.**
+- **Performance mode is on by default on the tablet.**
+- **The FP16 shaders are allowed on Arm GPUs from the start.** Lossless.dll added after the app started found the device made without FP16, and ran the full-precision shaders.
+- **Performance's frame rate follows the multiplier (#46).** 3x at 40 gives the made frames the 25 ms a frame they need.
+
+### 48. Fewer frames over 16.7 ms at 60 (`exec.c` drs_rate_follow)
+
+At 60 fps the game's resolution now starts coming down once the GPU's frames average over 86% of the frame (14.3 ms), not 92%. It comes back up once they average under 70%, not 75%. At 40 fps the band is as before.
+
+**Tests:** `tools/test_modes.c` has the two modes, their options saved, Performance once over slate.17's settings, and the frame rate and image for each multiplier.
+
 ## Test checklist (on the tablet)
 
 On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log file**: choose a folder (e.g. Download/SheikahSlate) and keep
@@ -672,9 +722,10 @@ On the start screen, Settings > Prelaunch > Driver compatibility > **Save a log 
    game; 60 Hz switches it at once. Logcat: `display refresh: ...`.
 7. **Heat and speed.** 15-20 minutes on the Great Plateau at Frame rate 30: note FPS, SoC temperature and whether it
    throttles. Internal resolution Dynamic, or 75% / 50%, if the GPU can't hold 30.
-8. **Modes.** Video > Mode: Battery, Performance, Turbo and Turbo 60 each set the options below them (Custom after
-   changing one). Turbo: the overlay reads ~40 fps; Turbo 60: above 40, `[dynres] the game's resolution for 60 fps`
-   lines as it settles. The fps lines no longer say "not paced" with Even frame pacing on.
+8. **Modes.** Video > Mode: Performance and Quality each set the options below them (Custom after changing one).
+   Performance: the overlay reads ~60 fps, `[dynres] the game's resolution for 60 fps` lines as it settles, and the
+   fps lines' "on screen 2x" near 100% with few regrids. Quality: 30 fps, "on screen 4x" near 100%, Rendering the 3D
+   image at 1600 x 900. With frame generation 3x in Performance: the overlay's 40 with "120 with frame generation".
 9. **Look.** Settings > Look > Choose background: the start screen shows the picture at once; Original background puts
    the artwork back. App icon: tap a picture, Use it - the app starts again, and the app list shows the new icon (put
    it back on the home screen if it went).

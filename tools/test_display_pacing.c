@@ -456,6 +456,31 @@ int main(void) {
         expect(n < (int)sizeof small && small[sizeof small - 1] == 0, "stats line: cut to the buffer");
     }
 
+    {
+        // 5c. (WSword) 60 fps on 120 Hz, frames done 8-14 ms after their present (render 3-8 ms after the grid): the time to
+        // the screen is often over 1.5 refreshes, which put every frame "ahead" of a grid that included it - a new grid each
+        // frame, frames up for 1, 2 or 3 refreshes as unpaced (the Galaxy Tab S10 Ultra's log, 2026-11-02).
+        Sim s = base;  // (last: the cases before keep their random sequences)
+        s.fps = 60, s.render_lo = 3e6, s.render_hi = 8e6, s.gpu_lo = 8e6, s.gpu_hi = 14e6, s.frames = 7200;
+        s.pace = false;
+        run(&s, &r);
+        report("120 Hz, 60 fps, slow compositor", &s, &r);
+        double unpaced2 = share(&r, 2);
+        s.pace = true;
+        run(&s, &r);
+        report("120 Hz, 60 fps, slow compositor", &s, &r);
+        expect(share(&r, 2) >= 0.98, "60 fps paced with the compositor's latency: 98% at 2 refreshes");
+        expect(share(&r, 2) > unpaced2, "60 fps paced better than unpaced");
+        expect(r.p.ahead < 10 && r.p.regrids < 10, "60 fps paced: the grid kept (under 10 new grids in 2 minutes)");
+        expect(r.dropped == 0, "60 fps paced: no frame overtaken");
+        // 5d. ... and across a 150 ms hitch, and with a slow GPU frame now and then
+        s.hitch_at = 3000, s.spike_every = 60, s.spike_ns = 6e6;
+        run(&s, &r);
+        report("120 Hz, 60 fps, hitch + spikes", &s, &r);
+        expect(share(&r, 2) >= 0.90, "60 fps paced across a hitch and spikes: 90% at 2 refreshes");
+        expect(r.dropped <= 1, "60 fps paced across a hitch: at most one frame overtaken");
+    }
+
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("display pacing: all checks passed\n");
     return 0;

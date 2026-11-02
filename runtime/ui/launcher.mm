@@ -1716,7 +1716,7 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
 // the background: the app's icon in use and its name, the game's and the app's version, PLAY, Saves (Settings >
 // Prelaunch), Mods (Settings > Mods), Settings, Set up game files while it's needed, Quit, and under them the game
 // files' state and the GPU with its driver. At the top right: the display's refresh rate, Even frame pacing, the
-// battery. At the lower right a card: the last save's time, Resume, and Video > Mode's four modes a tap away
+// battery. At the lower right a card: the last save's time, Resume, and Video > Mode's modes a tap away
 // (settings.c settings_apply_mode). Units of a 800-line screen (u), clear of the camera cutout (the window's safe
 // area); every item reachable with a controller (ImGui's navigation) and focused on PLAY first.
 enum GlassAction { GA_NONE, GA_PLAY, GA_SAVES, GA_MODS, GA_SETTINGS, GA_SETUP, GA_QUIT };
@@ -2004,15 +2004,14 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
         yy += 104 * u;
         text(ft, 13 * u, x, yy, label, tr("MODE"));
         yy += 22 * u;
-        static const char *names[] = {"Battery", "Performance", "Turbo", "Turbo 60"};
-#ifdef __ANDROID__
-        static const char *subs[] = {"30 fps  \xc2\xb7  60 Hz", "30 fps  \xc2\xb7  sharpest", "40 fps", "60 fps"};
+#ifdef __ANDROID__  // (0.2.8-slate.18, the Tab's release: two - settings.c mode_into)
+        static const char *names[] = {"Performance", "Quality"};
+        static const char *subs[] = {"60 fps  \xc2\xb7  smoothest", "30 fps  \xc2\xb7  native resolution"};
         static const char *blurbs[] = {
-            "Coolest and longest: the game's lowest resolution held, the lighter upscaler.",
-            "Each frame shown for exactly 4 refreshes at 120 Hz, AMD FSR 1: the best image.",
-            "Each frame shown for exactly 3 refreshes; the resolution comes down as far as a frame needs.",
-            "The smoothest: the resolution lowered as far as 60 needs; the most heat."};
+            "Each frame shown for exactly 2 refreshes at 120 Hz; the resolution lowered as far as 60 needs.",
+            "The game's native 900p held, AMD FSR 1 onto the screen's own 2960 x 1848: the best image."};
 #else
+        static const char *names[] = {"Battery", "Performance", "Turbo", "Turbo 60"};
         static const char *subs[] = {"30 fps  \xc2\xb7  light", "30 / 60 fps", "40 fps  \xc2\xb7  120 Hz", "60 fps"};
         static const char *blurbs[] = {
             "For a laptop on its battery: 30 fps, the Switch's 900p scene, the lighter upscaler.",
@@ -2022,10 +2021,14 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
 #endif
         int cur = settings_current_mode();
         bool sixty = rt_game_version() >= 182;  // (1.0.0 and 1.6.0 run at 30)
-        float gap = 10 * u, mw = (inner - 3 * gap) / 4, mh = 64 * u;
-        for (int i = 0; i < 4; i++) {
+        float gap = 10 * u, mw = (inner - (MODE_COUNT - 1) * gap) / MODE_COUNT, mh = 64 * u;
+        for (int i = 0; i < MODE_COUNT; i++) {
             float mx = x + i * (mw + gap);
+#ifdef __ANDROID__
+            bool enabled = sixty || i == MODE_QUALITY;  // (1.0.0 and 1.6.0: 30 fps only)
+#else
             bool enabled = sixty || i < MODE_TURBO;
+#endif
             ImGui::SetCursorScreenPos(P(mx, yy));
             ImGui::BeginDisabled(!enabled);
             ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
@@ -2051,7 +2054,7 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
         }
         yy += mh + 12 * u;
         text(ft, 14 * u, x, yy, muted,
-             tr(cur >= 0 && cur < 4 ? blurbs[cur] : "Custom: your own settings (Settings \xe2\x80\xba Video)."), inner);
+             tr(cur >= 0 && cur < MODE_COUNT ? blurbs[cur] : "Custom: your own settings (Settings \xe2\x80\xba Video)."), inner);
     }
     return action;
 }

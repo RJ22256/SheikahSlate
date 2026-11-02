@@ -746,8 +746,10 @@ static void create_device(void) {
     {   // Adreno has no uniformAndStorageBuffer8BitAccess, and no shader uses 8-bit uniform buffers
         // (docs/las/ANDROID-PORT.md, Fase 0): the 8-bit features only when the driver has them
         f12.shaderInt8 = h12.shaderInt8;
-        // (WSword: frame generation's FP16 shaders, framegen.cpp - where the driver has it; nothing else declares it)
-        g_vk.fp16 = h12.shaderFloat16 && fg_maybe;
+        // (WSword: frame generation's FP16 shaders, framegen.cpp - where the driver has it; nothing else declares it.
+        // 0.2.8-slate.18: on Arm GPUs always - Lossless.dll added after the start (the 2026-11-02 log) found the device
+        // made without it and ran the full-precision shaders, a good deal slower on a Mali)
+        g_vk.fp16 = h12.shaderFloat16 && (fg_maybe || g_vk.props.vendorID == 0x13B5);
         f12.shaderFloat16 = g_vk.fp16;
         f12.uniformAndStorageBuffer8BitAccess = h12.uniformAndStorageBuffer8BitAccess;
         f12.storageBuffer8BitAccess = h12.storageBuffer8BitAccess;
@@ -1622,6 +1624,10 @@ static int fg_swapchain_want(void) {
 // 1848-line image: 60%, about a third of 100%'s GPU time for the motion search.
 static int fg_flow_for(uint32_t height) {
     int f = g_settings.fg_flow;
+    // (0.2.8-slate.18) on an Arm GPU 25%: the Galaxy Tab S10 Ultra's Mali-G720 took 20 ms a real frame at 100% (1080
+    // lines, performance mode), 4.5 at 25% - a 60 fps frame's GPU time is 16.7 ms all told
+    extern bool vk_gpu_is_arm(void);
+    if (f <= 0 && vk_gpu_is_arm()) f = 25;
     if (f <= 0) f = height ? (int)lround(1080.0 * 100 / height / 5) * 5 : 100;
     return f < 25 ? 25 : f > 100 ? 100 : f;
 }
