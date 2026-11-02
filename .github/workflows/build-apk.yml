@@ -13,6 +13,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish the APK as a GitHub release with this tag (e.g. v0.2.8-slate.18); empty: none"
+        required: false
+        default: ""
+      release_notes:
+        description: "The release notes, a Markdown file in the repository (e.g. docs/releases/tab-0.2.8-slate.18.md)"
+        required: false
+        default: ""
 
 concurrency:
   group: build-apk-${{ github.ref }}
@@ -23,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     permissions:
-      contents: write  # (the symbols branch: Runtime symbols)
+      contents: write  # (the symbols branch: Runtime symbols; a release, when asked for)
     defaults:
       run:
         shell: bash  # (bash -eo pipefail: a failing build piped into tee still fails its step)
@@ -238,5 +247,23 @@ jobs:
         with:
           name: ${{ steps.apk.outputs.name }}
           path: ${{ steps.apk.outputs.name }}
+
+      # (workflow_dispatch's release: the APK as a GitHub release - WSword-<version>-TabS10Ultra.apk - from this commit,
+      # the notes from the repository's file. Artifacts need a signed-in download; a release's asset is a plain link)
+      - name: GitHub release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release }}
+          NOTES: ${{ inputs.release_notes }}
+        run: |
+          V=$(grep -o 'versionName = "[^"]*"' android/sheikahslate/app/build.gradle.kts | cut -d'"' -f2)
+          R="WSword-$V-TabS10Ultra.apk"
+          cp "${{ steps.apk.outputs.name }}" "$R"
+          sha256sum "$R" | tee "$R.sha256"
+          if [ -n "$NOTES" ] && [ -f "$NOTES" ]; then N=(--notes-file "$NOTES"); else N=(--notes "WSword $V for the Galaxy Tab S10 Ultra."); fi
+          gh release create "$TAG" "$R" "$R.sha256" --target "$GITHUB_SHA" --title "WSword $V - Galaxy Tab S10 Ultra" "${N[@]}"
+          echo "::notice title=Release::$(gh release view "$TAG" --json url --jq .url)"
+
           if-no-files-found: error
           retention-days: 30
