@@ -141,6 +141,13 @@ void settings_load(void) {
             g_settings.anisotropy = a >= 16 ? 4 : a >= 8 ? 3 : a >= 4 ? 2 : a >= 2 ? 1 : 0;
         }
         else if (!strcmp(key, "frame_generation")) g_settings.frame_gen = atoi(val) != 0;
+        else if (!strcmp(key, "lossless_frame_generation")) {  // (WSword: off | 2x | 3x | 4x)
+            int n = atoi(val);
+            g_settings.lsfg = n >= 2 && n <= 4 ? n - 1 : 0;
+        }
+        else if (!strcmp(key, "lossless_flow")) { int n = atoi(val); g_settings.lsfg_flow = n >= 25 && n <= 100 ? n : 0; }
+        else if (!strcmp(key, "lossless_performance")) g_settings.lsfg_perf = atoi(val) != 0;
+        else if (!strcmp(key, "app_icon")) { int n = atoi(val); g_settings.app_icon = n >= 0 && n < 6 ? n : 0; }
         else if (!strcmp(key, "sharpening")) {  // (percent, in steps of 10)
             int p = atoi(val);
             g_settings.sharpening = p < 0 ? 0 : p > 100 ? 10 : (p + 5) / 10;
@@ -292,6 +299,10 @@ void settings_save(void) {
     else fprintf(f, "anisotropy = game\n");
     fprintf(f, "sharpening = %d\n", g_settings.sharpening * 10);
     fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
+    if (g_settings.lsfg) fprintf(f, "lossless_frame_generation = %dx\n", g_settings.lsfg + 1);
+    else fprintf(f, "lossless_frame_generation = off\n");
+    fprintf(f, "lossless_flow = %d\nlossless_performance = %d\napp_icon = %d\n", g_settings.lsfg_flow, g_settings.lsfg_perf,
+            g_settings.app_icon);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "left_stick_deadzone = %.0f\n", g_settings.stick_deadzone[0] * 100);
     fprintf(f, "right_stick_deadzone = %.0f\n", g_settings.stick_deadzone[1] * 100);
@@ -331,4 +342,28 @@ void settings_save(void) {
     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
     bind_settings_save(f);
     fclose(f);
+}
+
+// ---- (WSword) the start screen's modes (settings.h): the frame rate and how the 3D image is rendered; the rest of the
+// Video options (anti-aliasing, VSync, shadows, draw distance, colour) stay the player's
+// (WSword) the start screen's modes: Battery 30 fps, the game rendered smaller and AMD FSR 1 onto the window;
+// Performance 60, Turbo 120, Unlocked no limit - each at the window's full resolution
+static void mode_into(Settings *s, int mode) {
+    s->fps_limit = mode == MODE_BATTERY ? 30 : mode == MODE_TURBO ? 120 : mode == MODE_UNLOCKED ? 0 : 60;
+    s->upscaler = mode == MODE_BATTERY ? UPSCALE_FSR1 : UPSCALE_OFF;
+    s->upscale_quality = mode == MODE_BATTERY ? UPQ_PERFORMANCE : UPQ_QUALITY;
+}
+void settings_apply_mode(int mode) {
+    if (mode < 0 || mode >= MODE_COUNT) return;
+    mode_into(&g_settings, mode);
+}
+int settings_current_mode(void) {
+    for (int m = 0; m < MODE_COUNT; m++) {
+        Settings p = g_settings;
+        mode_into(&p, m);
+        if (p.fps_limit == g_settings.fps_limit && p.upscaler == g_settings.upscaler &&
+            (p.upscaler == UPSCALE_OFF || p.upscale_quality == g_settings.upscale_quality))
+            return m;
+    }
+    return MODE_CUSTOM;
 }

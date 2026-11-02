@@ -459,6 +459,7 @@ void draw_confirm(int phase) {
 }  // namespace
 
 void saves_tab_set_game_files(const char *root) { g_game_root = root; }
+std::string saves_tab_dir(void) { return save_dir(); }
 
 bool saves_tab_busy(void) {
     int p = g_phase.load(std::memory_order_acquire);

@@ -402,12 +402,21 @@ void vk_gpuprof_report(void) {
     gp_n = 0;
 }
 
+// (WSword: Lossless frame generation, device.c) the next submission also waits for a timeline semaphore's value (its
+// generated frame made) and / or signals one (the game's frame copied for it). Either may be null.
+static VkSemaphore nx_wait, nx_sig;
+static uint64_t nx_wait_v, nx_sig_v;
+void vk_next_submit_timeline(VkSemaphore wait, uint64_t wv, VkSemaphore signal, uint64_t sv) {
+    if (wait) nx_wait = wait, nx_wait_v = wv;
+    if (signal) nx_sig = signal, nx_sig_v = sv;
+}
+
 // Submit the pending work (if any). wait/signal: binary semaphores for presentation (may be null).
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra) {
     (void)extra;
     vk_end_pass();
     Sub *s = sub();
-    if (!s->main_begun && !s->upload_begun && !wait && !signal) return;
+    if (!s->main_begun && !s->upload_begun && !wait && !signal && !nx_wait && !nx_sig) return;
     VkCommandBufferSubmitInfo cbs[2];
     int n = 0;
     if (s->upload_begun) {
@@ -419,15 +428,26 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     if (s->ts) rec_CmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, prof_qp, (uint32_t)cur_sub * 2 + 1);
     rec_EndCommandBuffer(s->main);
     cbs[n++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->main};
-    VkSemaphoreSubmitInfo sig[2] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_vk.timeline,
-                                     .value = submit_seq + 1, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT},
-                                    {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = signal,
-                                     .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
-    VkSemaphoreSubmitInfo wt = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
-                                .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT};
+    VkSemaphoreSubmitInfo sig[3] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_vk.timeline,
+                                     .value = submit_seq + 1, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
+    uint32_t nsig = 1, nwt = 0;
+    if (signal)
+        sig[nsig++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = signal,
+                                              .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    if (nx_sig)
+        sig[nsig++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = nx_sig,
+                                              .value = nx_sig_v, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkSemaphoreSubmitInfo wt[2];
+    if (wait)
+        wt[nwt++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
+                                            .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT};
+    if (nx_wait)  // (its generated frame is read from the start: copies, the post passes)
+        wt[nwt++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = nx_wait,
+                                            .value = nx_wait_v, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    nx_wait = nx_sig = VK_NULL_HANDLE;
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = (uint32_t)n, .pCommandBufferInfos = cbs,
-                        .signalSemaphoreInfoCount = signal ? 2 : 1, .pSignalSemaphoreInfos = sig,
-                        .waitSemaphoreInfoCount = wait ? 1 : 0, .pWaitSemaphoreInfos = &wt};
+                        .signalSemaphoreInfoCount = nsig, .pSignalSemaphoreInfos = sig,
+                        .waitSemaphoreInfoCount = nwt, .pWaitSemaphoreInfos = wt};
     {
         PROF_T0();
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
@@ -7805,8 +7825,13 @@ static void cpost_pass(VkCommandBuffer cb, const char *cs, const VkImageView *sr
 
 // The view the present samples: the game image, or its anti-aliased / upscaled version. ow x oh: the whole image's
 // size in the window (its crop is drawn into the viewport).
+// (WSword: of a view too - Lossless frame generation's frames, device.c, are drawn as the game's own)
+static VkImageView post_process_view(VkCommandBuffer cb, VkImageView v, uint32_t bw, uint32_t bh, double ow_d, double oh_d);
 static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, double oh_d) {
-    VkImageView v = raw_view(b);
+    return post_process_view(cb, raw_view(b), b->width, b->height, ow_d, oh_d);
+}
+static VkImageView post_process_view(VkCommandBuffer cb, VkImageView v, uint32_t bw, uint32_t bh, double ow_d, double oh_d) {
+    const struct { uint32_t width, height; } bs = {bw, bh}, *b = &bs;
     bool smaa = rt_antialias() == AA_SMAA && !rt_fsr3();  // (FSR 3 anti-aliases the scene itself)
     uint32_t ow = (uint32_t)lround(ow_d), oh = (uint32_t)lround(oh_d);
     if (ow > 16384) ow = 16384;
@@ -8655,9 +8680,20 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
 }
 
 // Inside the window image's rendering (device.c vk_frame_begin): the game image into (vx, vy, vw, vh).
+static void present_draw_src(VkCommandBuffer cb, VkImageView src, float vx, float vy, float vw, float vh, const float pv[8]);
 void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh, const float pv[8]) {
     if (!b || !b->image || (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT)) return;
-    VkImageView src = post_process(cb, b, pv[6] > 0 ? vw / pv[6] : vw, pv[7] > 0 ? vh / pv[7] : vh);
+    present_draw_src(cb, post_process(cb, b, pv[6] > 0 ? vw / pv[6] : vw, pv[7] > 0 ? vh / pv[7] : vh), vx, vy, vw, vh, pv);
+}
+// (WSword) a w x h image's view the same way: Lossless frame generation's frames (device.c) - its RGBA8 UNORM images
+// hold the game image's bytes, as raw_view reads them
+void vk_present_draw_view(VkCommandBuffer cb, VkImageView view, uint32_t w, uint32_t h, float vx, float vy, float vw, float vh,
+                          const float pv[8]) {
+    if (!view) return;
+    present_draw_src(cb, post_process_view(cb, view, w, h, pv[6] > 0 ? vw / pv[6] : vw, pv[7] > 0 ? vh / pv[7] : vh), vx, vy,
+                     vw, vh, pv);
+}
+static void present_draw_src(VkCommandBuffer cb, VkImageView src, float vx, float vy, float vw, float vh, const float pv[8]) {
     VkPipeline p = present_pipeline(g_vk.sc_format);
     VkDescriptorSet ds = vk_alloc_set(present_set_layout);
     VkDescriptorImageInfo ii = {vk_default_sampler(true), src, VK_IMAGE_LAYOUT_GENERAL};

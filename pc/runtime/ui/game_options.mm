@@ -16,6 +16,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <atomic>
@@ -124,6 +125,11 @@ std::unordered_map<uint32_t, std::u16string> g_text;
 
 // ---- values
 const char *const k_perf[] = {"Off", "FPS", "Full"};
+// (WSword) Frame generation: settings.h frame_gen (AMD FSR 3) / lsfg (Lossless, 1-3 frames made); Lossless's flow
+// scale (settings.h lsfg_flow: 0 Automatic)
+const char *const k_modes_ws[] = {"Battery", "Performance", "Turbo", "Unlocked", "Custom"};  // (settings.h MODE_*)
+const char *const k_fg[] = {"Off", "AMD FSR 3", "Lossless 2x", "Lossless 3x", "Lossless 4x"};
+const int k_lsfg_flow[] = {0, 25, 35, 50, 65, 75, 100};
 // Upscaler: Off (the game's image scaled plainly), this OS's spatial upscaler, and the temporal ones still to come. A
 // value that can't be picked yet (Item.value_off) is shown greyed and never stored: g_shown keeps the row on it until
 // the page opens again. So are the upscaler's modes until the game renders below the window's size (output_scale.c).
@@ -347,6 +353,16 @@ void build_items(void) {
                        [](const Item &, int x) { return tr(k_drawdist[x]); },
                        [](const Item &) { return g_settings.draw_distance; },
                        [](const Item &, int x) { g_settings.draw_distance = x; }, DRAWDIST_ORIGINAL));
+    // (WSword) Mode: the start screen card's sets of the frame rate and the upscaler (settings.c mode_into); Custom
+    // when they match none - shown, never picked. A change redraws the page (the rows it set).
+    Item mode_set = choice(P_VIDEO, "Mode", "Battery 30, Performance 60, Turbo 120, Unlocked: frame rate and upscaler at once.",
+                           [](const Item &) { return MODE_COUNT + 1; },
+                           [](const Item &, int x) { return tr(k_modes_ws[x]); },
+                           [](const Item &) { return settings_current_mode(); },
+                           [](const Item &, int x) { settings_apply_mode(x); }, MODE_PERFORMANCE);
+    mode_set.value_off = [](const Item &, int x) { return x >= MODE_COUNT; };
+    mode_set.reset = [](const Item &) { settings_apply_mode(MODE_PERFORMANCE); };
+    v.push_back(mode_set);
     Item fps = choice(P_VIDEO, "Frame rate", "",
                       [](const Item &) { return N(k_fps); }, fps_label,
                       [](const Item &) {
@@ -437,10 +453,39 @@ void build_items(void) {
                        },
                        [](const Item &) { return g_settings.sharpening; },
                        [](const Item &, int x) { g_settings.sharpening = x; }, 0));
-    // AMD FSR 3 frame generation (vulkan/framegen.cpp)
-    v.push_back(toggle(P_VIDEO, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
-                       [](const Item &) { return (int)g_settings.frame_gen; },
-                       [](const Item &, int x) { g_settings.frame_gen = x; }, 0));
+    // Frame generation: AMD FSR 3 (vulkan/framegen.cpp), or (WSword) Lossless Scaling's from the player's own
+    // Lossless.dll (vulkan/device.c lsfg_prepare; added on the start screen: Settings > Files)
+    Item fg = choice(P_VIDEO, "Frame generation", "",
+                     [](const Item &) { return N(k_fg); }, [](const Item &, int x) { return tr(k_fg[x]); },
+                     [](const Item &) { return g_settings.lsfg > 0 ? 1 + g_settings.lsfg : g_settings.frame_gen ? 1 : 0; },
+                     [](const Item &, int x) {
+                         g_settings.frame_gen = x == 1;
+                         g_settings.lsfg = x >= 2 ? x - 1 : 0;
+                     }, 0);
+    fg.reset = [](const Item &) { g_settings.frame_gen = false, g_settings.lsfg = 0; };
+    fg.desc_fn = [](const Item &) {  // (one line)
+        return g_settings.lsfg > 0 ? tr("Lossless.dll's frames: the game draws a half, a third or a quarter of the rate.")
+                                   : tr("More frames on screen than the game draws. Adds a little delay.");
+    };
+    v.push_back(fg);
+    v.push_back(choice(P_VIDEO, "Lossless flow scale", "Lossless only: lower is faster, motion found less finely.",
+                       [](const Item &) { return N(k_lsfg_flow); },
+                       [](const Item &, int x) {
+                           static std::string str;
+                           str = x ? pct(k_lsfg_flow[x]) : std::string(tr("Automatic"));
+                           return str.c_str();
+                       },
+                       [](const Item &) {  // (the nearest: Settings on the start screen goes in steps of 5)
+                           if (g_settings.lsfg_flow <= 0) return 0;
+                           int best = 1;
+                           for (int i = 1; i < N(k_lsfg_flow); i++)
+                               if (abs(k_lsfg_flow[i] - g_settings.lsfg_flow) < abs(k_lsfg_flow[best] - g_settings.lsfg_flow)) best = i;
+                           return best;
+                       },
+                       [](const Item &, int x) { g_settings.lsfg_flow = k_lsfg_flow[x]; }, 0));
+    v.push_back(toggle(P_VIDEO, "Lossless performance mode", "Lossless only: lighter passes, frames a little less exact.",
+                       [](const Item &) { return (int)g_settings.lsfg_perf; },
+                       [](const Item &, int x) { g_settings.lsfg_perf = x; }, 0));
 #endif
     v.push_back(toggle(P_VIDEO, "Asynchronous shaders", "On: no stutter, but some effects appear late.",
                        [](const Item &) { return (int)g_settings.async_shaders; },

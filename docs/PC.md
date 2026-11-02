@@ -25,17 +25,21 @@ and their licenses.
 - 16 GB of RAM.
 - About 20 GB free.
 
-## Updating from 0.2.8-pc.x
+## Updating
 
-Unzip `WSword-0.3.0-pc.1-windows.zip` over your `WSword` folder and replace the files. Then run `WSword.exe`:
+**From 0.3.0-pc.1:** unzip `WSword-0.3.1-pc.1-windows.zip` over your `WSword` folder and replace the files. Your game files, game code, saves and settings stay as they are.
+
+**From 0.2.8-pc.x:** unzip it over your `WSword` folder and replace the files. Then run `WSword.exe`:
 
 1. **It finds your game files and saves.** It uses the game version you set up before (its `v190` or `v182` folder, the one `game_version.txt` names). No new copy of the game is made.
 2. **It builds the game code once,** on its own. This takes a few minutes and uses every CPU core. The old one was built for WSword's previous engine.
 3. **It frees space.** The old `romfs.bin` next to `romfs/` is removed (~15 GB): the game now reads `romfs/` directly.
 4. **It starts the game.** Settings start fresh, in the game's own Options.
 
+Kept from 0.2.8: your `lsfg\Lossless.dll` (Lossless frame generation finds it there) and a background you chose (`look\background.png`).
+
 Left over from 0.2.8 and no longer used (you can delete them):
-- next to `WSword.exe`: the `botwgen` and `lsfg` folders, `THIRD-PARTY.txt`, `launcher-background.png`, the `app-icon-*.png` pictures, and the Baloo2 / Inter font files;
+- next to `WSword.exe`: the `botwgen` folder, `THIRD-PARTY.txt` and the Baloo2 font files;
 - in the version folder: `sheikahslate.ini` and `extracted\botwgame.dll`.
 
 If it asks for game files instead, choose the folder with your `exefs` and `romfs` again. This happens with 1.0.0 or 1.6.0 (Savage Wind plays 1.8.2 and 1.9.0), or if the old setup used them in place.
@@ -47,15 +51,23 @@ If it asks for game files instead, choose the folder with your `exefs` and `romf
    copies them and builds the game code (about 6 minutes on a 12-thread CPU).
 3. From then on `WSword.exe` goes straight into the game.
 
-**WSword Configuration.exe** opens the configuration screen: Play, Settings, the game files (set up again, build the game code again, delete), and Quit.
+**WSword Configuration.exe** opens WSword's Glass Slate start screen:
+- a panel on the left: PLAY, Saves, Settings, Game files (set up again, build the game code again, delete, DLC, shaders) and Quit, with the game files' state and your GPU under them;
+- chips at the top right: the monitor's refresh rate, frame generation, the battery on a laptop;
+- a card at the lower right: when you last saved, Resume, and the **modes** - Battery (30 fps, AMD FSR 1), Performance (60), Turbo (120) and Unlocked (no limit). Video > Mode in Settings and in the game's Options has them too.
+
+**Settings** there are in the Glass Slate look: the pages down the left (Files, Video, Audio, Controls, Language, Saves), each option with its explanation on the right. **Files** has:
+- the game files and the game font;
+- **Look**: the start screen's background (a picture of your own, or the original) and WSword's icon (Sword, Slate, Midnight, Dawn, Ancient, Forest), on its window and in the taskbar;
+- **Lossless Scaling**: choose your own `Lossless.dll` for Lossless frame generation.
 
 Saves are in `save\` in the data folder: next to `WSword.exe`, or in its `v190` / `v182` folder when you came from 0.2.8. The log is `WSword.log` next to `WSword.exe`.
 
 ## In the game
 
 - **Settings** are in the game's own Options: pause menu > System > Options, or Options on the title screen.
-  - Video: frame rate (30, 60, 90, 120 or no limit, the game at the right speed), resolution and AMD FSR, VSync, draw distance, colour grading.
-  - AMD FSR 3 frame generation.
+  - Video: Mode, frame rate (30, 60, 90, 120 or no limit, the game at the right speed), resolution and AMD FSR, VSync, draw distance, colour grading.
+  - Frame generation: AMD FSR 3, or Lossless 2x / 3x / 4x (below).
   - Controls: keys, mouse, motion.
 - **F10** shows the performance overlay: FPS, then the full one.
 - **Esc** frees the mouse; a click takes it back.
@@ -74,13 +86,24 @@ Saves are in `save\` in the data folder: next to `WSword.exe`, or in its `v190` 
 
 Every key can be changed in Options. Any controller SDL knows works; one with a gyroscope also aims by motion.
 
+## Lossless frame generation
+
+Lossless Scaling's frame generation, with your own copy of its `Lossless.dll`. It isn't included with WSword: it's in Lossless Scaling's folder (Steam: Lossless Scaling > Manage > Browse local files).
+
+1. In **WSword Configuration**: Settings > Files > Lossless Scaling > **Choose Lossless.dll**. WSword checks it and keeps a copy in `lsfg\Lossless.dll`.
+2. Turn it on in Settings > Video > **Frame generation**, or in the game's Options > Video: **Lossless 2x**, **3x** or **4x** - one, two or three frames made between each two the game draws.
+3. The **frame rate** counts the frames on screen, as with FSR 3: at 120, 2x draws 60, 3x 40, 4x 30. Pick your monitor's refresh rate and the multiplier your PC keeps up with.
+
+- **Flow scale** (Settings > Video): the resolution motion is found at. Automatic follows Lossless Scaling's advice (100% at 1080p, 75% at 1440p, 50% at 4K). Lower is faster.
+- **Performance mode**: lighter passes, a little less exact.
+- The menus, the map and the title screen show the game's own frames (it draws at the full rate there).
+- On NVIDIA (GTX 16 / RTX 20 and newer), the frames are presented by a thread of their own, so the game goes on with its next frame meanwhile. On other GPUs they are presented from the game's own thread.
+- The frame generation code is lsfg-vk by PancakeTAS and contributors (GPL-3.0, `lsfg-vk-LICENSE.md` in the zip). WSword isn't made by or affiliated with Lossless Scaling's developers.
+
 ## What's different from 0.2.8-pc.x
 
 - **Much faster:** this is Savage Wind's engine.
-- **Gone:**
-  - the Glass Slate start screen and Settings;
-  - Video > Mode;
-  - frame generation with Lossless.dll. AMD FSR 3 frame generation is built in instead.
+- **Back from 0.2.8 (0.3.1-pc.1):** the Glass Slate start screen and Settings, Video > Mode, the background and icon choices, and frame generation with your own Lossless.dll. AMD FSR 3 frame generation is there too.
 - **Game versions:** 1.8.2 and 1.9.0. 1.0.0 and 1.6.0 aren't supported.
 - **New:**
   - Savage Wind's settings in the game's own Options;

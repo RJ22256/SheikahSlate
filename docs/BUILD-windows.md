@@ -10,8 +10,8 @@ from `pc/`.
 - `WSword.exe`, its import library `WSword.dll.a`, and `WSword Configuration.exe`;
 - the frozen game code generator (`swgen/`), and a slimmed zig for building the game code on the player's PC (`zig/`);
 - the headers that code is compiled against (`gamelib-src/`);
-- the fonts and the DLLs they load;
-- `LICENSE.txt` (Savage Wind's), `SavageWind-README.md` (the components' licenses) and `WSword-PC-guide.md` (this repository's `docs/PC.md`).
+- the fonts (Fira Sans, Inter, Noto Sans Thai), the start screen's art and icons, and the DLLs they load;
+- `LICENSE.txt` (Savage Wind's), `SavageWind-README.md` (the components' licenses), `lsfg-vk-LICENSE.md` / `lsfg-vk-README.md` (Lossless frame generation's backend, GPL-3.0) and `WSword-PC-guide.md` (this repository's `docs/PC.md`).
 
 **No game code and no game files.** The CI checks this.
 

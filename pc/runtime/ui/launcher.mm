@@ -33,6 +33,10 @@
 #include "osk.h"
 #include "saves_tab.h"
 #include "splash.h"
+#include "imageload.h"
+#include <errno.h>
+#include <float.h>
+#include <time.h>
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -72,7 +76,12 @@ bool vk_imgui_backend_init(void);
 void vk_imgui_backend_shutdown(void);
 uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
 void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
+void vk_imgui_texture_free(uint64_t tex);
 #endif
+#include "nvn/vulkan/lsfg.h"  // (WSword: lsfg_check_dll - Settings > Files > Lossless Scaling)
+const char *vk_lsfg_dll_path(void);  // (vulkan/device.c: lsfg/Lossless.dll next to WSword.exe, or in the data folder)
+const char *vk_gpu_name(void);       // (vulkan/device.c: the GPU and driver as they name themselves)
+const char *vk_driver_desc(void);
 }
 #ifdef __APPLE__
 #import <ImageIO/ImageIO.h>
@@ -100,7 +109,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
 // (WSword PC: its own version, and the Savage Wind Recomp release it is built on - SW_BASE_VERSION)
-#define SAVAGEWIND_VERSION "0.3.0-pc.1"
+#define SAVAGEWIND_VERSION "0.3.1-pc.1"
 #define SW_BASE_VERSION "0.4.1-alpha.4"
 #define SW_BASE_LINE " \xc2\xb7 Savage Wind Recomp " SW_BASE_VERSION  // (after the version, lower right)
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
@@ -706,6 +715,8 @@ static void remove_fonts() {
 
 // ------------------------------------------------------------------ screen
 static ImFont *g_font_title, *g_font_menu, *g_font_small;
+static ImFont *g_glass_bold, *g_glass_text;  // (WSword's Glass Slate start screen: Inter Bold / Medium, OFL - third_party/fonts/Inter)
+static ImFont *g_set_text, *g_set_big;       // (its Settings and game files pages: Inter at the menu fonts' letter height)
 enum Page { MAIN, SETTINGS, SETUP };  // SETTINGS: the in-game menu's tabs (runtime/ui/menu.mm)
 static int g_refocus = MAIN;  // back on the main page: select the item of the page we came from (controllers)
 
@@ -713,6 +724,7 @@ static int g_refocus = MAIN;  // back on the main page: select the item of the p
 static bool g_menu_small;  // sub pages: buttons in the small font
 void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float));  // menu.mm
 void menu_tabs_focus(bool first_tab);
+bool menu_settings_back_requested(void);  // menu.mm (the Glass Slate rail's BACK)
 extern int g_tab_request_ext;
 extern "C" void menu_apply_window_requests(void *sdl_window);
 static float g_menu_gap = 0.35f;  // space under each item, in line heights
@@ -727,7 +739,7 @@ static bool menu_tip(float s) {
     ImGui::SetNextWindowSize(ImVec2(fminf(ds.x * 0.8f, 760 * s), 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(36 * s, 28 * s));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 16 * s);
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.03f, 0.04f, 0.05f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.039f, 0.086f, 0.157f, 0.98f));
     bool open = ImGui::BeginPopupModal("##menutip", NULL, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PopStyleColor();
@@ -838,6 +850,433 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     return clicked;
 }
 
+// ------------------------------------------------------------------ (WSword) Settings > Files' pickers
+// Windows' own dialogs (SDL's), each result shown under its buttons: Lossless.dll (copied to lsfg\Lossless.dll next to
+// WSword.exe once lsfg_check_dll finds its frame generation shaders: the player picks the file, it isn't looked for) and
+// the start screen's background (copied to look\background.png beside it: splash.mm). SDL calls back on any thread.
+static std::string g_look_msg, g_lsfg_msg;  // (g_lock)
+static bool g_look_failed, g_look_busy, g_lsfg_failed, g_lsfg_busy;
+static std::atomic<bool> g_bg_reload{false};  // (the start screen loads the background again: splash_load)
+
+static bool copy_file(const std::string &src, const std::string &dst) {
+    FILE *in = fopen(src.c_str(), "rb");
+    if (!in) return false;
+    FILE *out = fopen(dst.c_str(), "wb");
+    bool ok = out != NULL;
+    char buf[65536];
+    size_t n;
+    while (ok && (n = fread(buf, 1, sizeof buf, in)) > 0) ok = fwrite(buf, 1, n, out) == n;
+    fclose(in);
+    if (out && fclose(out) != 0) ok = false;
+    if (!ok) remove(dst.c_str());
+    return ok;
+}
+
+static std::string lsfg_home() { return std::string(rt_exe_dir()) + "/lsfg/Lossless.dll"; }  // (where a pick goes)
+static void SDLCALL picked_lsfg(void *, const char *const *files, int) {
+    char msg[800] = "";
+    bool failed = false;
+    if (files && files[0]) {
+        std::string src = files[0], dst = lsfg_home(), part = dst + ".part";
+        mkdir((std::string(rt_exe_dir()) + "/lsfg").c_str(), 0755);
+        bool fp16 = false;
+        char err[400] = "";
+        if (!copy_file(src, part)) {
+            failed = true;
+            snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+        } else if (lsfg_check_dll(part.c_str(), &fp16, err, sizeof err) != 0) {
+            remove(part.c_str());
+            failed = true;
+            snprintf(msg, sizeof msg, tr("That isn't a Lossless.dll WSword can use: %s"), err);
+        } else {
+            remove(dst.c_str());  // (Windows' rename doesn't replace)
+            if (rename(part.c_str(), dst.c_str()) != 0) {
+                failed = true;
+                snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+                remove(part.c_str());
+            } else {
+                fprintf(stderr, "[lossless] Lossless.dll added from %s (FP16 shaders %s)\n", src.c_str(), fp16 ? "there too" : "not there");
+                snprintf(msg, sizeof msg, "%s", tr("Lossless.dll added: its frame generation shaders are there. Turn it on in "
+                                                   "Settings > Video > Frame generation, or in the game's Options > Video."));
+            }
+        }
+    }
+    pthread_mutex_lock(&g_lock);
+    g_lsfg_msg = msg, g_lsfg_failed = failed, g_lsfg_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+static void pick_lsfg(SDL_Window *win) {
+    pthread_mutex_lock(&g_lock);
+    g_lsfg_busy = true, g_lsfg_msg.clear();
+    pthread_mutex_unlock(&g_lock);
+    static const SDL_DialogFileFilter f[] = {{"Lossless.dll", "dll"}};
+    SDL_ShowOpenFileDialog(picked_lsfg, NULL, win, f, 1, NULL, false);
+}
+
+static void SDLCALL picked_background(void *, const char *const *files, int) {
+    char msg[600] = "";
+    bool failed = false;
+    if (files && files[0]) {
+        int w = 0, h = 0;  // (checked before it replaces the one in use)
+        if (!rt_image_info(files[0], &w, &h) || w <= 0 || h <= 0 || w > 8192 || h > 8192) {
+            failed = true;
+            snprintf(msg, sizeof msg, tr("That didn't work: %s"), tr("WSword reads PNG and JPEG pictures up to 8192 x 8192."));
+        } else {
+            std::string dst = splash_custom_path();
+            mkdir((std::string(rt_exe_dir()) + "/look").c_str(), 0755);
+            if (copy_file(files[0], dst)) {
+                snprintf(msg, sizeof msg, "%s", tr("Background changed."));
+                g_bg_reload = true;
+            } else {
+                failed = true;
+                snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+            }
+        }
+    }
+    pthread_mutex_lock(&g_lock);
+    g_look_msg = msg, g_look_failed = failed, g_look_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+static void pick_background(SDL_Window *win) {
+    pthread_mutex_lock(&g_lock);
+    g_look_busy = true, g_look_msg.clear();
+    pthread_mutex_unlock(&g_lock);
+    static const SDL_DialogFileFilter f[] = {{"Pictures", "png;jpg;jpeg"}};
+    SDL_ShowOpenFileDialog(picked_background, NULL, win, f, 1, NULL, false);
+}
+
+// Settings > Files > Look's app icons (paths.c rt_window_icons, in its order) and their pictures (freed before the
+// start screen's ImGui backend goes, when a game starts)
+static const char *const k_icon_names[RT_WINDOW_ICONS] = {"Sword", "Slate", "Midnight", "Dawn", "Ancient", "Forest"};
+static uint64_t g_icon_tex[RT_WINDOW_ICONS];
+static bool g_icon_tex_loaded;
+static uint64_t load_png_texture(const char *name) {  // (a shipped picture as an ImGui texture, 0 if missing)
+#ifdef __APPLE__
+    (void)name;
+    return 0;
+#else
+    char path[1100];
+    if (!rt_resource(name, NULL, path, sizeof path)) return 0;
+    int w, h;
+    unsigned char *px = rt_image_rgba(path, &w, &h);
+    if (!px) return 0;
+    uint64_t t = vk_imgui_texture_rgba(px, w, h);
+    rt_image_free(px);
+    return t;
+#endif
+}
+static void icon_textures(void) {
+    if (g_icon_tex_loaded) return;
+    g_icon_tex_loaded = true;
+    for (int k = 0; k < RT_WINDOW_ICONS; k++) g_icon_tex[k] = load_png_texture(rt_window_icons[k]);
+}
+static void icon_textures_free(void) {
+#ifndef __APPLE__
+    for (int k = 0; k < RT_WINDOW_ICONS; k++)
+        if (g_icon_tex[k]) vk_imgui_texture_free(g_icon_tex[k]), g_icon_tex[k] = 0;
+#endif
+    g_icon_tex_loaded = false;
+}
+
+// ------------------------------------------------------------------ (WSword) the Glass Slate start screen
+// WSword's start screen (0.2.8's, concept A of its UI concepts) over Savage Wind's pages: a glass panel down the left
+// over the background - the icon in use and the app's name, the game's and the app's version, PLAY, Saves (Settings >
+// Saves), Settings, Game files (the game files page: set up, again, delete, DLC, shaders), Quit, and under them the game
+// files' state, the GPU with its driver, where the settings are in game. At the top right chips: the display's refresh
+// rate, frame generation, the battery on a laptop. At the lower right a card: the last save's time, Resume, and the
+// modes a click away (settings.c settings_apply_mode). Units of an 800-line window (u); every item reachable with a
+// controller (ImGui's navigation), PLAY focused first.
+enum GlassAction { GA_NONE, GA_PLAY, GA_SAVES, GA_SETTINGS, GA_SETUP, GA_QUIT };
+
+static std::string save_dir() { return saves_tab_dir(); }  // (ui/saves_tab.mm: the saves' folder)
+// The newest game_data.sav of the saves (save/save_0/<slot>/), as "2026-11-01 03:12"; "" without one. Every 2 s.
+static std::string glass_last_saved() {
+    static double at = -10;
+    static std::string text;
+    double now = ImGui::GetTime();
+    if (now - at < 2) return text;
+    at = now;
+    time_t newest = 0;
+    if (DIR *d = opendir((save_dir() + "/save_0").c_str())) {
+        while (struct dirent *e = readdir(d)) {
+            if (e->d_name[0] == '.') continue;
+            struct stat st;
+            std::string f = save_dir() + "/save_0/" + e->d_name + "/game_data.sav";
+            if (stat(f.c_str(), &st) == 0 && st.st_mtime > newest) newest = st.st_mtime;
+        }
+        closedir(d);
+    }
+    text.clear();
+    if (newest) {
+        char buf[64];
+        struct tm *tmv = localtime(&newest);
+        if (tmv && strftime(buf, sizeof buf, "%Y-%m-%d %H:%M", tmv)) text = buf;
+    }
+    return text;
+}
+
+// The game files' version ("1.9.0"), from their main module; "" when they aren't set up
+static std::string glass_game_version(bool ready) {
+    static std::string v;
+    static bool was_ready;
+    if (ready != was_ready || (ready && v.empty())) {
+        was_ready = ready;
+        v.clear();
+        std::string id;
+        if (ready && nso_build_id(g_root + "/exefs/main", &id))
+            if (const GameVersion *gv = main_version(id)) v = gv->name;
+    }
+    return v;
+}
+
+static void glass_icon(ImDrawList *dl, int kind, ImVec2 c, float r, ImU32 col, float w) {
+    switch (kind) {
+    case GA_PLAY:
+        dl->AddTriangleFilled(ImVec2(c.x - r * 0.55f, c.y - r * 0.8f), ImVec2(c.x + r * 0.85f, c.y),
+                              ImVec2(c.x - r * 0.55f, c.y + r * 0.8f), col);
+        break;
+    case GA_SAVES:  // a disk: its body, the label, the shutter
+        dl->AddRect(ImVec2(c.x - r * 0.8f, c.y - r * 0.8f), ImVec2(c.x + r * 0.8f, c.y + r * 0.8f), col, r * 0.15f, 0, w);
+        dl->AddRect(ImVec2(c.x - r * 0.45f, c.y - r * 0.8f), ImVec2(c.x + r * 0.35f, c.y - r * 0.2f), col, 0, 0, w);
+        dl->AddRect(ImVec2(c.x - r * 0.45f, c.y + r * 0.15f), ImVec2(c.x + r * 0.45f, c.y + r * 0.8f), col, 0, 0, w);
+        break;
+    case GA_SETTINGS:  // a gear: a hub, a ring, eight teeth
+        dl->AddCircle(c, r * 0.3f, col, 0, w);
+        dl->AddCircle(c, r * 0.66f, col, 0, w);
+        for (int i = 0; i < 8; i++) {
+            float a = i * IM_PI / 4;
+            dl->AddLine(ImVec2(c.x + cosf(a) * r * 0.66f, c.y + sinf(a) * r * 0.66f),
+                        ImVec2(c.x + cosf(a) * r * 0.98f, c.y + sinf(a) * r * 0.98f), col, w * 1.4f);
+        }
+        break;
+    case GA_SETUP: {  // a folder
+        ImVec2 f[6] = {ImVec2(c.x - r * 0.9f, c.y - r * 0.6f), ImVec2(c.x - r * 0.25f, c.y - r * 0.6f),
+                       ImVec2(c.x - r * 0.05f, c.y - r * 0.35f), ImVec2(c.x + r * 0.9f, c.y - r * 0.35f),
+                       ImVec2(c.x + r * 0.9f, c.y + r * 0.7f), ImVec2(c.x - r * 0.9f, c.y + r * 0.7f)};
+        dl->AddPolyline(f, 6, col, ImDrawFlags_Closed, w);
+        break;
+    }
+    case GA_QUIT:  // a door, and an arrow out of it
+        dl->AddLine(ImVec2(c.x - r * 0.1f, c.y - r * 0.85f), ImVec2(c.x - r * 0.85f, c.y - r * 0.85f), col, w);
+        dl->AddLine(ImVec2(c.x - r * 0.85f, c.y - r * 0.85f), ImVec2(c.x - r * 0.85f, c.y + r * 0.85f), col, w);
+        dl->AddLine(ImVec2(c.x - r * 0.85f, c.y + r * 0.85f), ImVec2(c.x - r * 0.1f, c.y + r * 0.85f), col, w);
+        dl->AddLine(ImVec2(c.x - r * 0.35f, c.y), ImVec2(c.x + r * 0.9f, c.y), col, w);
+        dl->AddLine(ImVec2(c.x + r * 0.45f, c.y - r * 0.45f), ImVec2(c.x + r * 0.9f, c.y), col, w);
+        dl->AddLine(ImVec2(c.x + r * 0.45f, c.y + r * 0.45f), ImVec2(c.x + r * 0.9f, c.y), col, w);
+        break;
+    }
+}
+
+static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, bool busy) {
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetWindowPos();
+    float u = ds.y / 800.0f;
+    ImFont *fb = g_glass_bold ? g_glass_bold : g_font_title, *ft = g_glass_text ? g_glass_text : g_font_menu;
+    auto P = [&](float x, float y) { return ImVec2(o.x + x, o.y + y); };
+    auto text = [&](ImFont *f, float size, float x, float y, ImU32 col, const char *t, float wrap = 0) {
+        dl->AddText(f, size, P(x, y), col, t, NULL, wrap);
+    };
+    auto tw = [&](ImFont *f, float size, const char *t) { return f->CalcTextSizeA(size, FLT_MAX, 0, t).x; };
+    const ImU32 ink = IM_COL32(234, 242, 250, 255), muted = IM_COL32(159, 179, 200, 255), cyan = IM_COL32(94, 230, 245, 255),
+                line = IM_COL32(46, 110, 134, 255), field = IM_COL32(15, 30, 51, 255), edge = IM_COL32(35, 65, 95, 255),
+                label = IM_COL32(143, 217, 230, 255);
+    int action = GA_NONE;
+    bool ready = status.empty();
+    // a button: an invisible ImGui button (mouse, keyboard, controller) drawn as the design's - 0 the cyan PLAY, 1 a
+    // glass one, 2 the card's amber; framed while focused or hovered
+    auto button = [&](const char *id, int kind, const char *lbl, float bx, float by, float bwid, float bh, int style,
+                      bool enabled, bool focus) {
+        ImGui::SetCursorScreenPos(P(bx, by));
+        if (focus) ImGui::SetKeyboardFocusHere();
+        ImGui::BeginDisabled(!enabled);
+        ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+        bool clicked = ImGui::InvisibleButton(id, ImVec2(bwid, bh), ImGuiButtonFlags_EnableNav);
+        ImGui::PopStyleColor();
+        bool hot = enabled && (ImGui::IsItemFocused() || ImGui::IsItemHovered());
+        bool down = enabled && ImGui::IsItemActive();
+        ImGui::EndDisabled();
+        ImU32 fill, fg, bord = 0;
+        if (style == 0) {
+            fill = !enabled ? IM_COL32(52, 70, 88, 255) : down ? IM_COL32(70, 205, 222, 255) : cyan;
+            fg = enabled ? IM_COL32(4, 33, 43, 255) : IM_COL32(150, 165, 180, 255);
+        } else if (style == 2) {
+            fill = !enabled ? IM_COL32(80, 70, 52, 255) : down ? IM_COL32(222, 165, 75, 255) : IM_COL32(242, 184, 91, 255);
+            fg = enabled ? IM_COL32(43, 26, 2, 255) : IM_COL32(170, 160, 140, 255);
+        } else {
+            fill = down ? IM_COL32(26, 52, 82, 255) : hot ? IM_COL32(20, 40, 66, 255) : field;
+            fg = enabled ? ink : IM_COL32(120, 135, 150, 255);
+            bord = edge;
+        }
+        float rr = (style == 0 ? 14 : 12) * u;
+        dl->AddRectFilled(P(bx, by), P(bx + bwid, by + bh), fill, rr);
+        if (hot)
+            dl->AddRect(P(bx - 3 * u, by - 3 * u), P(bx + bwid + 3 * u, by + bh + 3 * u), style == 1 ? cyan : ink, rr + 3 * u, 0,
+                        2.5f * u);
+        else if (bord)
+            dl->AddRect(P(bx, by), P(bx + bwid, by + bh), bord, rr, 0, 1.2f * u);
+        ImFont *f = style == 0 ? fb : ft;
+        float fs = style == 0 ? 24 * u : 18 * u, lx = bx + (kind >= 0 ? 58 * u : 0);
+        if (kind >= 0) glass_icon(dl, kind, P(bx + 32 * u, by + bh * 0.5f), (style == 0 ? 11 : 10) * u, fg, 2 * u);
+        if (kind < 0) lx = bx + (bwid - tw(f, fs, lbl)) * 0.5f;
+        text(f, fs, lx, by + (bh - fs * 1.21f) * 0.5f, fg, lbl);
+        return clicked && enabled;
+    };
+
+    // ---- the panel
+    float pw = 392 * u, pad = 40 * u, bw = pw - pad - 40 * u;
+    dl->AddRectFilled(P(0, 0), P(pw, ds.y), IM_COL32(9, 19, 34, 228));
+    dl->AddLine(P(pw, 0), P(pw, ds.y), line, 1.5f * u);
+    float y = 52 * u, logo = 46 * u;
+    icon_textures();
+    int ci = g_settings.app_icon >= 0 && g_settings.app_icon < RT_WINDOW_ICONS ? g_settings.app_icon : 0;
+    float tx = pad;
+    if (g_icon_tex[ci]) {
+        dl->AddImageRounded((ImTextureID)g_icon_tex[ci], P(pad, y), P(pad + logo, y + logo), ImVec2(0, 0), ImVec2(1, 1),
+                            IM_COL32_WHITE, logo * 0.22f);
+        tx = pad + logo + 14 * u;
+    }
+    {
+        const char *name = "WSword";
+        float tsz = 36 * u, avail = pw - 20 * u - tx, w0 = tw(fb, tsz, name);
+        if (w0 > avail) tsz *= avail / w0;
+        text(fb, tsz, tx, y + (logo - tsz * 1.21f) * 0.5f, ink, name);
+    }
+    y += logo + 14 * u;
+    {
+        std::string gv = glass_game_version(ready);
+        char sub[256];
+        snprintf(sub, sizeof sub, "%s %s  \xc2\xb7  %s %s", tr("Game"), gv.empty() ? "-" : gv.c_str(), tr("App"),
+                 SAVAGEWIND_VERSION);
+        text(ft, 15 * u, pad, y, muted, sub);
+        char base[128];  // (and the Savage Wind Recomp release it's built on)
+        snprintf(base, sizeof base, tr("Built on %s"), "Savage Wind Recomp " SW_BASE_VERSION);
+        text(ft, 12.5f * u, pad, y + 21 * u, IM_COL32(120, 140, 160, 255), base);
+    }
+    y += 52 * u;
+    static bool focused_once;
+    bool first = !focused_once;
+    focused_once = true;
+    if (button("##play", GA_PLAY, tr("PLAY"), pad, y, bw, 64 * u, 0, ready, first)) action = GA_PLAY;
+    y += 64 * u + 12 * u;
+    struct Item { const char *id; int kind; const char *lbl; bool enabled; int refocus; };
+    const Item items[] = {{"##saves", GA_SAVES, "Saves", true, -1},
+                          {"##settings", GA_SETTINGS, "Settings", true, SETTINGS},
+                          {"##setup", GA_SETUP, ready ? "Game files" : "Set up game files", !busy, SETUP},
+                          {"##quit", GA_QUIT, "Quit", true, -1}};
+    for (const Item &it : items) {
+        bool foc = g_refocus == it.refocus;
+        if (foc) g_refocus = MAIN;
+        if (button(it.id, it.kind, tr(it.lbl), pad, y, bw, 52 * u, 1, it.enabled, foc)) action = it.kind;
+        y += 52 * u + 10 * u;
+    }
+    {   // under them: the game files, the GPU and its driver, where the settings are in game
+        float ly = ds.y - 40 * u - 3 * 24 * u;
+        if (ready) {
+            float cu = 15 * u;  // (a drawn check mark: the font may have no ✓)
+            ImU32 g = IM_COL32(120, 226, 140, 255);
+            dl->AddLine(P(pad + cu * 0.1f, ly + cu * 0.62f), P(pad + cu * 0.38f, ly + cu * 0.9f), g, cu * 0.14f);
+            dl->AddLine(P(pad + cu * 0.38f, ly + cu * 0.9f), P(pad + cu * 0.9f, ly + cu * 0.3f), g, cu * 0.14f);
+            text(ft, 15 * u, pad + cu * 1.3f, ly, g, tr("Game files ready."));
+        } else {
+            std::string msg = std::string("!  ") + trv(busy ? "Setting up the game files..." : status);
+            text(ft, 15 * u, pad, ly, IM_COL32(255, 184, 102, 255), msg.c_str(), bw + 40 * u);
+        }
+        std::string driver = vk_driver_desc();
+        if (driver.size() > 48) driver.resize(48);
+        std::string gpu = std::string(vk_gpu_name()) + (driver.empty() ? "" : "  \xc2\xb7  " + driver);
+        text(ft, 14 * u, pad, ly + 24 * u, muted, gpu.c_str(), bw + 40 * u);
+        text(ft, 14 * u, pad, ly + 48 * u, muted, tr("In game: pause > System > Options. F10: the FPS."), bw + 40 * u);
+    }
+
+    // ---- the chips at the top right: the refresh rate, frame generation, the battery
+    {
+        std::vector<std::string> chips;
+        const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
+        char b[96];
+        if (dm && dm->refresh_rate > 1) snprintf(b, sizeof b, "%d Hz", (int)lroundf(dm->refresh_rate)), chips.push_back(b);
+        if (g_settings.lsfg > 0) {
+            struct stat st;
+            bool dll = stat(vk_lsfg_dll_path(), &st) == 0;
+            snprintf(b, sizeof b, tr(dll ? "Lossless %dx" : "Lossless %dx: no Lossless.dll"), g_settings.lsfg + 1);
+            chips.push_back(b);
+        } else if (g_settings.frame_gen) {
+            chips.push_back(tr("AMD FSR 3 frame generation"));
+        }
+        int secs = -1, pct = -1;
+        SDL_PowerState ps = SDL_GetPowerInfo(&secs, &pct);
+        if ((ps == SDL_POWERSTATE_ON_BATTERY || ps == SDL_POWERSTATE_CHARGING) && pct >= 0) {
+            snprintf(b, sizeof b, ps == SDL_POWERSTATE_CHARGING ? tr("%d%%  \xc2\xb7  charging") : "%d%%", pct);
+            chips.push_back(b);
+        }
+        float x = ds.x - 28 * u, cy = 28 * u, h = 36 * u, fs = 14 * u;
+        for (int i = (int)chips.size() - 1; i >= 0; i--) {
+            float w = tw(ft, fs, chips[i].c_str()) + 28 * u;
+            x -= w;
+            dl->AddRectFilled(P(x, cy), P(x + w, cy + h), IM_COL32(10, 22, 40, 225), h * 0.5f);
+            dl->AddRect(P(x, cy), P(x + w, cy + h), IM_COL32(42, 74, 110, 255), h * 0.5f, 0, 1.2f * u);
+            text(ft, fs, x + 14 * u, cy + (h - fs * 1.21f) * 0.5f, IM_COL32(207, 227, 241, 255), chips[i].c_str());
+            x -= 10 * u;
+        }
+    }
+
+    // ---- the card: the last save, Resume, the modes
+    {
+        float cw = fminf(760 * u, ds.x - pw - 80 * u), ch = 300 * u;
+        float cx = ds.x - 40 * u - cw, cy = ds.y - 76 * u - ch;
+        dl->AddRectFilled(P(cx, cy), P(cx + cw, cy + ch), IM_COL32(10, 22, 40, 238), 22 * u);
+        dl->AddRect(P(cx, cy), P(cx + cw, cy + ch), line, 22 * u, 0, 1.5f * u);
+        float x = cx + 28 * u, yy = cy + 28 * u, inner = cw - 56 * u;
+        std::string last = glass_last_saved();
+        text(ft, 13 * u, x, yy, label, tr("CONTINUE"));
+        text(fb, 28 * u, x, yy + 20 * u, ink, tr(last.empty() ? "A new journey" : "Your journey"));
+        char sub[160];
+        if (last.empty()) snprintf(sub, sizeof sub, "%s", tr("No save yet: PLAY starts a new game."));
+        else snprintf(sub, sizeof sub, tr("Last saved %s"), last.c_str());
+        text(ft, 15 * u, x, yy + 58 * u, muted, sub, inner - 190 * u);
+        if (button("##resume", -1, tr(last.empty() ? "Start" : "Resume"), cx + cw - 28 * u - 170 * u, yy + 14 * u, 170 * u,
+                   52 * u, 2, ready, false))
+            action = GA_PLAY;
+        yy += 104 * u;
+        text(ft, 13 * u, x, yy, label, tr("MODE"));
+        yy += 22 * u;
+        // (settings.c mode_into)
+        static const char *const names[MODE_COUNT] = {"Battery", "Performance", "Turbo", "Unlocked"};
+        static const char *const subs[MODE_COUNT] = {"30 fps  \xc2\xb7  light", "60 fps", "120 fps", "No limit"};
+        static const char *const blurbs[MODE_COUNT] = {
+            "For a laptop on its battery: 30 fps, the game drawn smaller and AMD FSR 1 onto the window.",
+            "60 fps at your window's full resolution: as the game was made to run.",
+            "120 fps at full resolution, for a 120 Hz monitor (or 60 with Lossless 2x on).",
+            "As fast as your PC goes, at full resolution: VSync still caps it at the monitor's rate."};
+        int cur = settings_current_mode();
+        float gap = 10 * u, mw = (inner - (MODE_COUNT - 1) * gap) / MODE_COUNT, mh = 64 * u;
+        for (int i = 0; i < MODE_COUNT; i++) {
+            float mx = x + i * (mw + gap);
+            ImGui::SetCursorScreenPos(P(mx, yy));
+            ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+            ImGui::PushID(i);
+            bool clicked = ImGui::InvisibleButton("##mode", ImVec2(mw, mh), ImGuiButtonFlags_EnableNav);
+            ImGui::PopID();
+            ImGui::PopStyleColor();
+            bool hot = ImGui::IsItemFocused() || ImGui::IsItemHovered();
+            bool sel = cur == i;
+            dl->AddRectFilled(P(mx, yy), P(mx + mw, yy + mh), sel ? IM_COL32(18, 51, 73, 255) : field, 12 * u);
+            dl->AddRect(P(mx, yy), P(mx + mw, yy + mh), sel ? cyan : edge, 12 * u, 0, (sel ? 2.2f : 1.2f) * u);
+            if (hot) dl->AddRect(P(mx - 3 * u, yy - 3 * u), P(mx + mw + 3 * u, yy + mh + 3 * u), ink, 15 * u, 0, 2 * u);
+            text(ft, 16 * u, mx + 14 * u, yy + 12 * u, ink, tr(names[i]), mw - 20 * u);
+            text(ft, 13 * u, mx + 14 * u, yy + 36 * u, muted, tr(subs[i]), mw - 20 * u);
+            if (clicked && !sel) {
+                settings_apply_mode(i);
+                settings_save();
+                cur = i;
+            }
+        }
+        yy += mh + 12 * u;
+        text(ft, 14 * u, x, yy, muted,
+             tr(cur >= 0 && cur < MODE_COUNT ? blurbs[cur] : "Custom: your own settings (Settings \xe2\x80\xba Video)."), inner);
+    }
+    return action;
+}
+
 // Controllers, as in the in-game menu (runtime/ui/menu.mm): read straight from SDL, Nintendo layout - the right face
 // button (A) confirms, the bottom one (B) goes back; d-pad / left stick move. (ImGui's own SDL gamepad handling is
 // switched off: it used the Xbox layout and, per the user, didn't work on the start screen.)
@@ -930,14 +1369,7 @@ void reveal_folder(const std::string &dir) {
 static SDL_Window *g_launcher_win;
 static bool g_files_deleted;  // set here: the start screen goes back to setting the game files up
 static void prelaunch_tab(float sc) {
-    const ImVec4 gold(0.93f, 0.76f, 0.33f, 1);
-    auto heading = [&](const char *t) {
-        ImGui::PushFont(g_font_menu);
-        ImGui::TextColored(gold, "%s", tr(t));
-        ImGui::PopFont();
-        ImGui::Separator();
-        ImGui::Spacing();
-    };
+    auto heading = [&](const char *t) { ui_glass_heading(t, sc); };  // (WSword's Glass Slate look)
     heading("Game files");
     FileSizeCache::Value size = g_file_size.get();
 #ifdef _WIN32
@@ -985,6 +1417,106 @@ static void prelaunch_tab(float sc) {
         ImGui::Spacing();
         ImGui::TextDisabled("%s", tr("Game code: compatible mode (this CPU has no AVX2 / FMA), slower"));
     }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("Look");  // (WSword: the start screen's background from the player's picture, and the app's icon)
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_look_msg;
+        bool failed = g_look_failed, lbusy = g_look_busy;
+        pthread_mutex_unlock(&g_lock);
+        struct stat st;
+        std::string own = splash_custom_path(), own2 = std::string(rt_data_root()) + "/look/background.png";
+        char user[1100];
+        bool custom = stat(own.c_str(), &st) == 0 || stat(own2.c_str(), &st) == 0, splash = rt_user_splash(user, sizeof user);
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("The start screen's background: a picture of your own (PNG or JPEG) - it fills the "
+                                     "window, cut to its shape - or the original."));
+        if (splash) ImGui::TextDisabled(tr("In use: %s (remove it to use the one chosen here)."), user);
+        if (lbusy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr("Choose background"))) pick_background(g_launcher_win);
+        if (custom) {
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Original background"))) {
+                unlink(own.c_str());
+                unlink(own2.c_str());
+                g_bg_reload = true;
+                pthread_mutex_lock(&g_lock);
+                g_look_msg = tr("The original background is back."), g_look_failed = false;
+                pthread_mutex_unlock(&g_lock);
+            }
+        }
+        if (lbusy) ImGui::EndDisabled();
+        ImGui::Spacing();
+        // the app's icon: a picture each, the one in use framed in cyan - the window's and the taskbar's at once
+        icon_textures();
+        int current = g_settings.app_icon >= 0 && g_settings.app_icon < RT_WINDOW_ICONS ? g_settings.app_icon : 0;
+        ImGui::TextDisabled("%s", tr("WSword's icon, on its window and in the taskbar (the file's own icon stays the Sword)."));
+        ImGui::Text(tr("App icon: %s"), tr(k_icon_names[current]));
+        float side = 92 * sc;
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        for (int k = 0; k < RT_WINDOW_ICONS; k++) {
+            if (k) ImGui::SameLine(0, 18 * sc);
+            ImGui::PushID(k);
+            bool chosen = g_icon_tex[k] ? ImGui::ImageButton("##icon", (ImTextureID)g_icon_tex[k], ImVec2(side, side))
+                                        : ImGui::Button(tr(k_icon_names[k]), ImVec2(side, side));
+            ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+            if (k == current)
+                dl->AddRect(ImVec2(a.x - 3 * sc, a.y - 3 * sc), ImVec2(b.x + 3 * sc, b.y + 3 * sc), IM_COL32(94, 230, 245, 255),
+                            12 * sc, 0, 4 * sc);
+            if (chosen && k != current) {
+                g_settings.app_icon = k;
+                settings_save();
+                rt_window_icon(g_launcher_win);
+            }
+            ImGui::PopID();
+        }
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::PopTextWrapPos();
+    }
+#ifndef __APPLE__
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("Lossless Scaling");  // (WSword: frame generation from the player's own Lossless.dll - vulkan/device.c)
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_lsfg_msg;
+        bool failed = g_lsfg_failed, lbusy = g_lsfg_busy;
+        pthread_mutex_unlock(&g_lock);
+        struct stat st;
+        bool have = stat(vk_lsfg_dll_path(), &st) == 0;
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("Frame generation from Lossless Scaling, with your own copy of its Lossless.dll - on "
+                                     "your PC, in Lossless Scaling's folder (Steam: Lossless Scaling > Manage > Browse local "
+                                     "files). It isn't included with WSword. WSword keeps a copy of it; then turn it on in "
+                                     "Settings > Video > Frame generation (Lossless 2x, 3x or 4x), or in the game's Options."));
+        if (have) ImGui::Text(tr("Lossless.dll: added (%.1f MB)"), st.st_size / 1048576.0);
+        else ImGui::Text("%s", tr("Lossless.dll: not added"));
+        if (lbusy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr(have ? "Choose another Lossless.dll" : "Choose Lossless.dll"))) pick_lsfg(g_launcher_win);
+        if (have) {
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Remove Lossless.dll"))) {
+                unlink(lsfg_home().c_str());
+                unlink((std::string(rt_data_root()) + "/lsfg/Lossless.dll").c_str());
+                pthread_mutex_lock(&g_lock);
+                g_lsfg_msg = tr("Lossless.dll removed: Lossless frame generation is off until you add it again."), g_lsfg_failed = false;
+                pthread_mutex_unlock(&g_lock);
+            }
+        }
+        if (lbusy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::TextDisabled("%s", tr("Frame generation code: lsfg-vk by PancakeTAS and contributors (GPL-3.0). WSword isn't "
+                                     "made by or affiliated with Lossless Scaling's developers."));
+        ImGui::PopTextWrapPos();
+    }
+#endif
     ImGui::Spacing();
     ImGui::Spacing();
     heading("Game font");
@@ -1043,6 +1575,18 @@ static void launcher_fonts(void) {
         g_font_title = add(p, 92 * (fira ? 1.6f : 1), latin);
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
+    g_glass_bold = g_glass_text = g_set_text = g_set_big = NULL;
+    {   // (WSword) the Glass Slate look's: the start screen's, drawn at their sizes (a little under these); and Settings' -
+        // the menu's letter height (Inter's letters are a little larger than Fira's at one size)
+        char ib[1024], im[1024];
+        if (!test && rt_resource("Inter-Bold.otf", "third_party/fonts/Inter/Inter-Bold.otf", ib, sizeof ib) &&
+            rt_resource("Inter-Medium.otf", "third_party/fonts/Inter/Inter-Medium.otf", im, sizeof im)) {
+            g_glass_bold = add(ib, 96, ranges);
+            g_glass_text = add(im, 48, ranges);
+            g_set_text = add(im, 30 * 1.3f * 0.96f, ranges);
+            g_set_big = add(ib, 52 * 1.3f * 0.96f, ranges);
+        }
+    }
 }
 
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
@@ -1133,6 +1677,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         const char *pg = strchr(getenv("SAVAGEWIND_LAUNCHER_SHOT"), ':');
         if (pg && (!strncmp(pg + 1, "settings", 8) || !strcmp(pg + 1, "askdelete"))) page = SETTINGS, menu_tabs_focus(true);
         if (pg && !strcmp(pg + 1, "setup")) page = SETUP;
+        if (pg && !strcmp(pg + 1, "main")) page = MAIN;  // (the start screen even without game files)
         if (pg && !strncmp(pg + 1, "fail", 4)) {  // (the failure messages; FAIL_NOT_YET: a version not supported yet)
             for (const GameVersion &v : VERSIONS)
                 if (!v.supported && g_files_version.empty()) g_files_version = v.name;
@@ -1241,8 +1786,10 @@ extern "C" void launcher_run(const char *root, int mode) {
             float s = ds.y / 720.0f;  // layout scale (fonts are built for ~2x)
             ImGui::GetIO().FontGlobalScale = s * 0.5f;
             ImDrawList *bg = ImGui::GetBackgroundDrawList();
+            if (g_bg_reload.exchange(false)) splash_load();  // (Settings > Files > Look: a picture chosen, or the original back)
             splash_draw(bg, ds, (float)ImGui::GetTime());  // (the player's picture, or WSword's own art)
-            {  // a shadow banner fading in from the left behind the menu, and one from the right behind the version
+            bool glass = page == MAIN;  // (WSword: the Glass Slate start screen, glass_main - its own panel and card)
+            if (!glass) {  // a shadow banner fading in from the left behind the menu, and one from the right behind the version
                 const float stops[][2] = {{0.0f, 225}, {0.3f, 215}, {0.44f, 165}, {0.55f, 95}, {0.64f, 35}, {0.74f, 0}};
                 for (int i = 0; i + 1 < (int)(sizeof stops / sizeof stops[0]); i++) {
                     ImU32 a = IM_COL32(6, 10, 34, (int)stops[i][1]), b = IM_COL32(6, 10, 34, (int)stops[i + 1][1]);
@@ -1265,7 +1812,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             float x0 = 90 * s;
             ImGui::SetCursorPos(ImVec2(x0, 120 * s));
             ImGui::PushFont(g_font_title);
-            if (page == MAIN) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
+            if (page == MAIN && !glass) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
                 const char *t = "WSword";
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 232, 120, 255),
@@ -1288,85 +1835,42 @@ extern "C" void launcher_run(const char *root, int mode) {
             bool typing = typed_before || ui_text_busy();
 
             if (page == MAIN) {
-                {  // the four items close together, the block anchored where QUIT always was (the gap to the status
-                   // line stays)
-                    ImGui::PushFont(g_font_menu);
-                    float h = ImGui::CalcTextSize("A").y, sp = ImGui::GetStyle().ItemSpacing.y;
-                    ImGui::PopFont();
-                    auto pitch = [&](float gap) { return h + 6 + gap * h + (gap >= 0 ? 2 : 1) * sp; };
-                    g_menu_gap = -0.18f;
-                    ImGui::SetCursorPosY(285 * s + 3 * pitch(0.35f) - 3 * pitch(g_menu_gap));
-                }
-                ImGui::SetCursorPosX(x0);
-                static bool focused_once;
-                if (!focused_once) { ImGui::SetKeyboardFocusHere(); focused_once = true; }
-                ImVec2 play_at = ImGui::GetCursorScreenPos();
-                bool pressed = menu_item("PLAY", status.empty());
-                if (status.empty()) {  // PLAY twinkles now and then while the game is ready
-                    ImGui::PushFont(g_font_menu);
-                    float w = ImGui::CalcTextSize(tr("PLAY")).x, h = ImGui::CalcTextSize(tr("PLAY")).y;
-                    ImGui::PopFont();
-                    float t = (float)ImGui::GetTime(), ph = fmodf(t, 3.6f), ph2 = fmodf(t + 0.45f, 3.6f);
-                    float k1 = ph < 0.9f ? sinf(ph / 0.9f * 3.14159265f) : 0, k2 = ph2 < 0.7f ? sinf(ph2 / 0.7f * 3.14159265f) : 0;
-                    ImDrawList *dl = ImGui::GetWindowDrawList();
-                    sparkle(dl, ImVec2(play_at.x + w + h * 0.05f, play_at.y + h * 0.22f), h * 0.2f, k1, t * 0.6f);
-                    sparkle(dl, ImVec2(play_at.x + w - h * 0.32f, play_at.y + h * 0.08f), h * 0.11f, k2 * 0.8f, -t * 0.8f);
-                }
-                // first PLAY ever: how to reach our menu, then the game
-                if (pressed) {
+                int a = glass_main(ds, win, status, busy);
+                if (a == GA_PLAY) {  // first PLAY ever: how to reach the settings in game, then the game
                     if (!g_settings.menu_tip_seen) ImGui::OpenPopup("##menutip");
                     else play = true;
-                }
-                ImGui::SetCursorPosX(x0);
-                if (g_refocus == SETTINGS) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;  // (back from Settings: it
-                if (menu_item("SETTINGS", true)) {                                             //  stays selected)
+                } else if (a == GA_SAVES || a == GA_SETTINGS) {  // (Saves: Settings > Saves)
                     static bool opened;
-                    menu_tabs_focus(!opened);  // (first time this session: Prelaunch; later: the selected tab)
+                    menu_tabs_focus(!opened);  // (first time this session: the first tab; later: the selected one)
                     opened = true;
+                    if (a == GA_SAVES) g_tab_request_ext = 3;
                     page = SETTINGS;
+                } else if (a == GA_SETUP) {
+                    page = SETUP;
+                } else if (a == GA_QUIT) {
+                    exit(0);
                 }
-                ImGui::SetCursorPosX(x0);  // (set up, set up again, delete: the game files page)
-                if (g_refocus == SETUP) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;
-                if (menu_item(status.empty() ? "GAME FILES" : "SET UP GAME FILES", !busy)) page = SETUP;
-                ImGui::SetCursorPosX(x0);
-                if (menu_item("QUIT", true)) exit(0);
-                g_menu_gap = 0.35f;
             } else if (page == SETTINGS) {
                 // the in-game menu's tabs (runtime/ui/menu.mm), in a window like the in-game one; tabs that need a
                 // loaded game say so
-                float sc = ds.y / 1080.0f, w = fminf(ds.x * 0.9f, 1500 * sc), h = ds.y - 2 * 18 * sc;  // (all the height: a slim margin)
+                float sc = ds.y / 1080.0f, w = ds.x * 0.94f, h = ds.y - 2 * 18 * sc;  // (all the height: a slim margin)
                 ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetWindowPos(), ImVec2(ImGui::GetWindowPos().x + ds.x,
                                                           ImGui::GetWindowPos().y + ds.y), IM_COL32(0, 0, 0, 110));
                 ImVec2 wp = ImGui::GetWindowPos();
                 ImGui::SetCursorScreenPos(ImVec2(wp.x + (ds.x - w) * 0.5f, wp.y + (ds.y - h) * 0.5f));
-                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f, 0.09f, 0.08f, 0.96f));
-                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 14 * sc);
+                // (WSword's Glass Slate look, menu.mm tabs_body: its own rail of pages, title and BACK)
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.035f, 0.075f, 0.133f, 0.95f));
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 22 * sc);
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * sc, 24 * sc));
                 ImGui::BeginChild("##settings", ImVec2(w, h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NavFlattened);
                 ImGui::PopStyleVar(2);
                 ImGui::PopStyleColor();
-                ImGui::PushFont(g_font_small);
-                ImGui::PushFont(g_font_menu);
-                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Settings"));
-                ImGui::PopFont();
-                bool back;
-                {  // close: a drawn X in the corner (B / Esc too)
-                    float bx = 44 * sc;
-                    ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - bx);
-                    ImVec2 p = ImGui::GetCursorScreenPos();
-                    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-                    back = ImGui::InvisibleButton("##close", ImVec2(bx, bx), ImGuiButtonFlags_EnableNav);
-                    ImGui::PopStyleColor();
-                    bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-                    ImU32 col = hot ? IM_COL32(236, 194, 84, 255) : IM_COL32(220, 216, 205, 255);
-                    float m = bx * 0.3f, t = (hot ? 3.0f : 2.4f) * sc * 1.5f;
-                    ImDrawList *dl = ImGui::GetWindowDrawList();
-                    if (hot) dl->AddRectFilled(p, ImVec2(p.x + bx, p.y + bx), IM_COL32(255, 255, 255, 20), 8 * sc);
-                    dl->AddLine(ImVec2(p.x + m, p.y + m), ImVec2(p.x + bx - m, p.y + bx - m), col, t);
-                    dl->AddLine(ImVec2(p.x + bx - m, p.y + m), ImVec2(p.x + m, p.y + bx - m), col, t);
-                }
+                ImFont *set_text = g_set_text ? g_set_text : g_font_small, *set_big = g_set_big ? g_set_big : g_font_menu;
+                ImGui::PushFont(set_text);
+                bool back = false;
                 bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);  // (before the pages run, like the menu)
-                menu_tabs_draw(sc, g_font_small, g_font_menu, false, prelaunch_tab);
+                menu_tabs_draw(sc, set_text, set_big, false, prelaunch_tab);
+                back |= menu_settings_back_requested();  // (BACK on the rail: menu.mm)
                 int cap_dev;
                 bind_capture_active(&cap_dev, NULL, NULL);
                 if (!popup && !typing && cap_dev < 0 && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
@@ -1388,16 +1892,22 @@ extern "C" void launcher_run(const char *root, int mode) {
                                                           ImGui::GetWindowPos().y + ds.y), IM_COL32(0, 0, 0, 50));
                 ImVec2 wp = ImGui::GetWindowPos();
                 ImGui::SetCursorScreenPos(ImVec2(wp.x + fmaxf(18 * sc, fminf(ds.x * 0.05f, x0)), wp.y + (ds.y - h) * 0.5f));
-                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.08f, 0.10f, 0.93f));
-                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 14 * sc);
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.035f, 0.075f, 0.133f, 0.95f));  // (the Glass Slate look)
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 22 * sc);
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * sc, 24 * sc));
                 ImGui::BeginChild("##setup", ImVec2(w, h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NavFlattened);
                 ImGui::PopStyleVar(2);
                 ImGui::PopStyleColor();
+                {
+                    ImVec2 cp = ImGui::GetWindowPos(), cs = ImGui::GetWindowSize();
+                    ImGui::GetWindowDrawList()->AddRect(ImVec2(cp.x + 1, cp.y + 1), ImVec2(cp.x + cs.x - 1, cp.y + cs.y - 1),
+                                                        IM_COL32(46, 110, 134, 255), 22 * sc, 0, 1.5f * sc);
+                }
                 bool welcome = g_setup_only && status == "No game files";
-                ImGui::PushFont(g_font_small);
-                ImGui::PushFont(g_font_menu);
-                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr(welcome ? "Welcome to WSword" : "Game Files"));
+                ImFont *set_text = g_set_text ? g_set_text : g_font_small, *set_big = g_set_big ? g_set_big : g_font_menu;
+                ImGui::PushFont(set_text);
+                ImGui::PushFont(set_big);
+                ImGui::TextColored(ImVec4(0.918f, 0.949f, 0.98f, 1), "%s", tr(welcome ? "Welcome to WSword" : "Game Files"));
                 ImGui::PopFont();
                 bool back = false;
                 if (!busy) {  // close: the drawn X in the corner, as Settings (B / Esc too; setup mode: the X quits)
@@ -1408,10 +1918,10 @@ extern "C" void launcher_run(const char *root, int mode) {
                     back = ImGui::InvisibleButton("##close", ImVec2(bx, bx), ImGuiButtonFlags_EnableNav);
                     ImGui::PopStyleColor();
                     bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-                    ImU32 col = hot ? IM_COL32(236, 194, 84, 255) : IM_COL32(220, 216, 205, 255);
+                    ImU32 col = hot ? IM_COL32(94, 230, 245, 255) : IM_COL32(207, 227, 241, 255);
                     float m = bx * 0.3f, t = (hot ? 3.0f : 2.4f) * sc * 1.5f;
                     ImDrawList *dl = ImGui::GetWindowDrawList();
-                    if (hot) dl->AddRectFilled(p, ImVec2(p.x + bx, p.y + bx), IM_COL32(255, 255, 255, 20), 8 * sc);
+                    if (hot) dl->AddRectFilled(p, ImVec2(p.x + bx, p.y + bx), IM_COL32(20, 40, 66, 255), 10 * sc);
                     dl->AddLine(ImVec2(p.x + m, p.y + m), ImVec2(p.x + bx - m, p.y + bx - m), col, t);
                     dl->AddLine(ImVec2(p.x + bx - m, p.y + m), ImVec2(p.x + m, p.y + bx - m), col, t);
                 }
@@ -1587,7 +2097,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                 if (!job_line.empty()) {  // the current step / result
                     ImGui::Dummy(ImVec2(0, 14 * sc));
                     ImGui::PushTextWrapPos(0);
-                    ImGui::TextColored(failed ? ImVec4(1, 0.5f, 0.4f, 1) : busy ? ImVec4(0.93f, 0.76f, 0.33f, 1)
+                    ImGui::TextColored(failed ? ImVec4(1, 0.5f, 0.4f, 1) : busy ? ImVec4(0.369f, 0.902f, 0.961f, 1)
                                               : ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", trv(job_line).c_str());
                     if (failed && !job_hint.empty())  // (what to do next, in the rows' own text colour)
                         ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s", trv(job_hint).c_str());
@@ -1651,12 +2161,12 @@ extern "C" void launcher_run(const char *root, int mode) {
                     pw = fminf(fmaxf(pw, ts.x + 96 * sc), ds.x - 32 * sc);
                     float ph = bar_y + 24 * sc + 26 * sc + line_h + (nnotes ? 14 * sc + nnotes * line_h : 0) + 40 * sc;
                     ImVec2 a(o.x + (ds.x - pw) * 0.5f, o.y + (ds.y - ph) * 0.5f), b(a.x + pw, a.y + ph);
-                    fg->AddRectFilled(a, b, IM_COL32(15, 23, 20, 250), 14 * sc);
-                    fg->AddRect(a, b, IM_COL32(236, 194, 84, 140), 14 * sc, 0, 1.5f * sc);
-                    fg->AddText(g_font_menu, tfs, ImVec2((a.x + b.x - ts.x) * 0.5f, a.y + 36 * sc), IM_COL32(236, 194, 84, 255), title);
+                    fg->AddRectFilled(a, b, IM_COL32(10, 22, 40, 250), 22 * sc);  // (the Glass Slate look)
+                    fg->AddRect(a, b, IM_COL32(46, 110, 134, 255), 22 * sc, 0, 1.5f * sc);
+                    fg->AddText(g_font_menu, tfs, ImVec2((a.x + b.x - ts.x) * 0.5f, a.y + 36 * sc), IM_COL32(234, 242, 250, 255), title);
                     ImVec2 ba(a.x + 48 * sc, a.y + bar_y), bb(b.x - 48 * sc, a.y + bar_y + 24 * sc);
-                    fg->AddRectFilled(ba, bb, IM_COL32(255, 255, 255, 25), 12 * sc);
-                    if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(236, 194, 84, 255), 12 * sc);
+                    fg->AddRectFilled(ba, bb, IM_COL32(15, 30, 51, 255), 12 * sc);
+                    if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(94, 230, 245, 255), 12 * sc);
                     char line[200];
 #ifndef __APPLE__
                     std::string step = shaders ? precompile_line() : tr(test_busy ? "Setting up the game files..." : job.c_str());
@@ -1681,7 +2191,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             if (menu_tip(s)) play = true;
 
             // status (lower left, main page) and version (lower right) - not under the Settings window
-            if (page != SETTINGS) {
+            if (page != SETTINGS && !glass) {  // (the Glass Slate start screen shows them in its panel)
             ImGui::PushFont(g_font_small);
             if (page == MAIN) {
             ImGui::SetCursorPos(ImVec2(x0, ds.y - 118 * s));
@@ -1717,9 +2227,10 @@ extern "C" void launcher_run(const char *root, int mode) {
                 float fs = ImGui::GetFontSize(), right = ImGui::GetWindowPos().x + ds.x - 60 * s;
                 char ver[96];  // (WSword: and the Savage Wind Recomp release it's built on)
                 snprintf(ver, sizeof ver, tr("Version %s"), SAVAGEWIND_VERSION SW_BASE_LINE);
-                float vs = fs * 1.4f, y = ImGui::GetWindowPos().y + ds.y - 134 * s;
+                // (WSword: under the game files window, at the bottom - the Glass Slate start screen has its own)
+                float vs = fs * 1.05f;
                 ImVec2 vsz = font->CalcTextSizeA(vs, FLT_MAX, 0, ver);
-                ImVec2 p(right - vsz.x, y);
+                ImVec2 p(right - vsz.x, ImGui::GetWindowPos().y + ds.y - 24 * s - vsz.y);
                 for (float d : {2.5f, 1.5f, 0.8f}) dl->AddText(font, vs, ImVec2(p.x + d * s, p.y + d * s), IM_COL32(4, 8, 30, 150), ver);
                 dl->AddText(font, vs, p, IM_COL32(255, 255, 255, 255), ver);
             }
@@ -1774,6 +2285,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     settings_save();
     SDL_SetWindowTitle(win, "WSword");
     splash_unload();
+    icon_textures_free();
     saves_tab_unload();
 #ifdef __APPLE__
     ImGui_ImplMetal_Shutdown();

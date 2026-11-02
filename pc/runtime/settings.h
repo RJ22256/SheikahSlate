@@ -62,6 +62,12 @@ typedef struct {
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
+    // (WSword) frame generation with the player's own Lossless.dll (vulkan/lsfg.cpp, device.c lsfg_present): frames made
+    // between two real ones, 0 off, 1 2x, 2 3x, 3 4x (instead of FSR 3's while on); the flow scale (percent, 0 Automatic)
+    // and Lossless Scaling's lighter passes
+    int lsfg;
+    int lsfg_flow;
+    bool lsfg_perf;
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;
@@ -100,6 +106,7 @@ typedef struct {
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
+    int app_icon;        // (WSword) Settings > Look: the window's icon, one of the start screen's (0 the Sword)
 } Settings;
 
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
@@ -115,3 +122,9 @@ extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+// (WSword) the start screen's modes: sets of the Video options (settings.c mode_into) - Battery (30 fps, AMD FSR 1
+// Performance), Performance (60 fps at the window's resolution, the default), Turbo (120 fps, the same),
+// Unlocked (no limit, the window's resolution); MODE_CUSTOM while the options match none
+enum { MODE_BATTERY = 0, MODE_PERFORMANCE = 1, MODE_TURBO = 2, MODE_UNLOCKED = 3, MODE_COUNT = 4, MODE_CUSTOM = 4 };
+void settings_apply_mode(int mode);
+int settings_current_mode(void);

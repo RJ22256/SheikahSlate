@@ -10,6 +10,8 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string>
+#include <sys/stat.h>
 #include <vector>
 
 #include "imgui.h"
@@ -35,10 +37,23 @@ static int g_tex_w, g_tex_h;
 static id<MTLTexture> g_mtl_tex;  // (ImGui only holds the pointer)
 #endif
 
+// (WSword) the picture shown: the player's own - splash.jpg / splash.png in the data folder, or the one Settings > Files
+// > Look copied (look/background.png next to WSword.exe, where 0.2.8-pc.x kept it too, or in the data folder) - else
+// the Glass Slate start screen's art (launcher-background.png, shipped)
+std::string splash_custom_path(void) { return std::string(rt_exe_dir()) + "/look/background.png"; }
+static bool splash_path(char *path, size_t n) {
+    if (rt_user_splash(path, n)) return true;
+    struct stat st;
+    std::string own[2] = {splash_custom_path(), std::string(rt_data_root()) + "/look/background.png"};
+    for (const std::string &o : own)
+        if (stat(o.c_str(), &st) == 0 && (size_t)snprintf(path, n, "%s", o.c_str()) < n) return true;
+    return rt_resource("launcher-background.png", "assets/launcher-background.png", path, n);
+}
+
 void splash_load(void) {
     splash_unload();
     char path[1100];
-    if (!rt_user_splash(path, sizeof path)) return;
+    if (!splash_path(path, sizeof path)) return;
     int w, h;
     if (!rt_image_info(path, &w, &h) || w <= 0 || h <= 0 || w > 8192 || h > 8192) {
         fprintf(stderr, "[splash] %s: not a JPEG / PNG up to 8192x8192, using the default art\n", path);
@@ -393,6 +408,5 @@ void splash_draw(ImDrawList *dl, ImVec2 sz, float t) {
     ImVec2 uv0(0, 0), uv1(1, 1);
     if (ia > da) uv0.x = (1 - da / ia) * 0.5f, uv1.x = 1 - uv0.x;
     else uv0.y = (1 - ia / da) * 0.5f, uv1.y = 1 - uv0.y;
-    dl->AddImage(g_tex, ImVec2(0, 0), sz, uv0, uv1);
-    dl->AddRectFilled(ImVec2(0, 0), sz, IM_COL32(4, 8, 20, 56));  // (a touch darker: the text stays the brightest)
+    dl->AddImage(g_tex, ImVec2(0, 0), sz, uv0, uv1);  // (WSword: as it is - the Glass Slate panel and card keep the text readable)
 }

@@ -401,7 +401,7 @@ static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboo
 static ImFont *g_font, *g_font_big;
 static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Fira Sans); everything else keeps g_font
-static int g_tab, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab)
+static int g_tab = -99, g_tab_request = -2;  // (-2: no request; -1 is the start screen's Files; g_tab -99: none yet - the first)
 static int g_focus_tab = -99;  // put the nav cursor on this tab next frame (-100: the selected one; -99: none)
 static int g_focus_frames;
 
@@ -442,6 +442,40 @@ static void style_init(void) {
     c[ImGuiCol_NavCursor] = gold;
     c[ImGuiCol_Separator] = ImVec4(0.30f, 0.36f, 0.30f, 1);
     c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = c[ImGuiCol_WindowBg];
+    // (WSword's Glass Slate look, as the start screen: deep navy glass, cyan where something is picked)
+    ImVec4 field(0.059f, 0.118f, 0.2f, 1), field_hot(0.078f, 0.157f, 0.259f, 1), field_on(0.071f, 0.2f, 0.286f, 1);
+    ImVec4 cyan(0.369f, 0.902f, 0.961f, 1);
+    c[ImGuiCol_WindowBg] = ImVec4(0.035f, 0.075f, 0.133f, 0.95f);
+    c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_PopupBg] = ImVec4(0.039f, 0.086f, 0.157f, 0.98f);
+    c[ImGuiCol_Text] = ImVec4(0.918f, 0.949f, 0.98f, 1);
+    c[ImGuiCol_TextDisabled] = ImVec4(0.624f, 0.702f, 0.784f, 1);
+    c[ImGuiCol_Border] = ImVec4(0.137f, 0.255f, 0.373f, 1);
+    c[ImGuiCol_FrameBg] = field;
+    c[ImGuiCol_FrameBgHovered] = field_hot;
+    c[ImGuiCol_FrameBgActive] = field_on;
+    c[ImGuiCol_Button] = field;
+    c[ImGuiCol_ButtonHovered] = field_hot;
+    c[ImGuiCol_ButtonActive] = field_on;
+    c[ImGuiCol_Header] = field_hot;
+    c[ImGuiCol_HeaderHovered] = field_on;
+    c[ImGuiCol_HeaderActive] = field_on;
+    c[ImGuiCol_Tab] = field;
+    c[ImGuiCol_TabHovered] = field_hot;
+    c[ImGuiCol_TabSelected] = field_on;
+    c[ImGuiCol_TabSelectedOverline] = cyan;
+    c[ImGuiCol_CheckMark] = cyan;
+    c[ImGuiCol_SliderGrab] = ImVec4(0.30f, 0.70f, 0.80f, 1);
+    c[ImGuiCol_SliderGrabActive] = cyan;
+    c[ImGuiCol_NavCursor] = cyan;
+    c[ImGuiCol_Separator] = ImVec4(0.11f, 0.208f, 0.314f, 1);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarGrab] = ImVec4(0.18f, 0.30f, 0.42f, 0.9f);
+    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.24f, 0.40f, 0.54f, 1);
+    c[ImGuiCol_ScrollbarGrabActive] = cyan;
+    c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = c[ImGuiCol_WindowBg];
+    s.FrameRounding = 10; s.ChildRounding = 12; s.WindowRounding = 22; s.PopupRounding = 18; s.ScrollbarRounding = 8;
+    s.FrameBorderSize = 1;
 }
 
 
@@ -483,8 +517,13 @@ static void load_fonts(void) {
     char med[1024], semi[1024];
     const char *test = getenv("SAVAGEWIND_MENU_FONT");  // (test) another weight / face
     if (test) strlcpy(med, test, sizeof med), strlcpy(semi, test, sizeof semi);
-    if (test || (rt_resource("FiraSans-Medium.ttf", "third_party/fonts/FiraSans/FiraSans-Medium.ttf", med, sizeof med) &&
-                 rt_resource("FiraSans-SemiBold.ttf", "third_party/fonts/FiraSans/FiraSans-SemiBold.ttf", semi, sizeof semi))) {
+    // (WSword's Glass Slate look: Inter Medium / Bold, OFL, as the start screen - Fira Sans if they're missing)
+    if (!test && rt_resource("Inter-Medium.otf", "third_party/fonts/Inter/Inter-Medium.otf", med, sizeof med) &&
+        rt_resource("Inter-Bold.otf", "third_party/fonts/Inter/Inter-Bold.otf", semi, sizeof semi)) {
+        g_menu_font = add(med, 29 * 0.96f, cfg);
+        g_menu_font_big = add(semi, 53.5f * 0.96f, cfg);
+    } else if (test || (rt_resource("FiraSans-Medium.ttf", "third_party/fonts/FiraSans/FiraSans-Medium.ttf", med, sizeof med) &&
+                        rt_resource("FiraSans-SemiBold.ttf", "third_party/fonts/FiraSans/FiraSans-SemiBold.ttf", semi, sizeof semi))) {
         g_menu_font = add(med, 29, cfg);
         g_menu_font_big = add(semi, 53.5f, cfg);
     }
@@ -602,6 +641,7 @@ extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
 extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
+extern "C" void vk_lsfg_status(char *out, size_t n);  // (WSword: vulkan/device.c, Lossless frame generation's state)
 // Video > Upscaler mode's names, by UPQ_*
 static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
 extern "C" {
@@ -673,6 +713,21 @@ static void tab_colour(void) {
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
+    {   // (WSword) Mode: the start screen card's sets of the options below (settings.c mode_into); Custom when they
+        // match none - shown, never picked
+        opt_section("Mode");
+        static const char *const mn[MODE_COUNT + 1] = {"Battery", "Performance", "Turbo", "Unlocked", "Custom"};
+        static const bool avail[MODE_COUNT + 1] = {true, true, true, true, false};
+        static int shown = -1;
+        int m = settings_current_mode();
+        if (opt_choice_avail("Mode", &m, &shown, mn, avail, MODE_COUNT + 1, MODE_PERFORMANCE,
+                             "Ready-made sets of the frame rate and the upscaler, as on the start screen's card. Battery: 30 "
+                             "fps, the game drawn smaller and AMD FSR 1 onto the window - for a laptop on its battery. "
+                             "Performance: 60 fps at the window's full resolution. Turbo: 120 fps, for a 120 Hz monitor. "
+                             "Unlocked: no limit (VSync still caps it at the monitor's rate). Custom: your own settings "
+                             "below. With frame generation on, the frame rate counts the frames on screen."))
+            settings_apply_mode(m);
+    }
     opt_section("Display");
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
@@ -925,12 +980,6 @@ static void tab_display(void) {
                    "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "
                    "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
                    "AMD FSR 1.", false);
-        // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c)
-        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
-                   "AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
-                   "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
-                   "controls answer as at that rate, a little later. In play only: the menus and the map show the "
-                   "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.");
     }
 #endif
     opt_toggle("Asynchronous shaders", &g_settings.async_shaders, false,
@@ -945,6 +994,45 @@ static void tab_display(void) {
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
 #ifndef __APPLE__
+    {   // Frame generation: AMD FSR 3 (vulkan/framegen.cpp), or (WSword) Lossless Scaling's from the player's own
+        // Lossless.dll (vulkan/device.c lsfg_prepare). The frame rate counts the presented frames (framepace.c).
+        opt_section("Frame generation");
+        static const char *const fgn[] = {"Off", "AMD FSR 3", "Lossless 2x", "Lossless 3x", "Lossless 4x"};
+        int fv = g_settings.lsfg > 0 ? 1 + g_settings.lsfg : g_settings.frame_gen ? 1 : 0;
+        char st[600];
+        vk_lsfg_status(st, sizeof st);
+        static std::string d;
+        d = std::string(tr("AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
+                           "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
+                           "controls answer as at that rate, a little later. In play only: the menus and the map show the "
+                           "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.")) +
+            "\n\n" + tr("Lossless 2x, 3x, 4x: Lossless Scaling's frame generation, from your own copy of Lossless.dll - one, "
+                         "two or three frames between each two the game draws. The frame rate above counts them all too: "
+                         "at 120, 2x draws 60, 3x 40, 4x 30. Pick the frame rate your monitor shows (120 on a 120 Hz one) "
+                         "and the multiplier the game keeps up with. It adds about half a game frame of delay and some GPU "
+                         "time; the menus, the map and the FPS counter are never generated. Add Lossless.dll on the start "
+                         "screen: Settings > Files > Lossless Scaling.") +
+            "\n\n" + st;
+        if (opt_choice("Frame generation", &fv, fgn, 5, 0, d.c_str(), false)) {
+            g_settings.frame_gen = fv == 1;
+            g_settings.lsfg = fv >= 2 ? fv - 1 : 0;
+        }
+        {   // (settings.h lsfg_flow: 0 Automatic, shown as the lowest step)
+            int fl = g_settings.lsfg_flow > 0 ? g_settings.lsfg_flow : 20;
+            if (!g_settings.lsfg) opt_disable_next();
+            if (opt_int("Flow scale", &fl, 20, 100, 5, 20, "%d%%",
+                        "Lossless: the resolution motion is found at, as a share of the game's image - most of frame "
+                        "generation's GPU time. Automatic: Lossless Scaling's own advice by the image's height, about 1080 "
+                        "lines of motion (100% at 1080 lines, 75% at 1440, 50% at 2160 - 4K). Lower: less GPU time, motion "
+                        "found less finely (thin things can wobble); higher than Automatic costs more for little you'd see.",
+                        "Automatic"))
+                g_settings.lsfg_flow = fl <= 20 ? 0 : fl;
+        }
+        if (!g_settings.lsfg) opt_disable_next();
+        opt_toggle("Performance mode", &g_settings.lsfg_perf, false,
+                   "Lossless: Lossless Scaling's lighter passes - much less GPU time, the frames in between slightly less "
+                   "accurate. Turn it on if the game's own frame rate drops with Lossless on.");
+    }
     tab_colour();
 #endif
     opt_end();
@@ -1281,114 +1369,229 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
     return ok;
 }
 
-// The tab bar and its pages, into the current window: the in-game menu, and the start screen's Settings (in_game
-// false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
-// first tab, game files and fonts, drawn by launcher.mm).
+// The settings' pages, into the current window: the in-game menu, and the start screen's Settings (in_game false:
+// nothing of the game is loaded yet - the pages that need it are greyed out; prelaunch: the start screen's own first
+// page, Files - the game files, the look, Lossless.dll, fonts - drawn by launcher.mm).
+//
+// (WSword) The pages' icons, drawn (r: half their size): files (a folder), video (a screen), audio (a speaker),
+// language (a globe), saves (a disk), controls (two Joy-Con), quit (a door)
+static void settings_icon(ImDrawList *dl, int id, ImVec2 c, float r, ImU32 col, float scale) {
+    float t = fmaxf(1.5f, 2.2f * scale);
+    switch (id) {
+    case -1:
+        dl->AddRect(ImVec2(c.x - r, c.y - r * 0.55f), ImVec2(c.x + r, c.y + r * 0.75f), col, r * 0.12f, 0, t);
+        dl->AddLine(ImVec2(c.x - r, c.y - r * 0.55f), ImVec2(c.x - r * 0.75f, c.y - r * 0.85f), col, t);
+        dl->AddLine(ImVec2(c.x - r * 0.75f, c.y - r * 0.85f), ImVec2(c.x - r * 0.1f, c.y - r * 0.85f), col, t);
+        dl->AddLine(ImVec2(c.x - r * 0.1f, c.y - r * 0.85f), ImVec2(c.x + r * 0.1f, c.y - r * 0.55f), col, t);
+        break;
+    case 0:
+        dl->AddRect(ImVec2(c.x - r, c.y - r * 0.75f), ImVec2(c.x + r, c.y + r * 0.45f), col, r * 0.1f, 0, t);
+        dl->AddLine(ImVec2(c.x, c.y + r * 0.45f), ImVec2(c.x, c.y + r * 0.75f), col, t);
+        dl->AddLine(ImVec2(c.x - r * 0.45f, c.y + r * 0.8f), ImVec2(c.x + r * 0.45f, c.y + r * 0.8f), col, t);
+        break;
+    case 1: {
+        const ImVec2 sp[] = {{c.x - r, c.y - r * 0.3f}, {c.x - r * 0.55f, c.y - r * 0.3f}, {c.x - r * 0.05f, c.y - r * 0.75f},
+                             {c.x - r * 0.05f, c.y + r * 0.75f}, {c.x - r * 0.55f, c.y + r * 0.3f}, {c.x - r, c.y + r * 0.3f}};
+        dl->AddConvexPolyFilled(sp, 6, col);
+        dl->PathArcTo(ImVec2(c.x - r * 0.05f, c.y), r * 0.5f, -0.9f, 0.9f, 10);
+        dl->PathStroke(col, 0, t);
+        dl->PathArcTo(ImVec2(c.x - r * 0.05f, c.y), r * 0.9f, -0.9f, 0.9f, 12);
+        dl->PathStroke(col, 0, t);
+        break;
+    }
+    case 2:  // (a globe: its outline, a meridian, the equator)
+        dl->AddCircle(c, r * 0.9f, col, 24, t);
+        dl->AddEllipse(c, ImVec2(r * 0.4f, r * 0.9f), col, 0, 20, t);
+        dl->AddLine(ImVec2(c.x - r * 0.9f, c.y), ImVec2(c.x + r * 0.9f, c.y), col, t);
+        break;
+    case 3:  // (a disk: its body, the label, the shutter)
+        dl->AddRect(ImVec2(c.x - r * 0.8f, c.y - r * 0.8f), ImVec2(c.x + r * 0.8f, c.y + r * 0.8f), col, r * 0.15f, 0, t);
+        dl->AddRect(ImVec2(c.x - r * 0.45f, c.y - r * 0.8f), ImVec2(c.x + r * 0.35f, c.y - r * 0.2f), col, 0, 0, t);
+        dl->AddRect(ImVec2(c.x - r * 0.45f, c.y + r * 0.15f), ImVec2(c.x + r * 0.45f, c.y + r * 0.8f), col, 0, 0, t);
+        break;
+    case 8:
+        for (int side = -1; side <= 1; side += 2) {
+            float x0 = side < 0 ? c.x - r : c.x + r * 0.12f, x1 = side < 0 ? c.x - r * 0.12f : c.x + r;
+            dl->AddRect(ImVec2(x0, c.y - r * 0.8f), ImVec2(x1, c.y + r * 0.8f), col, r * 0.4f, 0, t);
+            dl->AddCircleFilled(ImVec2((x0 + x1) * 0.5f, c.y + side * r * 0.3f), r * 0.17f, col, 10);
+        }
+        break;
+    case 9:
+        dl->AddRect(ImVec2(c.x - r * 0.9f, c.y - r), ImVec2(c.x + r * 0.2f, c.y + r), col, 0, 0, t);
+        dl->AddLine(ImVec2(c.x - r * 0.2f, c.y), ImVec2(c.x + r, c.y), col, t);
+        dl->AddLine(ImVec2(c.x + r, c.y), ImVec2(c.x + r * 0.6f, c.y - r * 0.4f), col, t);
+        dl->AddLine(ImVec2(c.x + r, c.y), ImVec2(c.x + r * 0.6f, c.y + r * 0.4f), col, t);
+        break;
+    }
+}
+
+// (WSword) a glass button: navy, outlined in cyan while focused, hovered or pressed, an icon on the left (0: back, a
+// chevron) and the label
+static bool glass_button(const char *label, ImVec2 size, float scale) {
+    ImGui::PushID(label);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+    bool clicked = ImGui::InvisibleButton("##b", size, ImGuiButtonFlags_EnableNav);
+    ImGui::PopStyleColor();
+    bool hot = ImGui::IsItemActive() || (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible) ||
+               ImGui::IsItemHovered();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 b(a.x + size.x, a.y + size.y);
+    float rr = 14 * scale;
+    dl->AddRectFilled(a, b, ImGui::IsItemActive() ? IM_COL32(26, 52, 82, 255) : hot ? IM_COL32(20, 40, 66, 255) : IM_COL32(15, 30, 51, 255), rr);
+    dl->AddRect(a, b, hot ? IM_COL32(94, 230, 245, 255) : IM_COL32(35, 65, 95, 255), rr, 0, (hot ? 2.2f : 1.3f) * scale);
+    float fs = ImGui::GetFontSize(), cy = a.y + size.y * 0.5f, ix = a.x + 30 * scale, r = fs * 0.36f, t = 2.4f * scale;
+    ImU32 col = IM_COL32(234, 242, 250, 255), icol = IM_COL32(94, 230, 245, 255);
+    dl->AddLine(ImVec2(ix + r * 0.4f, cy - r), ImVec2(ix - r * 0.4f, cy), icol, t);
+    dl->AddLine(ImVec2(ix - r * 0.4f, cy), ImVec2(ix + r * 0.4f, cy + r), icol, t);
+    const char *shown = tr(label);
+    float tx = ix + r + 22 * scale, tw = ImGui::CalcTextSize(shown).x;
+    tx = fmaxf(tx, a.x + (size.x - tw) * 0.5f + r);
+    dl->AddText(ImVec2(tx, cy - fs * 0.5f), col, shown);
+    ImGui::PopID();
+    return clicked;
+}
+
+static bool g_settings_back;  // (the start screen's Settings: BACK on the rail - launcher.mm closes the page)
+bool menu_settings_back_requested() { bool back = g_settings_back; g_settings_back = false; return back; }
+
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
-    // (id: the page; -1 = Prelaunch)
+    // (id: the page; -1 = Files, the start screen's first)
     struct Tab { const char *name; int id; bool on; };
     Tab tabs[11];
     int ntabs = 0;
-    if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
+    if (prelaunch) tabs[ntabs++] = {"Files", -1, true};
     // (ids 4-7 were Link's Awakening tabs; the ids stay: test hooks)
     static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 2, 3, 9};  // Controls, Video, Audio, Language, Saves, Quit
+    static const int order[] = {0, 1, 8, 2, 3, 9};  // Video, Audio, Controls, Language, Saves, Quit
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
         tabs[ntabs++] = {names[i], i, true};
     }
-    int cur = 0;  // g_tab / g_tab_request hold ids
-    for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
-    if (!tabs[cur].on) cur = 0;
-    // L/R (or Q/E) switch tabs, skipping greyed-out ones (not while typing: Q / E are letters then, and the on-screen
-    // keyboard has the controller)
-    if (g_tab_request_ext >= 0) { g_tab_request = g_tab_request_ext; g_tab_request_ext = -1; }
-    bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();
-    static int focused_tab = -99;  // the tab the controller's cursor is on (from the frame before; -99: none)
-    if (!any_popup && !typing) {
+    // WSword's Glass Slate look (0.2.8's, the UI concepts' D, as the start screen): a rail down the left - the app's name
+    // and "Settings", the pages as tiles (an icon and the name; the open one filled and outlined in cyan), BACK at its
+    // foot - and the open page beside it under its own title. The page ids stay (test hooks, the controller's L / R);
+    // Up / Down go along the rail, Right into the page.
+    if (g_tab_request_ext >= 0) { g_tab_request = g_tab_request_ext; g_tab_request_ext = -1; }  // (-1: none)
+    for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab_request && tabs[i].on) g_tab = tabs[i].id;
+    bool available = false;
+    for (int i = 0; i < ntabs; i++) available |= tabs[i].id == g_tab && tabs[i].on;
+    if (!available) g_tab = tabs[0].id;
+    bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+    if (!popup && !ui_text_busy()) {  // L / R (or Q / E) go through the pages (not while typing: Q / E are letters then)
         int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
                  : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
         if (step) {
-            int i = cur;
-            do i = (i + step + ntabs) % ntabs; while (!tabs[i].on);
-            g_tab_request = tabs[i].id;
-            // the cursor on the tab bar goes along (left behind, A on it switched straight back; user 2026-10-11)
-            if (focused_tab != -99) g_focus_tab = tabs[i].id, g_focus_frames = 0;
+            int index = 0;
+            for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) index = i;
+            do index = (index + step + ntabs) % ntabs; while (!tabs[index].on);
+            g_tab = tabs[index].id;
         }
     }
-    // Down with the cursor on the tab bar: the page's first row (option rows; other pages keep ImGui's own pick)
-    bool down_from_tab = focused_tab != -99 && ImGui::GetCurrentContext()->NavCursorVisible && !any_popup &&
-                         (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown) ||
-                          ImGui::IsKeyPressed(ImGuiKey_DownArrow));
-    opt_focus_first(down_from_tab);
-    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTabListScrollingButtons)) {
-        for (int k = 0; k < ntabs; k++) {
-            const Tab &t = tabs[k];
-            ImGuiTabItemFlags f = g_tab_request == t.id && t.on ? ImGuiTabItemFlags_SetSelected : 0;
-            char lbl[160];
-            snprintf(lbl, sizeof lbl, prelaunch ? " %s ###%s" : "  %s  ###%s", tr(t.name), t.name);  // (### : ID stays English)
-            ImGui::BeginDisabled(!t.on);
-            // focus (controller / keyboard): the tab lights up a little with a gold bar along its bottom, instead of
-            // ImGui's outline (it sits 4 px outside the tab and the tab bar's clipping could cut its top off on macOS)
-            // (focused_tab: from the frame before - colours go in before the tab is drawn)
-            bool lit = focused_tab == t.id && ImGui::GetCurrentContext()->NavCursorVisible;
-            ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-            if (lit) {
-                ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.19f, 0.27f, 0.22f, 1));
-                ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.19f, 0.27f, 0.22f, 1));
-            }
-            if (g_focus_tab == -1 && !prelaunch) g_focus_tab = 8;  // (no Prelaunch in game: Controls, the first tab)
-            bool focus_here = g_focus_tab == t.id || (g_focus_tab == -100 && t.id == g_tab);
-            bool open = ImGui::BeginTabItem(lbl, NULL, f);
-            ImGui::PopStyleColor(lit ? 3 : 1);
-            if (focus_here) {  // the controller's cursor starts on this tab (SetKeyboardFocusHere skips tabs: no tab stop)
-                ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+    const ImU32 ink = IM_COL32(234, 242, 250, 255), cyan = IM_COL32(94, 230, 245, 255), line = IM_COL32(46, 110, 134, 255),
+                rule = IM_COL32(28, 53, 80, 255), sel_fill = IM_COL32(18, 51, 73, 255), label = IM_COL32(143, 217, 230, 255);
+    ImDrawList *wdl = ImGui::GetWindowDrawList();
+    ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    wdl->AddRect(ImVec2(wp.x + 1, wp.y + 1), ImVec2(wp.x + ws.x - 1, wp.y + ws.y - 1), line, 22 * scale, 0, 1.5f * scale);
+    float rail_w = 290 * scale, gap = 28 * scale;
+    ImVec2 avail = ImGui::GetContentRegionAvail(), c0 = ImGui::GetCursorScreenPos();
+    wdl->AddLine(ImVec2(c0.x + rail_w + gap * 0.5f, c0.y), ImVec2(c0.x + rail_w + gap * 0.5f, c0.y + avail.y), rule, 1.2f * scale);
+    const char *open_name = "Settings";
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 8 * scale));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    ImGui::BeginChild("##rail", ImVec2(rail_w, avail.y), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NavFlattened | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleColor();
+    {
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        // (the titles a little under the big font's own size on screen: drawn from its atlas, not enlarged - crisp)
+        float fs = ImGui::GetFontSize(), ts = g_font_big->FontSize * ImGui::GetIO().FontGlobalScale * 0.8f;
+        dl->AddText(ImGui::GetFont(), fs * 0.82f, ImVec2(p.x + 4 * scale, p.y), label, "WSword");
+        dl->AddText(g_font_big, ts, ImVec2(p.x + 2 * scale, p.y + fs * 0.95f), ink, tr("Settings"));
+        ImGui::Dummy(ImVec2(rail_w, fs * 0.95f + ts * 1.2f + 18 * scale));
+        float th = 72 * scale;
+        for (int i = 0; i < ntabs; i++) {
+            const Tab &t = tabs[i];
+            if (g_tab == t.id) open_name = t.name;
+            ImGui::PushID(t.id);
+            ImVec2 a = ImGui::GetCursorScreenPos();
+            if (g_focus_tab == t.id || ((g_focus_tab == -100 || g_focus_tab == -1) && t.id == g_tab)) {  // (on the open page)
+                ImGui::SetKeyboardFocusHere();
                 ImGui::SetNavCursorVisible(true);
                 // a few frames: the page's child window appearing makes ImGui pick its first widget once it's laid out
                 if (++g_focus_frames >= 4) g_focus_tab = -99, g_focus_frames = 0;
-                else g_focus_tab = t.id;
             }
-            if (lit) {
-                ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-                float h = 4 * scale > 2 ? 4 * scale : 2;
-                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(a.x + 2, b.y - h), ImVec2(b.x - 2, b.y),
-                                                          IM_COL32(236, 194, 84, 255));  // (the menu's gold)
-            }
-            if (ImGui::IsItemFocused()) focused_tab = t.id;
-            else if (focused_tab == t.id) focused_tab = -99;
+            ImGui::BeginDisabled(!t.on);
+            ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+            if (ImGui::InvisibleButton("##tab", ImVec2(rail_w, th), ImGuiButtonFlags_EnableNav)) g_tab = t.id;
+            ImGui::PopStyleColor();
+            bool hot = (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible) || ImGui::IsItemHovered();
             ImGui::EndDisabled();
+            bool open = g_tab == t.id;
+            ImVec2 b(a.x + rail_w, a.y + th);
             if (open) {
-                g_tab = t.id;
-                ImGui::Spacing();
-                ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_None,  // (the rest of the window: no hint line)
-                                  ImGuiWindowFlags_NavFlattened);
-                // Down from the tab bar, pages that aren't option rows (Prelaunch, Controls): their first control
-                // (option-row pages: opt_focus_first)
-                if (down_from_tab && (t.id == -1 || t.id == 8)) {
-                    opt_focus_first(false);
-                    ImGui::SetKeyboardFocusHere();
-                    ImGui::SetNavCursorVisible(true);
-                }
-                switch (t.id) {
-                case -1: prelaunch(scale); break;
-                case 0: tab_display(); break;
-                case 1: tab_audio(); break;
-                case 2: tab_language(in_game); break;
-                case 3: saves_tab_draw(); break;
-                case 8: tab_about(); break;
-                case 9: tab_quit(scale, in_game); break;
-                }
-                static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
-                if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
-                ImGui::EndChild();
-                ImGui::EndTabItem();
+                dl->AddRectFilled(a, b, sel_fill, 14 * scale);
+                dl->AddRect(a, b, cyan, 14 * scale, 0, 2.2f * scale);
+            } else if (hot) {
+                dl->AddRectFilled(a, b, IM_COL32(20, 40, 66, 255), 14 * scale);
+                dl->AddRect(a, b, IM_COL32(94, 230, 245, 170), 14 * scale, 0, 1.6f * scale);
             }
+            if (open && hot) dl->AddRect(ImVec2(a.x - 3 * scale, a.y - 3 * scale), ImVec2(b.x + 3 * scale, b.y + 3 * scale), ink,
+                                         17 * scale, 0, 1.6f * scale);
+            ImU32 col = !t.on ? IM_COL32(110, 125, 140, 255) : open ? ink : IM_COL32(207, 227, 241, 255);
+            ImU32 icol = !t.on ? col : open ? cyan : IM_COL32(159, 216, 230, 255);
+            float isz = 16 * scale, cy = a.y + th * 0.5f;
+            settings_icon(dl, t.id, ImVec2(a.x + 24 * scale + isz, cy), isz, icol, scale);
+            dl->AddText(ImVec2(a.x + 24 * scale + isz * 2 + 20 * scale, cy - fs * 0.5f), col, tr(t.name));
+            ImGui::PopID();
         }
-        g_tab_request = -2;
-        opt_focus_first(false);  // (a page without option rows: nothing took it)
-        ImGui::EndTabBar();
+        float bh = 62 * scale, y_back = ImGui::GetWindowHeight() - bh - 2 * scale;  // (BACK at the rail's foot)
+        if (ImGui::GetCursorPosY() < y_back) ImGui::SetCursorPosY(y_back);
+        if (glass_button("Back", ImVec2(rail_w, bh), scale)) {
+            if (prelaunch) g_settings_back = true;
+            else set_open(false);
+        }
     }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::SameLine(0, gap);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    ImGui::BeginChild("##content", ImVec2(0, avail.y), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NavFlattened | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleColor();
+    {   // the page's title, a rule under it
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float ts = g_font_big->FontSize * ImGui::GetIO().FontGlobalScale * 0.8f, hh = fmaxf(62 * scale, ts * 1.25f);
+        float cw = ImGui::GetContentRegionAvail().x;
+        dl->AddText(g_font_big, ts, ImVec2(p.x + 4 * scale, p.y + (hh - ts * 1.1f) * 0.5f), ink, tr(open_name));
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + hh + 12 * scale));
+        dl->AddLine(ImVec2(p.x, p.y + hh + 6 * scale), ImVec2(p.x + cw, p.y + hh + 6 * scale), rule, 1.2f * scale);
+        ImGui::Dummy(ImVec2(cw, 6 * scale));
+    }
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    ImGui::BeginChild("##page", ImVec2(0, fmaxf(1, ImGui::GetContentRegionAvail().y)), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NavFlattened);
+    ImGui::PopStyleColor();
+    ImGui::PushID(g_tab);
+    switch (g_tab) {
+    case -1: prelaunch(scale); break;
+    case 0: tab_display(); break;
+    case 1: tab_audio(); break;
+    case 2: tab_language(in_game); break;
+    case 3: saves_tab_draw(); break;
+    case 8: tab_about(); break;
+    case 9: tab_quit(scale, in_game); break;
+    }
+    ImGui::PopID();
+    static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
+    if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
+    ImGui::EndChild();
+    ImGui::EndChild();
+    g_tab_request = -2;
+    opt_focus_first(false);
 }
 
 void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float)) {

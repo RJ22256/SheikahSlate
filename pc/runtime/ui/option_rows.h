@@ -1,6 +1,6 @@
-// Settings pages in two panes (runtime/ui/option_rows.mm): option rows on the left - an uppercase label, the value on
-// the right (brighter when it isn't the default) - and the selected (controller) or hovered (mouse) row's description on
-// the right, instead of tooltips. A / click changes a row (toggle / next value), left / right step it.
+// Settings pages in two panes (runtime/ui/option_rows.mm), in WSword's Glass Slate look: option rows on the left - the
+// label, the value on the right (cyan when it isn't the default) - and the selected (controller) or hovered (mouse)
+// row's name and description in a card on the right, instead of tooltips. A / click changes a row (toggle / next value), left / right step it.
 //
 //   opt_begin("##video", scale);
 //   opt_section("Display");
@@ -10,6 +10,8 @@
 
 void opt_begin(const char *id, float scale);
 void opt_section(const char *title);
+// (WSword) a section title in the Glass Slate look anywhere (the start screen's Files page): cyan capitals and a rule
+void ui_glass_heading(const char *title, float scale);
 bool opt_toggle(const char *label, bool *v, bool def, const char *desc);
 // wrap: past the last value back to the first (and the other way); false: stops at the ends
 bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap = true);

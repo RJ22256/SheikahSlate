@@ -169,6 +169,15 @@ CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime
 
 .DEFAULT_GOAL := all
 
+# (WSword) lsfg-vk's backend (frame generation with the player's own Lossless.dll): sources, flags, the library
+LSFG     := third_party/lsfg-vk
+LSFG_SRC := $(shell find $(LSFG)/lsfg-vk-common/src $(LSFG)/lsfg-vk-backend/src -name '*.cpp' | sort)
+LSFG_OBJ := $(patsubst $(LSFG)/%.cpp,$(B)/lsfg/%.o,$(LSFG_SRC))
+LSFG_LIB := $(B)/liblsfgvk.a
+LSFGFLAGS := -O2 -g -std=c++20 -fexceptions -frtti -DVK_NO_PROTOTYPES -Wno-unknown-warning-option $(DEPINC) $(OSFLAGS) \
+             -I$(LSFG)/lsfg-vk-common/include -I$(LSFG)/lsfg-vk-backend/include -I$(LSFG)/lsfg-vk-backend/src
+LSFG_AR  ?= $(or $(shell command -v llvm-ar 2>/dev/null),ar)
+
 # AMD FidelityFX SDK 1.1.4 (third_party/FidelityFX, MIT): FSR 3 frame interpolation and optical flow
 # (runtime/nvn/vulkan/framegen.cpp) and the FSR 3 upscaler (runtime/nvn/vulkan/fsr3.cpp) on its Vulkan backend. Its
 # sources unchanged, with ffx_compat.h for what MSVC's headers bring; the shaders are tools/ffx_shaders.py's
@@ -241,10 +250,20 @@ $(B)/rt/%.o: runtime/%.m $(RT_HDRS)
 # linked to a temp file, then renamed over: a copy of the game still running keeps its (old) file - relinking in
 # place gets running copies killed by macOS (code signature of the changed pages). The temp file keeps the real name
 # (in a folder of its own): on Windows the import library records the name the game code library loads it by.
-$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
+$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ) $(LSFG_LIB)
 	@mkdir -p $(dir $@)link
 	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
 	mv -f $(dir $@)link/$(notdir $@) $@
+
+# (WSword) frame generation with the player's own Lossless.dll (runtime/nvn/vulkan/lsfg.cpp): lsfg-vk's backend, GPL-3.0
+# (third_party/lsfg-vk/README.WSword.md), a static library of its own; its functions through vkGetInstanceProcAddr
+$(B)/lsfg/%.o: $(LSFG)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(LSFGFLAGS) -c $< -o $@
+$(LSFG_LIB): $(LSFG_OBJ)
+	rm -f $@
+	$(LSFG_AR) rcs $@ $^
+$(B)/rt/nvn/vulkan/lsfg.o: CXXFLAGS += -I$(LSFG)/lsfg-vk-backend/include
 
 # its id file (<library>.id) says what it was built from without loading it (runtime/gamelib.c)
 $(GAMELIB): $(GEN_OBJ) | $(EXE)
@@ -344,6 +363,12 @@ dist:
 	cp third_party/fonts/FiraSans/OFL.txt "$(DIST)/FiraSans-OFL.txt"
 	cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$(DIST)/"  # (Thai menus, OFL)
 	cp third_party/fonts/NotoSansThai/OFL.txt "$(DIST)/NotoSansThai-OFL.txt"
+	cp third_party/fonts/Inter/Inter-Bold.otf third_party/fonts/Inter/Inter-Medium.otf "$(DIST)/"  # (WSword's Glass Slate look, OFL)
+	cp third_party/fonts/Inter/OFL.txt "$(DIST)/Inter-OFL.txt"
+	cp assets/launcher-background.png assets/app-icon-slate.png assets/app-icon-midnight.png assets/app-icon-dawn.png \
+	    assets/app-icon-ancient.png assets/app-icon-forest.png "$(DIST)/"  # (WSword's own art: the start screen, Settings > Files > Look)
+	cp third_party/lsfg-vk/LICENSE.md "$(DIST)/lsfg-vk-LICENSE.md"  # (Lossless frame generation's backend, GPL-3.0: runtime/nvn/vulkan/lsfg.cpp)
+	cp third_party/lsfg-vk/README.WSword.md "$(DIST)/lsfg-vk-README.md"
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp LICENSE "$(DIST)/LICENSE.txt"  # (Savage Wind Recomp's MIT notice, LAS Recomp's in it)

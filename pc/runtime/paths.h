@@ -25,6 +25,7 @@ extern "C" {
 
 void rt_paths_init(void);         // first thing in main(), after plat_init
 const char *rt_data_root(void);   // absolute
+const char *rt_exe_dir(void);     // (WSword) the executable's folder, absolute (Lossless.dll, the start screen's art)
 bool rt_dev_mode(void);           // dev / portable mode (rule 2 above): e.g. a source checkout
 
 // A shipped file: `name` next to the executable or in Contents/Resources, else `dev_rel` in the source tree (the
@@ -43,7 +44,9 @@ bool rt_is_link(const char *p);
 
 typedef struct SDL_Window SDL_Window;
 bool rt_user_splash(char *out, size_t n);  // the player's splash.jpg / .png in the data root, if any
-void rt_window_icon(SDL_Window *w);  // the shipped icon.png, if any
+void rt_window_icon(SDL_Window *w);  // the shipped icon.png, if any - (WSword) or the one chosen: settings.h app_icon
+#define RT_WINDOW_ICONS 6
+extern const char *const rt_window_icons[RT_WINDOW_ICONS];  // (WSword) Settings > Files > Look's: the Sword's icon.png first
 
 #ifdef __cplusplus
 }

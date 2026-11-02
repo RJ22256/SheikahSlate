@@ -15,6 +15,7 @@
 #include "game_files.h"
 #include "imageload.h"
 #include "paths.h"
+#include "settings.h"
 #include "platform.h"
 
 static char g_root[1024], g_start[1024], g_exe_dir[1024];
@@ -152,6 +153,7 @@ void rt_paths_init(void) {
 }
 
 const char *rt_data_root(void) { return g_root; }
+const char *rt_exe_dir(void) { return g_exe_dir[0] ? g_exe_dir : g_root; }
 
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
     char c[4][1100] = {{0}};
@@ -220,14 +222,23 @@ bool rt_user_splash(char *out, size_t n) {
     return false;
 }
 
-// Window / Dock icon: icon.png shipped next to the exe or in the .app (none for a plain source build).
-void rt_window_icon(SDL_Window *w) {
+// Window / Dock icon: icon.png shipped next to the exe or in the .app (none for a plain source build). (WSword) Or the
+// one chosen on the start screen (Settings > Files > Look: settings.h app_icon, rt_window_icons), the window's and the
+// taskbar's; the exe's own (windows.rc) stays the Sword.
+const char *const rt_window_icons[RT_WINDOW_ICONS] = {"icon.png", "app-icon-slate.png", "app-icon-midnight.png",
+                                                      "app-icon-dawn.png", "app-icon-ancient.png", "app-icon-forest.png"};
+static bool window_icon_file(SDL_Window *w, const char *name) {
     char p[1100];
-    if (!rt_resource("icon.png", NULL, p, sizeof p)) return;
+    if (!rt_resource(name, NULL, p, sizeof p)) return false;
     int iw, ih;
     unsigned char *px = rt_image_rgba(p, &iw, &ih);  // (not SDL_LoadPNG: that is SDL 3.4, the distributions ship 3.2)
-    if (!px) return;
+    if (!px) return false;
     SDL_Surface *s = SDL_CreateSurfaceFrom(iw, ih, SDL_PIXELFORMAT_RGBA32, px, iw * 4);
     if (s) SDL_SetWindowIcon(w, s), SDL_DestroySurface(s);
     rt_image_free(px);
+    return s != NULL;
+}
+void rt_window_icon(SDL_Window *w) {
+    int k = g_settings.app_icon > 0 && g_settings.app_icon < RT_WINDOW_ICONS ? g_settings.app_icon : 0;
+    if (!window_icon_file(w, rt_window_icons[k]) && k) window_icon_file(w, rt_window_icons[0]);
 }

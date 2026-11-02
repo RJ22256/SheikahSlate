@@ -20,6 +20,7 @@
 #include "vk.h"
 #include "vram.h"
 #include "record.h"
+#include "lsfg.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -254,6 +255,10 @@ static bool radv_gcn(void) {
 // RADV on an RDNA 4 chip (RX 9060 / 9070): "AMD Radeon RX 9070 XT (RADV GFX1201)"
 static bool radv_gfx12(void) { return strstr(g_vk.props.deviceName, "(RADV GFX12") != NULL; }
 bool vk_shader_fp16(void) { return g_vk.fp16; }
+// (WSword: the start screen's Glass Slate panel) the GPU and its driver, as they name themselves
+static char g_driver_desc[2 * VK_MAX_DRIVER_NAME_SIZE + 2];
+const char *vk_gpu_name(void) { return g_vk.props.deviceName; }
+const char *vk_driver_desc(void) { return g_driver_desc; }
 
 static void create_device(void) {
     uint32_t ne = 0;
@@ -302,6 +307,7 @@ static void create_device(void) {
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &ap);
         LOG("[vk] driver: %s %s (id %d), ASTC %s\n", drv.driverName, drv.driverInfo, (int)drv.driverID,
             ap.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT ? "sampled by the GPU" : "decoded on the CPU");
+        snprintf(g_driver_desc, sizeof g_driver_desc, "%s %s", drv.driverName, drv.driverInfo);
     }
     // SAVAGEWIND_VK_LEGACY=1: Alpha 2's setup, none of maintenance5, graphics pipeline libraries and attachment
     // feedback loops (SAVAGEWIND_VK_M5=1 / _GPL=1 / _FEEDBACK_LOOP=1 turn one back on). The 0.3.1 hotfix made it the
@@ -354,6 +360,9 @@ static void create_device(void) {
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
     bool pwait = getenv("SAVAGEWIND_LOG_PRESENT") && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
                  has_ext(ep, ne, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+    // (WSword) NVIDIA's GPUs before Turing: no mesh shaders - and the second queue's presents faulted there (#36, below)
+    bool nv_pre_turing = g_vk.props.vendorID == 0x10DE && !has_ext(ep, ne, "VK_NV_mesh_shader") &&
+                         !has_ext(ep, ne, "VK_EXT_mesh_shader");
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -507,6 +516,9 @@ static void create_device(void) {
     b->fragmentStoresAndAtomics = h->fragmentStoresAndAtomics;
     b->vertexPipelineStoresAndAtomics = h->vertexPipelineStoresAndAtomics;
     b->robustBufferAccess = h->robustBufferAccess;  // guest shaders index cbufs freely: keep OOB reads harmless
+    // (WSword) Lossless frame generation's shaders (lsfg.cpp) read and write storage images without a format
+    b->shaderStorageImageWriteWithoutFormat = h->shaderStorageImageWriteWithoutFormat;
+    b->shaderStorageImageReadWithoutFormat = h->shaderStorageImageReadWithoutFormat;
     b->shaderClipDistance = h->shaderClipDistance;
     if (!h->shaderInt64) LOG("[vk] warning: no shaderInt64 (64-bit address math in shaders)\n");
     VkPhysicalDevicePresentWaitFeaturesKHR pw_have = {
@@ -536,8 +548,10 @@ static void create_device(void) {
     // Since driver calls went to a thread of their own (record.c) presenting there costs nothing: RTX 3060, visible,
     // fullscreen and windowed, at 120 fps with VSync and unlimited, the same or 1-3 fps more than with the second
     // queue. SAVAGEWIND_VK_PRESENT_THREAD=1: two queues and the present thread, as before (testing).
+    // (WSword) The second queue is also made where the family has one and it is safe (not NVIDIA's GPUs before Turing,
+    // #36), unused until Lossless frame generation presents its frames there (present_threaded); =0: never.
     const char *pt_env = getenv("SAVAGEWIND_VK_PRESENT_THREAD");
-    bool two_q = g_vk.qfam_count >= 2 && pt_env && strcmp(pt_env, "0") != 0;
+    bool two_q = g_vk.qfam_count >= 2 && (pt_env ? strcmp(pt_env, "0") != 0 : !nv_pre_turing);
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = two_q ? 2 : 1, .pQueuePriorities = prio};
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
@@ -1031,6 +1045,10 @@ static void hdr_make_images(uint32_t n, VkExtent2D ext) {
     hdr_count = n;
 }
 
+static int lsfg_setting(void);
+static int sc_extra_made;  // (WSword) the swapchain's images for Lossless frame generation's groups (create_swapchain)
+static int sc_extra_wanted(void) { int g = lsfg_setting(); return g > 1 ? g - 1 : 0; }
+
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
@@ -1056,7 +1074,10 @@ static void create_swapchain(void) {
     hdr_failed = hdr && !hdr_found;
     if (hdr && !hdr_found) LOG("[vk] HDR wanted, but this display offers no HDR10 swapchain format: SDR\n");
     if (hdr_found) draw.format = VK_FORMAT_B8G8R8A8_UNORM;
-    uint32_t count = caps.minImageCount + 2;  // (+1, and one for frame generation's queued pair: present_wait_room)
+    // (+1, and one for frame generation's queued pair: present_wait_room; WSword: one more for each further frame of a
+    // Lossless frame generation group - its presents queued, each holding an image)
+    sc_extra_made = sc_extra_wanted();
+    uint32_t count = caps.minImageCount + 2 + (uint32_t)sc_extra_made;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;
     VkSwapchainKHR old = g_vk.swapchain;
@@ -1273,8 +1294,8 @@ static void recreate_swapchain(void) {
 static pthread_mutex_t pres_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pres_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t sc_lock = PTHREAD_MUTEX_INITIALIZER;
-enum { PRES_Q = 4 };
-static struct { VkSwapchainKHR sc; VkSemaphore sem; uint32_t img; int kind; uint64_t seq; } presq[PRES_Q];
+enum { PRES_Q = 8 };  // (WSword: Lossless frame generation's groups of up to four, and the group before's last)
+static struct { VkSwapchainKHR sc; VkSemaphore sem; uint32_t img; int kind, pos, group; uint64_t seq; } presq[PRES_Q];
 static int presq_head, presq_n;  // (pres_m) queued or being presented
 static _Atomic int pres_stale;   // that present said the swapchain is out of date or suboptimal
 // Frame generation (exec.c vk_fg_generate) presents two frames for each the game draws, the generated one, then the
@@ -1284,23 +1305,26 @@ static _Atomic int pres_stale;   // that present said the swapchain is out of da
 // long gap (with VSync's FIFO and with G-SYNC: ghosting while the camera moved). So each is presented once the GPU has
 // drawn it, the generated one at once, the game's half the time between generated frames after it, as AMD's frame
 // interpolation swapchain does.
+// (WSword) Lossless frame generation presents a group of 2 to 4 for each frame the game draws: its generated frames,
+// then the game's. Each is the group's pos-th, presented pos / group of the time between groups after the first.
+// FSR 3's pair is a group of two.
 enum { PRES_PLAIN, PRES_GEN, PRES_AFTER_GEN };
 
-static void present_wait_turn(int kind, uint64_t seq) {
+static void present_wait_turn(int kind, int pos, int group, uint64_t seq) {
     static uint64_t last_gen;
-    static double gen_iv;  // (between generated frames, averaged: the game's frame time)
+    static double gen_iv;  // (between the groups' first frames, averaged: the game's frame time)
     if (kind == PRES_PLAIN) return;
     VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
                               .pValues = &seq};
     vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);  // (drawn; a second at most)
     uint64_t now = SDL_GetTicksNS();
-    if (kind == PRES_GEN) {
+    if (pos <= 0) {
         double dt = last_gen ? (double)(now - last_gen) : 0;
-        if (dt > 0 && dt < 1e8) gen_iv = gen_iv > 0 ? gen_iv + (dt - gen_iv) * 0.1 : dt;
+        if (dt > 0 && dt < 2e8) gen_iv = gen_iv > 0 ? gen_iv + (dt - gen_iv) * 0.1 : dt;
         last_gen = now;
         return;
     }
-    uint64_t at = last_gen + (uint64_t)(gen_iv / 2);
+    uint64_t at = last_gen + (uint64_t)(gen_iv * pos / (group > 1 ? group : 2));
     if (gen_iv > 0 && now < at) SDL_DelayPrecise(at - now);
 }
 
@@ -1312,7 +1336,7 @@ static void *present_thread(void *arg) {
         __typeof__(presq[0]) q = presq[presq_head];
         pthread_mutex_unlock(&pres_m);
         rec_wait_submitted(q.seq);  // (its semaphore's signal must be submitted first: record.c may not have yet)
-        present_wait_turn(q.kind, q.seq);
+        present_wait_turn(q.kind, q.pos, q.group, q.seq);
         // Handed over once drawn: capture and overlay layers copy the image inside their vkQueuePresentKHR, on this
         // second queue, without waiting for the first one (#293: OBS's Game Capture showed black or broken frames).
         // NVIDIA's windowed present waited for the GPU anyway. SAVAGEWIND_VK_PRESENT_DRAWN=0: not waited for here.
@@ -1344,13 +1368,27 @@ static void *present_thread(void *arg) {
     return NULL;
 }
 
+// (WSword) Lossless frame generation presents a group of frames for each the game draws, spaced over the game's frame
+// time (present_wait_turn). On the calling thread, the game's GPU thread, those waits held back the game's next frame -
+// the GPU stood idle for most of each - so while its groups are presented (g_present_groups: lsfg_prepare) they go to
+// the present thread, on the second queue, when there is one (create_device); the game's thread goes straight on.
+static bool g_present_groups;   // Lossless frame generation's groups are being presented
+static int g_group_size = 2;    // (present_wait_room) the presents a group has: FSR 3's pair, Lossless's 2 to 4
+static bool g_pres_thread_on;   // the present thread runs (it may hold presents: the swapchain under sc_lock from then on)
 static bool present_threaded(void) {
-    static int on = -1;
-    if (on < 0) {
+    static int forced = -2;  // SAVAGEWIND_VK_PRESENT_THREAD=1: always (as before), 0: never
+    if (forced == -2) {
         const char *e = getenv("SAVAGEWIND_VK_PRESENT_THREAD");
-        on = g_vk.present_queue != g_vk.queue && !(e && !strcmp(e, "0"));
-        if (on) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); }
-        LOG("[vk] presents on %s\n", on ? "a thread of their own (second queue)" : "the calling thread");
+        forced = e ? strcmp(e, "0") != 0 : -1;
+        LOG("[vk] presents on %s\n", g_vk.present_queue == g_vk.queue || !forced ? "the calling thread"
+                                     : forced == 1 ? "a thread of their own (second queue)"
+                                     : "the calling thread; Lossless frame generation's on a thread of their own (second queue)");
+    }
+    bool on = g_vk.present_queue != g_vk.queue && (forced == 1 || (forced == -1 && g_present_groups));
+    if (on && !g_pres_thread_on) {
+        pthread_t t;
+        g_pres_thread_on = pthread_create(&t, NULL, present_thread, NULL) == 0;
+        on = g_pres_thread_on;
     }
     return on;
 }
@@ -1368,7 +1406,7 @@ static void present_wait_room(void) {
     for (;;) {
         bool plain = false;
         for (int i = 0; i < presq_n; i++) plain |= presq[(presq_head + i) % PRES_Q].kind == PRES_PLAIN;
-        if (!plain && presq_n <= 2) break;
+        if (!plain && presq_n <= (g_group_size > 2 ? g_group_size : 2)) break;
         pthread_cond_wait(&pres_cv, &pres_m);
     }
     pthread_mutex_unlock(&pres_m);
@@ -1396,7 +1434,7 @@ static bool acquire_test_timeout(void) {
 }
 
 static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
-    bool threaded = present_threaded();
+    bool threaded = g_pres_thread_on;  // (the thread may be presenting: the swapchain under sc_lock)
     uint64_t t0 = SDL_GetTicksNS();
     for (;;) {  // (threaded: a short timeout at a time, not holding the swapchain while the present thread needs it)
         uint64_t tc = SDL_GetTicksNS();
@@ -1417,18 +1455,19 @@ static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
 
 // Present window image img once sem is signalled (kind, seq: frame generation's pair and the frame's submission, see
 // present_wait_turn). Returns false when the swapchain must be made again.
-static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq) {
+static bool present_image(uint32_t img, VkSemaphore sem, int kind, int pos, int group, uint64_t seq) {
     if (!present_threaded()) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
+        if (g_pres_thread_on) vk_present_idle();  // (back from the thread: its presents first, in order)
         rec_wait_submitted(seq);  // (as present_thread)
-        present_wait_turn(kind, seq);
+        present_wait_turn(kind, pos, group, seq);
         VkResult r = queue_present(g_vk.queue, &pi);
         return !(r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR);
     }
     pthread_mutex_lock(&pres_m);
     while (presq_n == PRES_Q) pthread_cond_wait(&pres_cv, &pres_m);
-    presq[(presq_head + presq_n) % PRES_Q] = (__typeof__(presq[0])){g_vk.swapchain, sem, img, kind, seq};
+    presq[(presq_head + presq_n) % PRES_Q] = (__typeof__(presq[0])){g_vk.swapchain, sem, img, kind, pos, group, seq};
     presq_n++;
     pthread_cond_broadcast(&pres_cv);
     pthread_mutex_unlock(&pres_m);
@@ -1505,7 +1544,8 @@ bool vk_frame_begin(const float clear[4]) {
     bool hdr = hdr_wanted(&white);
     if (g_hdr) g_hdr_white = white;
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
-        atomic_exchange(&pres_stale, 0) || g_vk.sc_mode != wanted_present_mode() || hdr != (g_hdr || hdr_failed))
+        atomic_exchange(&pres_stale, 0) || g_vk.sc_mode != wanted_present_mode() || hdr != (g_hdr || hdr_failed) ||
+        sc_extra_wanted() != sc_extra_made)
         recreate_swapchain();
     if (!g_vk.swapchain) return false;
     static int trace = -1;
@@ -1602,6 +1642,7 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
 
 // End rendering into the window image and present it. shot_path: also save the window image as PNG.
 static int frame_kind;  // (frame generation: PRES_GEN / PRES_AFTER_GEN for the next vk_frame_end's present)
+static int frame_pos, frame_group = 2;  // (its place in the group: present_wait_turn)
 void vk_frame_end(const char *shot_path) {
     if (!cur_frame.ok) return;
     VkCommandBuffer cb = vk_cmd();
@@ -1617,8 +1658,8 @@ void vk_frame_end(const char *shot_path) {
     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
     g_present_split[3] += SDL_GetTicksNS() - ts;
     ts = SDL_GetTicksNS();
-    if (!present_image(img, done_sem[img], frame_kind, seq)) recreate_swapchain();
-    frame_kind = PRES_PLAIN;
+    if (!present_image(img, done_sem[img], frame_kind, frame_pos, frame_group, seq)) recreate_swapchain();
+    frame_kind = PRES_PLAIN, frame_pos = 0, frame_group = 2;
     g_present_split[4] += SDL_GetTicksNS() - ts;
     cur_frame.ok = false;
     if (shot_path) {
@@ -1650,6 +1691,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path);
 static uint64_t frames, total_frames, g_frame_counter;
 uint64_t renderer_present_count(void) { return total_frames; }
 static uint64_t presented_frames(void) { return total_frames; }
+static uint64_t lsfg_total_frames(void) { return total_frames; }
 uint64_t vk_frame_counter(void) { return g_frame_counter; }
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
@@ -1730,7 +1772,246 @@ static bool fg_wanted(void) {
     if (log && n++ % 300 == 0)
         LOG("[fg] wanted? title %d menu %d paused %d F1 menu %d\n", framepace_title_ui(), framepace_menu_ui(),
             framepace_paused(), menu_is_open());
+    if (g_settings.lsfg > 0) return false;  // (WSword: Lossless frame generation chosen instead - lsfg_prepare)
     return !framepace_title_ui() && !framepace_menu_ui() && !framepace_paused() && !menu_is_open();
+}
+
+// ================================================================== (WSword) Lossless frame generation
+// Video > Frame generation > Lossless 2x / 3x / 4x: frames made between each two the game draws by the backend of
+// lsfg-vk (third_party/lsfg-vk, GPL-3.0; lsfg.cpp) with the shaders of the player's own Lossless.dll (Lossless Scaling,
+// on Steam; none ships with WSword: Settings > Files > Lossless Scaling copies theirs to lsfg\Lossless.dll). It runs on
+// this device and queue. The game's image is copied into one of the backend's two source images; that submission
+// signals the backend's timeline semaphore, the backend's passes (submitted on the queue once the recorder has made that
+// submission, so nothing else is on it) write the frames between it and the one before, and each generated frame's
+// present waits for its own value. As with FSR 3, the frame rate counts the frames on screen: the game draws at a half,
+// a third or a quarter of it (framepace.c), and each group is spaced evenly (present_wait_turn). Paused where FSR 3's
+// frames are (the menus, the title screen, the F1 menu): the game draws at the full rate there.
+// SAVAGEWIND_LSFG=0..3: instead of the setting (tests).
+static struct {
+    int failed_for;           // the setting it stopped at (0: not stopped); err: why
+    char err[400];
+    bool open;                // a context: im, for these
+    LsfgImages im;
+    int gen, flow;
+    bool perf;
+    uint64_t last_frame;      // the real frame last given to the backend (total_frames + 1; 0 none)
+    uint64_t made, shown, skipped, t_log;  // (the [lossless] line every 10 s)
+    uint64_t shown_all, next_check;        // (lsfg_check)
+} lf;
+static uint64_t lsfg_total_frames(void);
+
+const char *vk_lsfg_dll_path(void) {
+    // next to WSword.exe (where 0.2.8-pc.x kept it, and where Settings > Files puts it), else in the data folder
+    static char p[1100];
+    char d[1100];
+    snprintf(p, sizeof p, "%s/lsfg/Lossless.dll", rt_exe_dir());
+    snprintf(d, sizeof d, "%s/lsfg/Lossless.dll", rt_data_root());
+    struct stat st;
+    if (stat(p, &st) != 0 && stat(d, &st) == 0) snprintf(p, sizeof p, "%s", d);
+    return p;
+}
+
+static int lsfg_setting(void) {  // the frames made between two of the game's: 1 (2x) to 3 (4x), 0 off
+    static int env = -2;
+    if (env == -2) { const char *e = getenv("SAVAGEWIND_LSFG"); env = e ? atoi(e) : -1; }
+    int v = env >= 0 ? env : g_settings.lsfg;
+    return v >= 1 && v <= LSFG_MAX_GENERATED ? v : 0;
+}
+
+// The flow scale in use (percent): the setting's, or Automatic - Lossless Scaling's own advice by the image's height,
+// about 1080 lines of motion (100% at 1080 lines, 75% at 1440, 50% at 2160), in steps of 5
+static int lsfg_flow_for(uint32_t height) {
+    int f = g_settings.lsfg_flow;
+    if (f <= 0) f = height ? (int)lround(1080.0 * 100 / height / 5) * 5 : 100;
+    return f < 25 ? 25 : f > 100 ? 100 : f;
+}
+
+static void lsfg_off(void) {  // (the backend waits for the device; the recorder and the presents first)
+    if (!lf.open) return;
+    vk_present_idle();
+    rec_drain();
+    lsfg_close();
+    lf.open = false;
+}
+
+static void lsfg_stop(int gen, const char *why) {
+    snprintf(lf.err, sizeof lf.err, "%s", why);
+    lf.failed_for = gen;
+    LOG("[lossless] stopped: %s\n", why);
+    lsfg_off();
+}
+
+// (Video > Frame generation's status line, ui/menu.mm)
+void vk_lsfg_status(char *out, size_t n) {
+    struct stat st;
+    int g = lsfg_setting();
+    if (stat(vk_lsfg_dll_path(), &st) != 0)
+        snprintf(out, n, "No Lossless.dll added yet: start screen > Settings > Files > Lossless Scaling.");
+    else if (!g)
+        snprintf(out, n, "Off. Lossless.dll is added.");
+    else if (lf.failed_for == g)
+        snprintf(out, n, "Stopped: %s", lf.err);
+    else if (lf.open)
+        snprintf(out, n, "On: %dx at %ux%u, flow scale %d%%%s, %s shaders%s. The frame rate counts the frames on screen: "
+                 "the game draws %s of them. Paused in the menus.", lf.gen + 1, lf.im.width, lf.im.height, lf.flow,
+                 g_settings.lsfg_flow <= 0 ? " (Automatic)" : "", lsfg_low_precision() ? "FP16" : "full-precision",
+                 lf.perf ? ", performance mode" : "", lf.gen == 1 ? "half" : lf.gen == 2 ? "a third" : "a quarter");
+    else
+        snprintf(out, n, "Starts in play, with the game's next frame.");
+}
+
+// Now and then (the 240th frame shown, then every 3600): the middle of the first generated frame against the real
+// frames before and after it, read back - "[lossless] check" in the log. A generated frame like neither of them but
+// between, not black, not a copy of one of them: the passes work on this GPU.
+static void lsfg_check(uint64_t index, uint64_t sig) {
+    const uint32_t S = 128;
+    uint32_t w = lf.im.width < S ? lf.im.width : S, h = lf.im.height < S ? lf.im.height : S;
+    int32_t x = (int32_t)((lf.im.width - w) / 2), y = (int32_t)((lf.im.height - h) / 2);
+    uint64_t one = (uint64_t)w * h * 4;
+    VkSpan rb = vk_readback(one * 3);
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkImage im[3] = {lf.im.source[(index + 1) % 2], lf.im.dest[0], lf.im.source[index % 2]};  // (before, generated, after)
+    for (int i = 0; i < 3; i++) {
+        VkBufferImageCopy rg = {.bufferOffset = rb.off + one * (uint64_t)i, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .imageOffset = {x, y, 0}, .imageExtent = {w, h, 1}};
+        rec_CmdCopyImageToBuffer(cb, im[i], VK_IMAGE_LAYOUT_GENERAL, rb.buf, 1, &rg);
+    }
+    vk_full_barrier(cb);
+    vk_next_submit_timeline(lf.im.sync, sig + 1, VK_NULL_HANDLE, 0);  // (the first generated frame made)
+    uint64_t seq = vk_pending_seq();
+    vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_wait_seq(seq);
+    extern void vk_readback_sync(void);
+    vk_readback_sync();
+    const uint8_t *p = rb.ptr;
+    double d_prev = 0, d_next = 0, d_pn = 0, lum = 0;
+    for (uint64_t i = 0; i < (uint64_t)w * h; i++) {
+        for (int c = 0; c < 3; c++) {
+            int a = p[i * 4 + c], g = p[one + i * 4 + c], nx = p[2 * one + i * 4 + c];
+            d_prev += abs(g - a), d_next += abs(g - nx), d_pn += abs(a - nx);
+            lum += g;
+        }
+    }
+    double k = 3.0 * w * h;
+    LOG("[lossless] check: the middle %ux%u of a generated frame against the real one before / after it: differs by %.2f "
+        "/ %.2f (those two by %.2f), its brightness %.1f of 255%s\n", w, h, d_prev / k, d_next / k, d_pn / k, lum / k,
+        lum / k < 1 ? " - black" : d_pn / k > 1 && (d_prev / k < 0.05 || d_next / k < 0.05) ? " - a copy of one of them" : "");
+}
+
+// The game's image b of this real frame into the backend. *on: frame generation runs (the game draws at 1 / (gen + 1)
+// of the frame rate); *sig: the backend's value the frames to show wait for (+ 1 + j). Returns how many frames to show
+// before this one (0: none - the first after a pause, or it is off).
+static int lsfg_prepare(TexBackend *b, bool *on, uint64_t *sig) {
+    *on = false;
+    int want = lsfg_setting();
+    if (!want) {
+        if (lf.open) { lsfg_off(); LOG("[lossless] off\n"); }
+        lf.failed_for = 0, lf.last_frame = 0;
+        return 0;
+    }
+    if (lf.failed_for == want) return 0;
+    lf.failed_for = 0;
+    {   // (every 10 s: what it did)
+        uint64_t now = SDL_GetTicksNS();
+        if (now - lf.t_log >= 10000000000ull) {
+            if (lf.t_log && (lf.made || lf.skipped))
+                LOG("[lossless] %dx: %llu frames made, %llu shown; %llu of the game's frames without (paused for the menus, "
+                    "the first after a pause)\n", lf.gen + 1, (unsigned long long)lf.made, (unsigned long long)lf.shown,
+                    (unsigned long long)lf.skipped);
+            lf.t_log = now, lf.made = lf.shown = lf.skipped = 0;
+        }
+    }
+    bool paused = framepace_title_ui() || framepace_menu_ui() || framepace_paused() || menu_is_open() || !b || !b->image ||
+                  b->layers != 1 || b->samples != 1 || (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || b->width < 64 ||
+                  b->height < 64;
+    if (paused) { lf.skipped++; lf.last_frame = 0; return 0; }
+    char err[400];
+    if (!lsfg_ready()) {
+        struct stat st;
+        const char *dll = vk_lsfg_dll_path();
+        if (stat(dll, &st) != 0) {
+            lsfg_stop(want, "no Lossless.dll - add yours on the start screen: Settings > Files > Lossless Scaling");
+            return 0;
+        }
+        char cache[1200];
+        snprintf(cache, sizeof cache, "%s", dll);
+        char *slash = strrchr(cache, '/');
+        if (slash) snprintf(slash + 1, sizeof cache - (size_t)(slash + 1 - cache), "pipeline_cache.bin");
+        LsfgDevice d = {.instance = g_vk.inst, .phys = g_vk.phys, .dev = g_vk.dev, .qfam = g_vk.qfam, .queue = g_vk.queue,
+                        .gipa = vkGetInstanceProcAddr, .fp16 = g_vk.fp16, .cache_path = cache};
+        vk_present_idle();
+        rec_drain();
+        uint64_t t0 = SDL_GetTicksNS();
+        if (lsfg_init(&d, dll, !getenv("SAVAGEWIND_LSFG_FP32"), err, sizeof err)) { lsfg_stop(want, err); return 0; }
+        LOG("[lossless] started: Lossless.dll's %s shaders on %s (%.0f ms)\n", lsfg_low_precision() ? "FP16" : "full-precision",
+            g_vk.props.deviceName, (SDL_GetTicksNS() - t0) / 1e6);
+    }
+    // the copy: the same bytes (an sRGB image's too: the present reads them as they are, exec.c raw_view), a blit where
+    // the format differs (the values kept: not for another sRGB format, which the blit would decode)
+    bool same = b->format == VK_FORMAT_R8G8B8A8_UNORM || b->format == VK_FORMAT_R8G8B8A8_SRGB;
+    if (!same) {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
+        bool srgb = b->format == VK_FORMAT_B8G8R8A8_SRGB || b->format == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+        if (srgb || !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
+            snprintf(err, sizeof err, "the game's image (format %d) can't be copied for it on this GPU", b->format);
+            lsfg_stop(want, err);
+            return 0;
+        }
+    }
+    int flow = lsfg_flow_for(b->height);
+    if (!lf.open || lf.gen != want || lf.im.width != b->width || lf.im.height != b->height || lf.flow != flow ||
+        lf.perf != g_settings.lsfg_perf) {
+        lsfg_off();
+        vk_present_idle();
+        rec_drain();
+        uint64_t t0 = SDL_GetTicksNS();
+        if (lsfg_open(want, b->width, b->height, flow / 100.0f, g_settings.lsfg_perf, &lf.im, err, sizeof err)) {
+            lsfg_stop(want, err);
+            return 0;
+        }
+        lf.open = true, lf.gen = want, lf.flow = flow, lf.perf = g_settings.lsfg_perf;
+        lf.last_frame = 0;
+        LOG("[lossless] %dx at %ux%u (game image format %d), flow scale %d%%%s%s (%.0f ms)\n", want + 1, b->width, b->height,
+            b->format, flow, g_settings.lsfg_flow <= 0 ? " (automatic)" : "", lf.perf ? ", performance mode" : "",
+            (SDL_GetTicksNS() - t0) / 1e6);
+    }
+    uint64_t s = lsfg_next_signal(), index = lsfg_frame_index();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);  // (the game's image drawn)
+    VkImage dst = lf.im.source[index % 2];
+    if (same) {
+        VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                          .extent = {b->width, b->height, 1}};
+        rec_CmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    } else {
+        VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                          .srcOffsets = {{0, 0, 0}, {(int32_t)b->width, (int32_t)b->height, 1}},
+                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                          .dstOffsets = {{0, 0, 0}, {(int32_t)b->width, (int32_t)b->height, 1}}};
+        rec_CmdBlitImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
+    }
+    // (no barrier after the copy: the submission's signal makes it visible to the passes that wait for it)
+    vk_next_submit_timeline(VK_NULL_HANDLE, 0, lf.im.sync, s);
+    uint64_t seq = vk_pending_seq();
+    vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    rec_wait_submitted(seq);  // (the recorder made it and has nothing else: the backend's submissions go on the queue now)
+    if (lsfg_schedule(err, sizeof err)) { lsfg_stop(want, err); return 0; }
+    *on = true;
+    lf.made += (uint64_t)want;
+    // nothing to show for the first frame, nor after a pause: the frame before isn't the one shown before this one
+    uint64_t frame = lsfg_total_frames() + 1;
+    bool follows = lf.last_frame && lf.last_frame + 1 == frame;
+    lf.last_frame = frame;
+    if (!index || !follows) { lf.skipped++; return 0; }
+    *sig = s;
+    if (!lf.next_check) lf.next_check = 240;
+    if (lf.shown_all >= lf.next_check) {
+        lsfg_check(index, s);
+        lf.next_check = lf.shown_all + 3600;
+    }
+    return lf.im.ndest < want ? lf.im.ndest : want;
 }
 
 // The image being presented, for the control endpoint's `shot` (runtime/control_game.c; commands run in this frame).
@@ -1767,7 +2048,13 @@ static void present_locked(NvnTexture *t) {
         if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
         if (test == 1) gen = NULL;
     }
-    g_fg_active = gen != NULL;
+    // (WSword) Lossless frame generation instead, when chosen: the game's image into it, its frames shown first
+    bool lsfg_on = false;
+    uint64_t lsfg_sig = 0;
+    int lsfg_show = gen ? 0 : lsfg_prepare(b, &lsfg_on, &lsfg_sig);
+    g_fg_active = gen ? 2 : lsfg_on ? lf.gen + 1 : 0;  // (framepace.c: the game draws one frame in that many)
+    g_present_groups = lsfg_on;  // (present_threaded: its groups on the present thread)
+    g_group_size = lsfg_on ? lf.gen + 1 : 2;
     static const float black[4] = {0, 0, 0, 1};
     bool have = vk_frame_begin(black);
     uint64_t nd = SDL_GetTicksNS() - t0;
@@ -1824,13 +2111,30 @@ static void present_locked(NvnTexture *t) {
                 snprintf(fg_real_shot, sizeof fg_real_shot, "build/frames/window_%05ld_%d_real.png", gat, 2 - gleft);
                 gleft--;
             }
-            frame_kind = PRES_GEN;
+            frame_kind = PRES_GEN, frame_pos = 0, frame_group = 2;
             vk_frame_end(gpath[0] ? gpath : NULL);
-            frame_kind = PRES_AFTER_GEN;  // (the game's frame, below)
+            frame_kind = PRES_AFTER_GEN, frame_pos = 1, frame_group = 2;  // (the game's frame, below)
             gen_frames++;
             perfmon_generated_frame();
-            if (!vk_frame_begin(black)) { renderer_submit(); goto presented; }
+            if (!vk_frame_begin(black)) { frame_kind = PRES_PLAIN, frame_pos = 0; renderer_submit(); goto presented; }
             cb = vk_cmd();
+        }
+        if (lsfg_show) {  // (WSword) Lossless frame generation's frames, as the game's are, then the game's after them
+            for (int j = 0; j < lsfg_show; j++) {
+                vk_present_draw_view(cb, lf.im.dest_view[j], lf.im.width, lf.im.height, (float)vx, (float)vy, (float)vw,
+                                     (float)vh, pv);
+                if (menu_render_needed()) rec_drain();
+                menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
+                vk_next_submit_timeline(lf.im.sync, lsfg_sig + 1 + (uint64_t)j, VK_NULL_HANDLE, 0);  // (its frame made)
+                frame_kind = PRES_GEN, frame_pos = j, frame_group = lsfg_show + 1;
+                vk_frame_end(NULL);
+                gen_frames++;
+                lf.shown++, lf.shown_all++;
+                perfmon_generated_frame();
+                if (!vk_frame_begin(black)) { frame_kind = PRES_PLAIN, frame_pos = 0; renderer_submit(); goto presented; }
+                cb = vk_cmd();
+            }
+            frame_kind = PRES_AFTER_GEN, frame_pos = lsfg_show, frame_group = lsfg_show + 1;
         }
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
         static long menu_at = -1;

@@ -78,6 +78,11 @@ void vk_wait_ready(void);  // until the main thread has made the window and devi
 void vk_full_barrier(VkCommandBuffer cb);
 void vk_end_pass(void);
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra);  // submit + one more cb (present)
+// (WSword: Lossless frame generation, device.c) the next submission also waits for / signals a timeline value
+void vk_next_submit_timeline(VkSemaphore wait, uint64_t wv, VkSemaphore signal, uint64_t sv);
+// (WSword) inside the window image's rendering: a w x h image's view drawn as the game's image is (vk_present_draw)
+void vk_present_draw_view(VkCommandBuffer cb, VkImageView view, uint32_t w, uint32_t h, float vx, float vy, float vw, float vh,
+                          const float pv[8]);
 void vk_present_idle(void);  // device.c: the presentation thread has no present queued or in progress
 void vk_dyn_forget(void);    // exec.c: graphics pipeline / dynamic state of the main command buffer changed elsewhere
 
