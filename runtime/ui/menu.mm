@@ -1488,6 +1488,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 settings_reset_defaults();
                 settings_save();
                 android_set_display_refresh(g_settings.display_refresh);  // (the display mode follows at once)
+#ifdef _WIN32
+                g_want_fullscreen_apply.store(true);  // (PC: Display mode back to its default too)
+#endif
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();

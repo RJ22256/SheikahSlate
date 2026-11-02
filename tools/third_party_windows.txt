@@ -1,0 +1,23 @@
+WSword for Windows - the third-party software in this folder
+=============================================================
+
+WSword's own code: MIT (LICENSE). Because WSword.exe includes lsfg-vk's backend (GPL-3.0-or-later, the frame
+generation), WSword.exe as a whole is distributed under the GPL-3.0: its complete source is the WSword repository this
+build came from (lsfg-vk-README.md, LICENSE.md here).
+
+- lsfg-vk (frame generation backend), PancakeTAS and contributors - GPL-3.0. Lossless.dll is NOT included: frame
+  generation uses the player's own copy, which the player picks.
+- SDL 3 (SDL3.dll) - zlib licence. https://libsdl.org
+- FFmpeg 9.0.2 (avcodec, avformat, avutil, swscale DLLs: the game's movies) - LGPL-2.1-or-later, built without GPL
+  parts by tools/build_deps_windows.sh from https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz (its source).
+- shaderc / glslang / SPIRV-Tools (shaderc_shared.dll, the shader compiler) - Apache-2.0 / BSD-3-Clause.
+- Dear ImGui - MIT. Vulkan Memory Allocator - MIT. SMAA - MIT. LAS Recomp's desktop runtime - MIT.
+- zig (zig/, the compiler that builds the game code on this PC) - MIT; its bundled libc headers carry their own
+  (permissive) licences inside zig/lib.
+- Python and the libraries frozen into botwgen/ (PyInstaller; capstone - BSD, unicorn - GPL-2.0, lz4 - BSD) - each
+  under its own licence, kept in botwgen/_internal.
+- Fonts: Baloo 2 and Inter - SIL Open Font Licence 1.1 (Baloo2-OFL.txt, Inter-OFL.txt).
+- The C/C++ runtime DLLs from MSYS2's UCRT64 (libc++, libunwind, winpthread) - their own permissive licences.
+
+No part of The Legend of Zelda: Breath of the Wild is included: the game code is built on this PC from the player's
+own game files.

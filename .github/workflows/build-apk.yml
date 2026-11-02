@@ -115,6 +115,8 @@ jobs:
           printf '#define PROP_VALUE_MAX 92\nint __system_property_get(const char *, char *);\n' > build/stub/sys/system_properties.h
           clang -O1 -Wall -D__ANDROID__ -Iruntime -Iandroid/deps/out/include -Ibuild/stub -o build/test_modes tools/test_modes.c runtime/settings.c
           build/test_modes
+          clang -O1 -Wall -Iruntime -o build/test_modes_pc tools/test_modes_pc.c runtime/settings.c -lm  # (WSword PC's modes)
+          build/test_modes_pc
           sh tools/test_lsfg_dll.sh android/deps/out/include  # (WSword: frame generation's backend builds; its DLL check)
           python3 tools/test_bc_threads.py
           sudo apt-get install -y -qq glslang-tools >/dev/null

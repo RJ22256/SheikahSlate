@@ -273,7 +273,7 @@ static void mode_into(Settings *s, int mode) {
     // keeps up, 30 where it doesn't, the scene at the window's size; Turbo - 40 fps (3 refreshes of a 120 Hz monitor a
     // frame); Turbo 60 - always 60, the game's resolution as far down as 60 needs. Even pacing automatic.
     s->fps_mode = mode == MODE_TURBO60 ? 2 : mode == MODE_TURBO ? 3 : mode == MODE_PERFORMANCE ? 0 : 1;
-    s->display_refresh = 0;
+    // (display_refresh left as it is: on the PC it is Exclusive fullscreen's refresh rate, the monitor's choice)
     s->even_pacing = -1;
     s->res_mode = mode == MODE_BATTERY ? 1 : RES_MATCH;
     s->upscaler = mode == MODE_BATTERY ? UPSCALE_SGSR1 : UPSCALE_FSR1;

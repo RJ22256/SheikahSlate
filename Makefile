@@ -138,7 +138,7 @@ dist:
 	@[ -x build/zig/zig.exe ] || { echo "tools/fetch_zig.sh first (the compiler)"; exit 1; }
 	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 $(WIN_B)/WSword.exe
 	! nm $(WIN_B)/WSword.exe | grep ' f_70' >/dev/null  # (no game code inside)
-	rm -rf build/dist && mkdir -p "$(DIST)/gamelib-src" "$(DIST)/res"
+	rm -rf build/dist && mkdir -p "$(DIST)/gamelib-src"
 	cp $(WIN_B)/WSword.exe $(WIN_B)/WSword.dll.a "$(DIST)/"
 	tools/zig_slim.sh $(GENFLAGS)
 	cp -R build/helper/botwgen "$(DIST)/"
@@ -147,6 +147,8 @@ dist:
 	    "$(DIST)/gamelib-src/"
 	tools/win_resources.sh "$(DIST)"
 	cp README.md LICENSE third_party/lsfg-vk/LICENSE.md "$(DIST)/"
+	cp docs/PC.md "$(DIST)/WSword-PC-guide.md"
+	cp tools/third_party_windows.txt "$(DIST)/THIRD-PARTY.txt"
 	cp third_party/lsfg-vk/README.WSword.md "$(DIST)/lsfg-vk-README.md"
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/WSword.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | \
 	    sort -u | xargs -I{} cp -u {} "$(DIST)/"

@@ -54,6 +54,15 @@ their MIT licence. See [third_party/lsfg-vk/README.WSword.md](third_party/lsfg-v
 
 Details, reasoning and the files involved: [docs/TAB-S10-ULTRA.md](docs/TAB-S10-ULTRA.md).
 
+## WSword for PC (Windows 10/11)
+
+The same game on a PC, with the Android work carried over: the Glass Slate start screen and Settings, Video > Mode
+(made for a PC: Performance is 60 fps where the PC keeps up), even frame pacing, the steadied dynamic resolution,
+frame generation with **your own Lossless.dll** (Settings > Files > Lossless Scaling - you pick the file), eleven menu
+languages - and mouse and keyboard (a mouse camera), controllers, windowed / borderless / exclusive fullscreen with a
+refresh rate, ultrawide and high-refresh monitors. The game code is built on your PC on first start, with the compiler
+WSword brings. Guide: [docs/PC.md](docs/PC.md); building: [docs/BUILD-windows.md](docs/BUILD-windows.md).
+
 ## Installing
 
 1. Build the APK (below) and install it on the tablet. You need about 30 GB free per game version (or use the game
