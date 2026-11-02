@@ -32,7 +32,7 @@ bool color_grade_get(ColorGrade *g);
 // The LUTs offered: the shipped ones first (their own names), then the player's (file name without extension),
 // rescanned on each call. Index 0 is "None". The setting stores color_lut_id().
 enum { COLOR_LUT_MAX = 200 };
-#define COLOR_LUT_RECOMMENDED "sw:Savage_Wind.cube"  // Savage Wind's own look (third_party/luts), offered at the setup
+#define COLOR_LUT_RECOMMENDED "sw:Savage_Wind.cube"  // WSword's own look (third_party/luts), offered at the setup
 #define COLOR_LUT_RECOMMENDED_STRENGTH 50  // (percent) its LUT intensity in the recommended setup
 int color_lut_list(void);            // how many (with None)
 const char *color_lut_name(int i);   // as shown

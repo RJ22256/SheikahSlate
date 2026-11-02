@@ -16,7 +16,7 @@ bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: FSR 3 upscaling held 
 // SAVAGEWIND_SETTINGS=<path>: another settings file (test runs never touch the player's savagewind.ini)
 static const char *settings_file(void) {
     const char *e = getenv("SAVAGEWIND_SETTINGS");
-    return e && *e ? e : "savagewind.ini";
+    return e && *e ? e : "WSword.ini";
 }
 
 Settings g_settings = {
@@ -261,7 +261,7 @@ void settings_load(void) {
 void settings_save(void) {
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
-    fprintf(f, "# Savage Wind settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
+    fprintf(f, "# WSword settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "settings_version = %d\n", SETTINGS_VERSION);
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     int fm = g_settings.fullscreen_mode;

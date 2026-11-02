@@ -47,12 +47,9 @@ idiomas no menu - e por cima o trabalho do tablet:
 
 ## WSword para PC (Windows 10/11)
 
-O mesmo jogo no PC, com o trabalho do Android junto: a tela inicial e as Configurações Glass Slate, Vídeo > Modo (feito
-para PC: Desempenho é 60 fps onde o PC aguenta), ritmo uniforme dos quadros, a resolução dinâmica estabilizada, geração
-de quadros com **o seu próprio Lossless.dll** (Configurações > Arquivos > Lossless Scaling - você escolhe o arquivo), onze
-idiomas nos menus - e mouse e teclado (câmera no mouse), controles, janela / tela cheia sem borda / tela cheia exclusiva
-com taxa de atualização, monitores ultrawide e de alta frequência. O código do jogo é compilado no seu PC na primeira
-vez, com o compilador que vem com o WSword. Guia (em inglês): [docs/PC.md](docs/PC.md).
+A partir da 0.3.0, o WSword no PC é feito sobre o **[Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp)**. É uma recompilação estática de Revivedx e colaboradores (MIT), feita sobre o LAS Recomp como o WSword, e pensada para PC: 60-120 fps onde a versão anterior do WSword para PC rodava a 15-20. O código está em [`pc/`](pc), com as mudanças do WSword em [pc/WSWORD.md](pc/WSWORD.md).
+
+Roda a versão 1.9.0 do jogo (recomendada) ou a 1.8.2, com o código do jogo compilado no seu PC na primeira vez. Uma pasta de um WSword anterior mantém os arquivos do jogo e os saves: é só descompactar por cima dela. Guia (em inglês): [docs/PC.md](docs/PC.md).
 
 Detalhes: [docs/TAB-S10-ULTRA.md](docs/TAB-S10-ULTRA.md). Como compilar e os créditos completos: [README.md](README.md).
 O README original: [docs/upstream/README.pt-BR.md](docs/upstream/README.pt-BR.md).

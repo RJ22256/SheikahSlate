@@ -1,4 +1,4 @@
-// "Savage Wind Configuration.exe" (Windows; build/savagewind-config.exe in a build): starts savagewind.exe from its own
+// "WSword Configuration.exe" (Windows; build/savagewind-config.exe in a build): starts savagewind.exe from its own
 // folder with --config, the configuration screen (runtime/ui/launcher.mm: Play, Settings, the game files, Quit), and
 // passes its own arguments on. A plain start of savagewind.exe goes straight into the game once the game files are set
 // up. This is its own small program, not savagewind.exe under a second name: the game code library imports from
@@ -22,7 +22,7 @@ int main(void) {
     DWORD n = GetModuleFileNameW(NULL, exe, sizeof exe / sizeof *exe);
     wchar_t *slash = n && n < sizeof exe / sizeof *exe ? wcsrchr(exe, L'\\') : NULL;
     if (!slash) return 1;
-    wcscpy(slash + 1, L"savagewind.exe");
+    wcscpy(slash + 1, L"WSword.exe");
     const wchar_t *rest = args_after_name(GetCommandLineW());
     size_t cap = wcslen(exe) + wcslen(rest) + 32;
     wchar_t *line = HeapAlloc(GetProcessHeap(), 0, cap * sizeof *line);
@@ -34,9 +34,9 @@ int main(void) {
     // (the working folder stays this one's: savagewind.exe finds its data folder from it, runtime/paths.c)
     if (!CreateProcessW(exe, line, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
         wchar_t msg[4400];
-        swprintf(msg, sizeof msg / sizeof *msg, L"Savage Wind Configuration can't start\n%ls\n\nIt has to be in the same "
-                 L"folder as savagewind.exe.", exe);
-        MessageBoxW(NULL, msg, L"Savage Wind", MB_OK | MB_ICONERROR);
+        swprintf(msg, sizeof msg / sizeof *msg, L"WSword Configuration can't start\n%ls\n\nIt has to be in the same "
+                 L"folder as WSword.exe.", exe);
+        MessageBoxW(NULL, msg, L"WSword", MB_OK | MB_ICONERROR);
         return 1;
     }
     CloseHandle(pi.hThread);

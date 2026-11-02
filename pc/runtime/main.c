@@ -1,4 +1,4 @@
-// Savage Wind entry: load modules, set up the kernel, run nn::init::Start on the main thread.
+// WSword entry: load modules, set up the kernel, run nn::init::Start on the main thread.
 #include <SDL3/SDL.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -312,7 +312,7 @@ static int dump_romfs(const char *root, const char *out_path) {
 
 // The start screen (runtime/ui/launcher.mm), in one of two modes: SETUP sets the game files up and nothing else (a
 // plain start before they're ready; the game starts once they are), CONFIG is the whole configuration screen - Play,
-// Settings, the game files, Quit ("Savage Wind Configuration", --config; Quit to Start Screen comes back to it).
+// Settings, the game files, Quit ("WSword Configuration", --config; Quit to Start Screen comes back to it).
 enum { LAUNCHER_SETUP, LAUNCHER_CONFIG, LAUNCHER_NONE };
 void launcher_run(const char *root, int mode);
 bool launcher_game_ready(const char *root);
@@ -325,9 +325,9 @@ int main(int argc, char **argv) {
 #else
     setvbuf(stderr, NULL, _IOLBF, 0);
 #endif
-    // every log starts with which Savage Wind made it: the version and the source it was built from (Makefile SW_SOURCE)
+    // every log starts with which WSword made it: the version and the source it was built from (Makefile SW_SOURCE)
     extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
-    fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
+    fprintf(stderr, "[wsword] WSword %s, built on Savage Wind Recomp 0.4.1-alpha.4 (%s)\n", rt_version(), SW_SOURCE);
     control_init();
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
@@ -345,7 +345,7 @@ int main(int argc, char **argv) {
         else if (argv[i][0] != '-') root = arg_root;
     }
 #ifdef __APPLE__
-    if (launcher_config_key_held()) config = true;  // (the Mac's "Savage Wind Configuration": Option held)
+    if (launcher_config_key_held()) config = true;  // (the Mac's "WSword Configuration": Option held)
 #endif
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
     if (dump) return dump_romfs(root, dump);
@@ -366,13 +366,13 @@ int main(int argc, char **argv) {
         mode = test_mode && !strcmp(test_mode, "setup") ? LAUNCHER_SETUP : LAUNCHER_CONFIG;
     for (;;) {
         if (mode != LAUNCHER_NONE) launcher_run(root, mode);
-        // The game holds the lock on its save folder while it runs, so the Saves tab of another Savage Wind refuses to
+        // The game holds the lock on its save folder while it runs, so the Saves tab of another WSword refuses to
         // swap or copy saves under it. Not getting it (somebody else has it, or no lock file can be made) never stops
         // the game; it is let go before the start screen of a reboot, which is this same process.
         ScLock *save_lock = NULL;
         const char *save_env = getenv("SAVAGEWIND_SAVE_DIR");
         if (sc_lock_take(save_env && *save_env ? save_env : "save", &save_lock) == SC_LOCK_BUSY)
-            fprintf(stderr, "[saves] another Savage Wind is running with this save folder; saving from both can overwrite saves\n");
+            fprintf(stderr, "[saves] another WSword is running with this save folder; saving from both can overwrite saves\n");
         boot(root);
         int kind = ui_run();  // window and input on the main thread; returns when a reboot is requested
         teardown();

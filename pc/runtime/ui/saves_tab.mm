@@ -344,7 +344,7 @@ void failure_text(int code, bool backup, std::string *head, std::string *hint) {
         break;
     case SC_SWITCH_SAVE:
         *head = tr("That is a Switch save already");
-        *hint = tr("Savage Wind uses those as they are: copy its files into the save folder instead.");
+        *hint = tr("WSword uses those as they are: copy its files into the save folder instead.");
         break;
     case SC_BAD_SAVE: *head = tr("A save file is damaged or incomplete"); break;
     case SC_NO_BOOTUP:
@@ -357,10 +357,10 @@ void failure_text(int code, bool backup, std::string *head, std::string *hint) {
         break;
     case SC_LINKED:
         *head = tr("The save folder is a link");
-        *hint = tr("Savage Wind doesn't replace a linked folder. Use a normal save folder.");
+        *hint = tr("WSword doesn't replace a linked folder. Use a normal save folder.");
         break;
     case SC_IN_USE:
-        *head = tr("Savage Wind is running in a game");
+        *head = tr("WSword is running in a game");
         *hint = tr("Close the game first, then try again.");
         break;
     case SC_MOVED:
@@ -529,7 +529,7 @@ void saves_tab_draw(void) {
         if (g_recovery.backup[0])
             ImGui::TextWrapped("%s", fmt("Previous saves (if any): %s", shown_path(g_recovery.backup).c_str()).c_str());
         ImGui::TextWrapped("%s", fmt("Imported saves: %s", shown_path(g_recovery.imported).c_str()).c_str());
-        ImGui::TextWrapped("%s", tr("Close Savage Wind and rename one of these folders to save to recover it. These folders have been kept."));
+        ImGui::TextWrapped("%s", tr("Close WSword and rename one of these folders to save to recover it. These folders have been kept."));
     } else if (!working && g_cleanup_code != SC_OK) {
         opt_section("Result");
         ImGui::TextWrapped("%s", tr("Files could not be read or written"));

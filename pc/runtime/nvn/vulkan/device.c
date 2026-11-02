@@ -92,11 +92,11 @@ static void create_instance(void) {
     sscanf(rt_version(), "%u.%u.%u-%*[a-z].%u", &vmaj, &vmin, &vpatch, &vpre);
     uint32_t ver = VK_MAKE_API_VERSION(0, vmaj, vmin, vpatch * 100 + vpre);
     char engine[64];  // (the release in the engine's name too: whichever of the two a driver keys its cache on)
-    snprintf(engine, sizeof engine, "Savage Wind %s", rt_version());
-    VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "Savage Wind",
+    snprintf(engine, sizeof engine, "WSword %s", rt_version());
+    VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "WSword",
                              .applicationVersion = ver, .pEngineName = engine, .engineVersion = ver,
                              .apiVersion = VK_API_VERSION_1_3};
-    LOG("[vk] application version %u.%u.%u (Savage Wind %s)\n", vmaj, vmin, vpatch * 100 + vpre, rt_version());
+    LOG("[vk] application version %u.%u.%u (WSword %s)\n", vmaj, vmin, vpatch * 100 + vpre, rt_version());
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
@@ -2101,7 +2101,7 @@ void ui_window_init(void) {
     SDL_WindowFlags wflags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (getenv("SAVAGEWIND_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
     SDL_PropertiesID props = SDL_CreateProperties();
-    SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "Savage Wind");
+    SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "WSword");
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, win_w);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, win_h);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, (Sint64)wflags);

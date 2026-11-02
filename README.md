@@ -56,12 +56,11 @@ Details, reasoning and the files involved: [docs/TAB-S10-ULTRA.md](docs/TAB-S10-
 
 ## WSword for PC (Windows 10/11)
 
-The same game on a PC, with the Android work carried over: the Glass Slate start screen and Settings, Video > Mode
-(made for a PC: Performance is 60 fps where the PC keeps up), even frame pacing, the steadied dynamic resolution,
-frame generation with **your own Lossless.dll** (Settings > Files > Lossless Scaling - you pick the file), eleven menu
-languages - and mouse and keyboard (a mouse camera), controllers, windowed / borderless / exclusive fullscreen with a
-refresh rate, ultrawide and high-refresh monitors. The game code is built on your PC on first start, with the compiler
-WSword brings. Guide: [docs/PC.md](docs/PC.md); building: [docs/BUILD-windows.md](docs/BUILD-windows.md).
+From 0.3.0, WSword on PC is built on **[Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp)**. It is a static recompilation by Revivedx and contributors (MIT), built on LAS Recomp as WSword is, and it was made for PCs: 60-120 fps where WSword's earlier PC build ran at 15-20. Its source is in [`pc/`](pc), with WSword's changes listed in [pc/WSWORD.md](pc/WSWORD.md).
+
+It plays game version 1.9.0 (recommended) or 1.8.2, with the game code built on your PC on the first start. An older WSword folder keeps its game files and saves: unzip over it.
+
+Guide: [docs/PC.md](docs/PC.md); building: [docs/BUILD-windows.md](docs/BUILD-windows.md).
 
 ## Installing
 

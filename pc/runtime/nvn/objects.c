@@ -1142,7 +1142,7 @@ NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
 // a row over 1.9 vsyncs (31.7 ms), back to 2 after a few fast ones; [fw+0x234] is the highest interval it may pick (3).
 // SAVAGEWIND_LOG_FRAMETIME=<ms>: frames whose game time is over that, and every change of interval (tests).
 // SAVAGEWIND_MAX_INTERVAL=2: the game never picks 3, so its step per frame is fixed and a scripted run takes the same
-// path every time (benchmarks; with 3 allowed, the path depends on the frame times). The default while Savage Wind
+// path every time (benchmarks; with 3 allowed, the path depends on the frame times). The default while WSword
 // paces the frames and sets the game's clock (runtime/hle/framepace.c): the interval no longer sets either.
 #define FRAME_LOOP_LR g_site.frame_loop_interval_ret
 NVN(nvnWindowSetPresentInterval) {

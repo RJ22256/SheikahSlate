@@ -1,110 +1,95 @@
 # WSword for PC (Windows 10/11)
 
-WSword's PC build: the same recompiled *Breath of the Wild* as the Android app, with the Android work carried over -
-the Glass Slate start screen and Settings, Video > Mode, even frame pacing, the steadied dynamic resolution, frame
-generation with your own Lossless.dll, eleven menu languages - and what a PC needs on top: mouse and keyboard, a
-window or fullscreen, high-refresh and ultrawide monitors.
+From 0.3.0, WSword's PC build is built on **[Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp)** 0.4.1-alpha.4
+by Revivedx and the Savage Wind contributors (MIT). Like WSword, Savage Wind is built on LAS Recomp, and it was made for
+PCs:
+- the game's geometry stays in video memory;
+- the CPU and GPU work at the same time;
+- the driver calls run on a thread of their own;
+- the game copies about 13 times less data to the GPU each frame.
+
+Where 0.2.8-pc.x ran at 15-20 fps with the CPU and GPU mostly idle, it plays at 60-120 fps.
+
+The source is in `pc/` in this repository: Savage Wind as released, with WSword's changes listed in `pc/WSWORD.md`.
+Its license is in the zip (`LICENSE.txt`), and its own README (`SavageWind-README.md`) lists the components inside
+and their licenses.
 
 > [!NOTE]
-> **No game files and no Lossless.dll are included.** You need your own dump of *Breath of the Wild* 1.0.0, 1.6.0,
-> 1.8.2 or 1.9.0 (`exefs` and `romfs`, extracted), and for frame generation your own copy of Lossless Scaling.
+> **No game files are included.** You need your own dump of *Breath of the Wild* **1.9.0** (recommended) or 1.8.2:
+> the ExeFS and the RomFS with the update merged in, extracted from your own Switch.
 
 ## What you need
 
-- Windows 10 or 11, 64-bit, on a CPU with AVX2 (Intel 4th generation / Haswell or newer, AMD Ryzen or newer).
-- A GPU with a **Vulkan 1.3** driver: NVIDIA GTX 900 series or newer, AMD RX 400 series or newer, Intel Arc or Iris Xe -
-  with a recent driver from NVIDIA's, AMD's or Intel's site.
-- About 30 GB free for each game version you set up (its files and the game code built from them).
+- Windows 10 or 11, 64-bit. A CPU with AVX2 runs fastest; one with only SSE4.2 gets a slower compatible build.
+- A GPU with a **Vulkan 1.3** driver, from NVIDIA's, AMD's or Intel's site.
+- 16 GB of RAM.
+- About 20 GB free.
 
-## Installing and the first start
+## Updating from 0.2.8-pc.x
 
-1. Unzip `WSword-<version>-windows.zip` anywhere you can write to (not `Program Files`; a folder synced by OneDrive
-   works but is slower). Keep everything in the `WSword` folder together.
-2. Run `WSword.exe`. On the start screen choose **Set up game files** and pick the folder with your `exefs` and
-   `romfs`. WSword copies the files, builds the game's data image, then **builds the game's code on your PC** with the
-   compiler in its `zig` folder - a few minutes, once per game version (it uses every CPU core).
-3. **PLAY**. The first time it asks for the aspect ratio (Unlocked fills an ultrawide) and shows how to open the menu.
+Unzip `WSword-0.3.0-pc.1-windows.zip` over your `WSword` folder and replace the files. Then run `WSword.exe`:
 
-Saves, settings and the game files stay in WSword's data folder; Settings > Files > Saves opens it in Explorer.
+1. **It finds your game files and saves.** It uses the game version you set up before (its `v190` or `v182` folder, the one `game_version.txt` names). No new copy of the game is made.
+2. **It builds the game code once,** on its own. This takes a few minutes and uses every CPU core. The old one was built for WSword's previous engine.
+3. **It frees space.** The old `romfs.bin` next to `romfs/` is removed (~15 GB): the game now reads `romfs/` directly.
+4. **It starts the game.** Settings start fresh, in the game's own Options.
 
-## Controls
+Left over from 0.2.8 and no longer used (you can delete them):
+- next to `WSword.exe`: the `botwgen` and `lsfg` folders, `THIRD-PARTY.txt`, `launcher-background.png`, the `app-icon-*.png` pictures, and the Baloo2 / Inter font files;
+- in the version folder: `sheikahslate.ini` and `extracted\botwgame.dll`.
 
-| | Keyboard and mouse | Controller |
-| --- | --- | --- |
-| Move | W A S D | Left stick |
-| Camera | Mouse (Settings > Controls > Mouse camera: speed, invert) or numpad 8 4 5 6 | Right stick |
-| Attack (Y) | Left mouse button, or I | Y |
-| Bow (ZR) | Right mouse button - hold to aim, let go to shoot - or 3 | ZR |
-| Lock on / shield (ZL) | Middle mouse button, or 1 | ZL |
-| L / R | Mouse side buttons, or Q / E | L / R |
-| A / B / X | K / J / L | A / B / X |
-| + / - | Enter / Backspace | + / - |
-| WSword's menu | Esc or F1 | Home / Xbox / PS button, or Back + Start |
-| Fullscreen | F11 or Alt+Enter | |
+If it asks for game files instead, choose the folder with your `exefs` and `romfs` again. This happens with 1.0.0 or 1.6.0 (Savage Wind plays 1.8.2 and 1.9.0), or if the old setup used them in place.
 
-The keys can be changed in Settings > Controls. While you play the game has the mouse; Esc, F1 or holding Alt lets it
-go. Any controller SDL knows works (Xbox, DualSense / DualShock 4, Switch Pro, 8BitDo...), with its gyroscope as the
-motion controls where it has one.
+## A new install
 
-## Video settings on a PC
+1. Unzip it anywhere you can write to (not `Program Files`).
+2. Run `WSword.exe`, choose the folder with your extracted game (`exefs` and `romfs`) and **Set up game files**. It
+   copies them and builds the game code (about 6 minutes on a 12-thread CPU).
+3. From then on `WSword.exe` goes straight into the game.
 
-- **Mode**: Battery (30 fps, light - a laptop on battery), **Performance** (the default: 60 fps where your PC keeps up,
-  30 where it doesn't, at your window's resolution), Turbo (40 fps for a 120 Hz monitor), Turbo 60 (always 60).
-- **Display mode**: Windowed (resize it to any shape - with Aspect ratio Unlocked an ultrawide or a tall window shows
-  more), Borderless fullscreen, or Exclusive fullscreen with its own **Refresh rate**: Highest, 60 Hz, the desktop's,
-  or **120 Hz** - a whole number of refreshes for every frame at 30, 40 and 60 fps, the right choice on a 144 or 165 Hz
-  monitor without G-SYNC / FreeSync.
-- **Even frame pacing**: every frame on screen for the same time. AMD's driver reports when frames reach the screen, so
-  there each frame is aimed at a refresh of its own (as on Android; Automatic turns it on). NVIDIA's and Intel's don't:
-  there **On** shows each frame again for every refresh it stays up, on a vsync'd swapchain - even where the monitor's
-  rate is a whole number of frames (60, 120, 240 Hz), at the cost of a refresh or two of delay. With G-SYNC / FreeSync
-  leave it off: the monitor follows the game by itself.
-- **Game's resolution changes**: Steadied (the default) stops one slow frame from swinging the game's resolution.
-- **Frame rate**: Auto (30 / 60), 30, 40, 60 fps, or **Unlocked** - as fast as your PC goes (up to 300), the menus,
-  cutscenes and movies still at the game's 30. Unlocked suits a G-SYNC / FreeSync or high refresh monitor; on a 60 Hz
-  one without it, 60 fps is smoother.
-- **Render thread** (on): the game's drawing is turned into Vulkan work on a thread of its own while the game goes on
-  with its next frame - much faster. Off only to check whether it causes a problem. **Sync lag** (on, needs the render
-  thread): the game starts its next frame while the GPU finishes the last one; Link's legs can sink into the ground
-  standing still - turn it off if that bothers you.
+**WSword Configuration.exe** opens the configuration screen: Play, Settings, the game files (set up again, build the game code again, delete), and Quit.
 
-## Frame generation (Lossless Scaling)
+Saves are in `save\` in the data folder: next to `WSword.exe`, or in its `v190` / `v182` folder when you came from 0.2.8. The log is `WSword.log` next to `WSword.exe`.
 
-1. Find `Lossless.dll` in Lossless Scaling's folder (Steam: Lossless Scaling > Manage > Browse local files).
-2. On WSword's start screen: **Settings > Files > Lossless Scaling > Choose Lossless.dll**, and pick that file. WSword
-   checks it holds the frame generation shaders and keeps a copy (`lsfg\Lossless.dll` in its data folder). It never
-   looks for the file by itself.
-3. In the game: **Settings > Video > Frame generation** 2x, 3x or 4x. The line under it says what it does on your
-   monitor and its GPU time; **Flow scale** (Automatic by default) and **Performance mode** lower that time.
+## In the game
 
-It works best where the monitor's rate is a whole number of the game's frames: 2x at 30 fps on 60 Hz; 4x at 30, 3x at
-40 or 2x at 60 on 120 Hz. A choice past what the monitor shows is lowered (4x at 60 fps on 120 Hz makes 2x). On
-NVIDIA and Intel the in-between frames go up one per refresh on a vsync'd swapchain (and again where they stay up
-longer), with G-SYNC / FreeSync they can come unevenly; AMD's driver aims each of them at its refresh. It's paused while
-WSword's menu is open; the menus and the FPS overlay are drawn on every frame, never generated.
+- **Settings** are in the game's own Options: pause menu > System > Options, or Options on the title screen.
+  - Video: frame rate (30, 60, 90, 120 or no limit, the game at the right speed), resolution and AMD FSR, VSync, draw distance, colour grading.
+  - AMD FSR 3 frame generation.
+  - Controls: keys, mouse, motion.
+- **F10** shows the performance overlay: FPS, then the full one.
+- **Esc** frees the mouse; a click takes it back.
 
-Frame generation is lsfg-vk's backend (GPL-3.0, `third_party/lsfg-vk`) running Lossless Scaling's shaders from your
-DLL. WSword isn't made by or affiliated with Lossless Scaling's developers.
+| Action | Key | Action | Key |
+|---|---|---|---|
+| Move | W A S D | Camera | Mouse (or I J K L) |
+| Walk (hold) | C | Crouch | Left Ctrl |
+| Jump (X) | Space | Sprint / back (B) | Left Shift |
+| Interact / confirm (A) | E | Attack (Y) | Left click |
+| Shield / lock on (ZL) | Right click | Bow (ZR) | F |
+| Rune (L) | Q | Throw (R) | R |
+| Look (right stick press) | Middle click | Weapons / shields / runes / whistle | 1 / 2 / 3 / 4 |
+| Inventory (Plus) | Tab | Map (Minus) | M |
+| Tilt (hold, motion puzzles) | T + mouse | | |
 
-## Updating
+Every key can be changed in Options. Any controller SDL knows works; one with a gyroscope also aims by motion.
 
-Unzip the new release over the old `WSword` folder (replace the files). Your saves, settings and set-up game files are
-in the data folder and stay; game code already built is kept unless the new release says it needs building again.
+## What's different from 0.2.8-pc.x
+
+- **Much faster:** this is Savage Wind's engine.
+- **Gone:**
+  - the Glass Slate start screen and Settings;
+  - Video > Mode;
+  - frame generation with Lossless.dll. AMD FSR 3 frame generation is built in instead.
+- **Game versions:** 1.8.2 and 1.9.0. 1.0.0 and 1.6.0 aren't supported.
+- **New:**
+  - Savage Wind's settings in the game's own Options;
+  - the DLC;
+  - draw distance, colour grading and HDR10;
+  - Wii U / Cemu save import (Settings > Saves).
 
 ## If something goes wrong
 
-- **The log**: `WSword.log` next to `WSword.exe` (Settings > Files > Graphics > Show the log in Explorer); after a
-  crash the run before is kept beside it. Send it with a report.
-- **"Vulkan 1.3 driver" errors**: update the GPU's driver from its maker's site. On a laptop with two GPUs WSword picks
-  the dedicated one.
-- **The game code build fails**: it needs a few GB free on the drive and an antivirus that lets `zig\zig.exe` and
-  `botwgen\botwgen.exe` run; the reason is on the setup page and in the log ("compiling ... failed:" with the
-  compiler's own message). Set up game files again goes on where it stopped. (0.2.8-pc.1's compiler lacked a header
-  the game's code needs - "the game code didn't compile": fixed in 0.2.8-pc.2.)
-- **Slow, or the game stops a few seconds into play** (0.2.8-pc.2 and before): the PC ran LAS Recomp's desktop paths,
-  which never ran BOTW - fixed in 0.2.8-pc.3, which runs the Android release's game fixes and speed-ups on the PC too
-  (the threads' hand-over that BOTW's job system needs, the waits the game could miss, the render thread, the function
-  cache, the game's 20 fps step taken out). Unzip it over the old folder - the game code stays as built. If the game
-  still stops, wait 10 seconds before closing it: the log gets a `[hang]` report of what each thread was doing.
-- **Frame generation says "Stopped"**: the reason follows - usually a Lossless.dll that isn't one, or a driver that
-  can't build its shaders. Choose the DLL again, or update the driver.
+- **The log:** `WSword.log` next to `WSword.exe`. The run before is kept as `WSword.prev.log`. Send it with a report.
+- **"Vulkan 1.3" errors:** update the GPU's driver from its maker's site.
+- **The game code build fails:** it needs a few GB free, and an antivirus that lets `zig\zig.exe` and `swgen\swgen.exe` run. The reason is on the game files page and in the log.

@@ -655,7 +655,7 @@ static void tab_colour(void) {
         int cur = color_lut_index(g_settings.color_lut);
         char desc[1500];
         snprintf(desc, sizeof desc,
-                 tr("A look-up table (LUT) that recolours the 3D image. Savage Wind's own are listed first. Your own LUTs "
+                 tr("A look-up table (LUT) that recolours the 3D image. WSword's own are listed first. Your own LUTs "
                     "go in this folder: .cube files (up to 64 x 64 x 64) and ReShade-style .png strips (1024 x 32, "
                     "4096 x 64). They are listed by file name.\n\n%s"), color_lut_folder());
         bool picked;
@@ -1002,8 +1002,8 @@ static void tab_quit(float scale, bool in_game) {
         ask = 0;
     const char *lost = in_game ? tr("\n\nProgress since your last save is lost.") : "";
     char d1[400], d2[400];
-    snprintf(d1, sizeof d1, tr("Leaves the game and goes back to the Savage Wind start screen.%s"), lost);
-    snprintf(d2, sizeof d2, tr("Closes Savage Wind.%s"), lost);
+    snprintf(d1, sizeof d1, tr("Leaves the game and goes back to the WSword start screen.%s"), lost);
+    snprintf(d2, sizeof d2, tr("Closes WSword.%s"), lost);
     opt_begin("##quit", scale);
     opt_section("Quit");
     if (!ask) {

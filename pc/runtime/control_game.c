@@ -244,7 +244,7 @@ static void cmd_version(int argc, char **argv, ControlReply *r) {
     control_field_str(r, "version", rt_version());
     control_field_str(r, "os", os_name());
     control_field_str(r, "arch", arch_name());
-    control_text(r, "Savage Wind %s (%s %s)", rt_version(), os_name(), arch_name());
+    control_text(r, "WSword %s (%s %s)", rt_version(), os_name(), arch_name());
 }
 
 // report: one block for an issue (also copied): version, machine, the place, how it runs, every setting.
@@ -254,7 +254,7 @@ static void cmd_report(int argc, char **argv, ControlReply *r) {
     char block[4096];
     size_t n = 0;
 #define ADD(...) do { if (n < sizeof block) { int w = snprintf(block + n, sizeof block - n, __VA_ARGS__); if (w > 0) n += (size_t)w < sizeof block - n ? (size_t)w : sizeof block - n - 1; } } while (0)
-    ADD("Savage Wind %s (%s %s)\n", rt_version(), os_name(), arch_name());
+    ADD("WSword %s (%s %s)\n", rt_version(), os_name(), arch_name());
     PerfStats ps;
     perfmon_snapshot(&ps);
     if (ps.gpu_name[0] || ps.cpu_name[0]) ADD("GPU: %s | CPU: %s\n", ps.gpu_name[0] ? ps.gpu_name : "unknown", ps.cpu_name[0] ? ps.cpu_name : "unknown");

@@ -72,12 +72,43 @@ static bool writable(const char *dir) {
 
 static void fail(const char *msg) {
     fprintf(stderr, "%s\n", msg);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Savage Wind", msg, NULL);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "WSword", msg, NULL);
     exit(1);
 }
 
 static bool g_dev;  // the data root is the starting folder because it has extracted/ (a source checkout)
 bool rt_dev_mode(void) { return g_dev; }
+
+#ifdef _WIN32
+// (WSword PC 0.3.0) The folder of an older WSword (0.2.8-pc.x, on LAS Recomp's layout): each game version set up in a
+// folder of its own - v182 / v190, game_version.txt naming the one in use - with its extracted/ (exefs/, romfs/) and
+// save/ in it. Unzipped over that folder, WSword keeps using that version's folder as its data folder: the game files
+// (no new copy - the old romfs.bin beside romfs/ is removed, launcher.mm remove_old_image) and the saves are there.
+// Only where the exe's folder has no game files of its own.
+static void wsword_older_root(char *root, size_t n) {
+    char p[1200];
+    snprintf(p, sizeof p, "%s" SEP "extracted" SEP "exefs", root);
+    if (is_dir(p)) return;
+    int want = 0;
+    snprintf(p, sizeof p, "%s" SEP "game_version.txt", root);
+    FILE *f = fopen(p, "rb");
+    if (f) {
+        if (fscanf(f, "%d", &want) != 1) want = 0;
+        fclose(f);
+    }
+    const int order[3] = {want, 190, 182};  // (the one in use, else the newest set up)
+    for (int i = 0; i < 3; i++) {
+        if (order[i] != 182 && order[i] != 190) continue;
+        char d[1100];
+        snprintf(d, sizeof d, "%s" SEP "v%d", root, order[i]);
+        snprintf(p, sizeof p, "%s" SEP "extracted" SEP "exefs" SEP "main", d);
+        if (!exists(p) || (size_t)snprintf(root, n, "%s", d) >= n) continue;
+        fprintf(stderr, "[paths] an older WSword's folder: game version %d.%d.%d's game files and saves (v%d)\n",
+                order[i] / 100, order[i] / 10 % 10, order[i] % 10, order[i]);
+        return;
+    }
+}
+#endif
 
 void rt_paths_init(void) {
     if (!getcwd(g_start, sizeof g_start)) g_start[0] = 0;
@@ -93,6 +124,7 @@ void rt_paths_init(void) {
     else {
 #ifdef _WIN32
         snprintf(root, sizeof root, "%s", g_exe_dir);
+        wsword_older_root(root, sizeof root);
 #elif defined(__linux__)
         // (the AppImage is read-only): $XDG_DATA_HOME/savagewind, ~/.local/share/savagewind by default
         const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
@@ -107,11 +139,11 @@ void rt_paths_init(void) {
     char msg[1400];
     if (!is_dir(root) || !writable(root) || chdir(root) != 0) {
 #ifdef _WIN32
-        snprintf(msg, sizeof msg, "Savage Wind can't write to its folder:\n%s\n\nIt keeps game files, saves and settings "
-                 "next to the program. Move the \"Savage Wind\" folder somewhere you can write to (e.g. Documents or "
+        snprintf(msg, sizeof msg, "WSword can't write to its folder:\n%s\n\nIt keeps game files, saves and settings "
+                 "next to the program. Move the \"WSword\" folder somewhere you can write to (e.g. Documents or "
                  "Desktop, not Program Files) and start it again.", root);
 #else
-        snprintf(msg, sizeof msg, "Savage Wind can't write to its data folder:\n%s", root);
+        snprintf(msg, sizeof msg, "WSword can't write to its data folder:\n%s", root);
 #endif
         fail(msg);
     }

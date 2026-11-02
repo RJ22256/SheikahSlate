@@ -898,7 +898,7 @@ static bool profile_is_big_endian(const char *p) {
 }
 
 // What the search found: the first Wii U profile, else the first profile of any kind (so that a Switch save can be
-// told apart from no save, and a folder holding both Savage Wind's own saves and a Cemu profile finds the latter)
+// told apart from no save, and a folder holding both WSword's own saves and a Cemu profile finds the latter)
 typedef struct { int visits; time_t t0; const ScCancel *cancel; bool have_be, have_any; char be[PATH_CAP], any[PATH_CAP]; } Search;
 
 static bool search_over(Search *s) {  // (out of folders or of time: stop looking)
@@ -1057,7 +1057,7 @@ ScCode sc_convert_cancel(const char *src, const char *stage_dir, const ScFormat 
     *stage = NULL;
     r->code = SC_OK;
     if (cancelled(cancel, r)) return r->code;
-    const bool to_le = true;  // the Switch (Savage Wind); the Python tool's --to wiiu is not offered here
+    const bool to_le = true;  // the Switch (WSword); the Python tool's --to wiiu is not offered here
     const FmtFile *gd = fmt_file(fmt, "game_data.sav"), *cap = fmt_file(fmt, "caption.sav"), *opt = fmt_file(fmt, "option.sav");
     if (!gd) { fail(r, SC_BAD_BOOTUP, "the game has no game_data.sav format"); return r->code; }
     ScCode found = find_profile_root(src, r->root, sizeof r->root, time(NULL), cancel);

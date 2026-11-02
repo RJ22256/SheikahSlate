@@ -115,7 +115,7 @@ static void log_to_file_without_terminal(void) {
 static void require_cpu(void) {
     const char *need = gamelib_cpu_problem();
     if (!need) return;
-    fprintf(stderr, "FATAL: Savage Wind needs %s.\n", need);
+    fprintf(stderr, "FATAL: WSword needs %s.\n", need);
     exit(1);
 }
 
@@ -183,13 +183,13 @@ void plat_fatal_notice(void) {
         fclose(f);
         oom = strstr(tail, "FATAL: the GPU ran out of memory") != NULL;
     }
-    snprintf(text, sizeof text, "Savage Wind stopped because of an error.%s\n\nDetails: %s",
-             oom ? "\n\nThe graphics card ran out of memory. Integrated graphics share the PC's RAM, and Savage Wind keeps "
+    snprintf(text, sizeof text, "WSword stopped because of an error.%s\n\nDetails: %s",
+             oom ? "\n\nThe graphics card ran out of memory. Integrated graphics share the PC's RAM, and WSword keeps "
                    "the game's 3 GB of memory available to the GPU: with integrated graphics it needs 16 GB of RAM. Close "
                    "other programs and lower Video > Shadow resolution and the upscaler quality."
                  : "",
              g_log_path);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Savage Wind", text, NULL);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "WSword", text, NULL);
 }
 
 const char *rt_host_fn_name(uint64_t pc, uint64_t *offset);  // runtime/dispatch.c

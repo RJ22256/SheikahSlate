@@ -1,17 +1,30 @@
-# WSword for Windows 10/11 x64 (the PC build: Makefile, docs/BUILD-windows.md): MSYS2 UCRT64 with clang, as LAS Recomp's
-# release builds it. The zip holds no game code and no game files: the start screen builds the game code on the
-# player's PC from their own files, with the frozen generator (botwgen/) and the bundled zig.
+# WSword for Windows 10/11 x64. From 0.3.0 the PC build is pc/: Savage Wind Recomp (MIT) with WSword's changes
+# (pc/WSWORD.md, docs/BUILD-windows.md), built with MSYS2 UCRT64's clang as Savage Wind's release is. The zip holds no
+# game code and no game files: the configuration screen builds the game code on the player's PC from their own files,
+# with the frozen generator (swgen/) and the bundled zig. Started by hand with a release tag, the zip is also published
+# as a GitHub release.
 name: Build Windows
 
 on:
   push:
     branches: [main, 'pc-*']
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish the zip as a GitHub release with this tag (e.g. v0.3.0-pc.1); empty: none"
+        required: false
+        default: ""
+      release_notes:
+        description: "The release notes, a Markdown file in the repository (e.g. docs/releases/pc-0.3.0-pc.1.md)"
+        required: false
+        default: ""
 
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 120
+    permissions:
+      contents: write  # (the release, when asked for)
     defaults:
       run:
         shell: msys2 {0}
@@ -30,8 +43,9 @@ jobs:
           msystem: UCRT64
           update: true
           install: make git curl tar xz diffutils zip unzip
-          pacboy: clang:p lld:p binutils:p sdl3:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
-            vulkan-memory-allocator:p nasm:p
+          pacboy: clang:p lld:p binutils:p sdl3:p ffmpeg:p vulkan-devel:p shaderc:p spirv-tools:p pkgconf:p
+            vulkan-memory-allocator:p nasm:p zlib:p
+      # (the LGPL FFmpeg: the root's tools/build_deps_windows.sh, the same as pc/'s - its cache kept from 0.2.8-pc.x)
       - name: Deps cache
         id: deps
         uses: actions/cache/restore@v4
@@ -41,7 +55,9 @@ jobs:
             !build/deps-win/src
           key: deps-win-${{ hashFiles('tools/build_deps_windows.sh') }}
       - name: Deps (LGPL FFmpeg for the game's movies)
-        run: make deps-windows
+        run: |
+          make deps-windows
+          mkdir -p pc/build && rm -rf pc/build/deps-win && cp -R build/deps-win pc/build/deps-win
       - uses: actions/cache/save@v4
         if: steps.deps.outputs.cache-hit != 'true'
         with:
@@ -49,31 +65,53 @@ jobs:
             build/deps-win
             !build/deps-win/src
           key: ${{ steps.deps.outputs.cache-primary-key }}
-      - name: Tests (frame pacing - fill pacing's FIFO model too -, the Lossless.dll check)
-        run: |
-          mkdir -p build
-          clang -O1 -Wall -Iruntime/nvn/vulkan -o build/test_display_pacing.exe tools/test_display_pacing.c \
-              runtime/nvn/vulkan/display_pacing.c
-          build/test_display_pacing.exe
-          sh tools/test_lsfg_dll.sh /ucrt64/include
       - name: Game code generator helper
+        working-directory: pc
         run: make gen-helper GEN_PY="$(cygpath -u '${{ steps.py.outputs.python-path }}')"
       - name: Compiler for the player's PC
+        working-directory: pc
         run: tools/fetch_zig.sh
       - name: Release zip
+        working-directory: pc
         run: make -j"$(nproc)" dist
-      - name: Nothing of the game inside
+      - name: Nothing of the game inside, WSword's names
+        working-directory: pc
         run: |
           D=build/dist/WSword
           bad=$(find "$D" -type d \( -name extracted -o -name 'generated*' -o -name exefs -o -name romfs \);
-                find "$D" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$D" -iname 'botwgame*'
-                find "$D" -iname 'Lossless*.dll')
+                find "$D" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$D" -iname 'swgame*'
+                find "$D" -iname 'botwgame*'; find "$D" -iname 'Lossless*.dll'; find "$D" -iname 'splash*')
           [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
+          for f in WSword.exe WSword.dll.a "WSword Configuration.exe" LICENSE.txt WSword-PC-guide.md swgen/swgen.exe zig/zig.exe; do
+            [ -e "$D/$f" ] || { echo "::error::missing: $f"; exit 1; }
+          done
+          # (the game code library imports the runtime from the exe by its name: the import library must name WSword.exe)
+          grep -aq 'WSword\.exe' "$D/WSword.dll.a" || { echo "::error::WSword.dll.a doesn't name WSword.exe"; exit 1; }
+          ! grep -aqi 'savagewind\.exe' "$D/WSword.dll.a" || { echo "::error::WSword.dll.a names savagewind.exe"; exit 1; }
           ls -la build/dist "$D"
           du -sh "$D"
+          echo "::notice title=Zip::$(ls build/dist/*.zip) $(du -m build/dist/*.zip | cut -f1) MB"
       - uses: actions/upload-artifact@v4
         with:
           name: WSword-windows
-          path: build/dist/*.zip
+          path: pc/build/dist/*.zip
           if-no-files-found: error
           compression-level: 0
+      # (workflow_dispatch's release: the zip as a GitHub release from this commit, the notes from the repository's file)
+      - name: GitHub release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release }}
+          NOTES: ${{ inputs.release_notes }}
+        run: |
+          $zip = Get-ChildItem pc/build/dist/*.zip | Select-Object -First 1
+          $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($zip.Name)" | Out-File -Encoding ascii "$($zip.FullName).sha256"
+          $ver = $zip.Name -replace '^WSword-(.*)-windows\.zip$', '$1'
+          if ($env:NOTES -and (Test-Path $env:NOTES)) { $n = @('--notes-file', $env:NOTES) } else { $n = @('--notes', "WSword $ver for Windows.") }
+          gh release create $env:TAG $zip.FullName "$($zip.FullName).sha256" --target $env:GITHUB_SHA --title "WSword $ver - PC (Windows)" @n
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $url = gh release view $env:TAG --json url --jq .url
+          echo "::notice title=Release::$url"

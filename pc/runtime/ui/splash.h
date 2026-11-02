@@ -1,5 +1,5 @@
 // The start screen's background (runtime/ui/splash.mm): the player's own picture, splash.jpg / splash.png in the data
-// folder, else Savage Wind's own art (a forest clearing with the icon's sword in a stone, drawn, the grass moving).
+// folder, else WSword's own art (a forest clearing with the icon's sword in a stone, drawn, the grass moving).
 // Nothing of the game ships for it.
 #pragma once
 #include "imgui.h"

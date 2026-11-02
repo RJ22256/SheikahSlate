@@ -1,7 +1,7 @@
 // Shader precompilation (Vulkan: runtime/nvn/vulkan/precompile.c): every shader of the game's own RomFS translated and
 // compiled ahead of time into the shader caches (cache/xlate, cache/spirv), and pipelines for them built into the
 // pipeline cache, so that nothing compiles the first time it is drawn, also in places never visited. Optional: a
-// choice at game setup and an action in Savage Wind Configuration (runtime/ui/launcher.mm), with a progress bar.
+// choice at game setup and an action in WSword Configuration (runtime/ui/launcher.mm), with a progress bar.
 #pragma once
 #include <stdatomic.h>
 #include <stdbool.h>

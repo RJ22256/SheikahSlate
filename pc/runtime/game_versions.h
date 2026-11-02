@@ -1,4 +1,4 @@
-// The game versions Savage Wind knows, by the build id of their main module (its first 8 bytes as hex, as
+// The game versions WSword knows, by the build id of their main module (its first 8 bytes as hex, as
 // tools/sw_probe.py prints it). The configuration screen sets up the supported ones; a known one that isn't supported
 // yet is refused with its own message. tools/game_sites.py VERSIONS is the same list for the code generator
 // (tools/test_game_sites.py checks they match); docs/SAVAGE-WIND.md, "Versiones del juego", has the steps for a

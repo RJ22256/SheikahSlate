@@ -304,7 +304,7 @@ static struct {
 } pdh;
 
 // The ACPI thermal zones (no driver needed). They are the firmware's, near the CPU on most boards; an exact CPU
-// package temperature on Windows needs a kernel driver (what monitoring tools install), which Savage Wind doesn't.
+// package temperature on Windows needs a kernel driver (what monitoring tools install), which WSword doesn't.
 static float thermal_zone_c(void) {
     if (!pdh.tried) {
         pdh.tried = true;

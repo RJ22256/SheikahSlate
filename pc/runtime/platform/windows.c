@@ -188,11 +188,11 @@ static void log_to_file_without_console(void) {
     if (!n || n >= sizeof exe) return;
     char *slash = strrchr(exe, '\\');
     if (slash) slash[1] = 0;
-    snprintf(g_log_path, sizeof g_log_path, "%ssavagewind.log", exe);
+    snprintf(g_log_path, sizeof g_log_path, "%sWSword.log", exe);
     bool append = getenv("SAVAGEWIND_LOG_APPEND") != NULL;
     if (!append) {  // the last run's log stays as savagewind.prev.log: opening again after a failed setup kept nothing of it
         char prev[MAX_PATH + 16];
-        snprintf(prev, sizeof prev, "%ssavagewind.prev.log", exe);
+        snprintf(prev, sizeof prev, "%sWSword.prev.log", exe);
         MoveFileExA(g_log_path, prev, MOVEFILE_REPLACE_EXISTING);
     }
     if (!freopen(g_log_path, append ? "ab" : "wb", stderr)) { g_log_path[0] = 0; return; }
@@ -207,8 +207,8 @@ static void require_cpu(void) {
     const char *need = gamelib_cpu_problem();
     if (!need) return;
     char text[256];
-    snprintf(text, sizeof text, "Savage Wind needs %s.", need);
-    MessageBoxA(NULL, text, "Savage Wind", MB_ICONERROR | MB_OK);
+    snprintf(text, sizeof text, "WSword needs %s.", need);
+    MessageBoxA(NULL, text, "WSword", MB_ICONERROR | MB_OK);
     ExitProcess(1);
 }
 
@@ -216,7 +216,7 @@ static void require_cpu(void) {
 void plat_fatal_notice(void) {
     if (!g_log_path[0]) return;
     fflush(stderr);
-    char text[1024] = "Savage Wind stopped because of an error.";
+    char text[1024] = "WSword stopped because of an error.";
     FILE *f = fopen(g_log_path, "rb");
     if (f) {
         static char tail[16384];
@@ -232,22 +232,22 @@ void plat_fatal_notice(void) {
         if (line) {
             char *end = strchr(line, '\n');
             if (end) *end = 0;
-            snprintf(text, sizeof text, "Savage Wind stopped because of an error:\n\n%.600s", line);
+            snprintf(text, sizeof text, "WSword stopped because of an error:\n\n%.600s", line);
             if (strstr(line, "device lost")) {
                 size_t l = strlen(text);
                 snprintf(text + l, sizeof text - l, "\n\nThe graphics driver reset the GPU. Usually a frame took it too long "
                          "(Windows resets a GPU after 2 seconds) or it ran out of video memory. Lower Video > Upscaler "
                          "quality and Shadow resolution, close other programs and update the driver; on a laptop, run "
-                         "Savage Wind on the dedicated GPU.");
+                         "WSword on the dedicated GPU.");
             } else if (strstr(line, "GPU ran out of memory")) {  // (vk.h VK_CHECK: out of device or host memory, #117)
                 size_t l = strlen(text);
                 snprintf(text + l, sizeof text - l, "\n\nThe graphics card ran out of memory. Integrated graphics share the "
-                         "PC's RAM, and Savage Wind keeps the game's 3 GB of memory available to the GPU: with integrated "
+                         "PC's RAM, and WSword keeps the game's 3 GB of memory available to the GPU: with integrated "
                          "graphics it needs 16 GB of RAM. Close other programs and lower Video > Shadow resolution and the "
                          "upscaler quality; with a dedicated GPU, update its driver.");
             } else if (strstr(line, "Vulkan 1.3") || strstr(line, "vkCreateInstance")) {  // (no driver, or too old)
                 size_t l = strlen(text);
-                snprintf(text + l, sizeof text - l, "\n\nSavage Wind needs a graphics driver with Vulkan 1.3: install the "
+                snprintf(text + l, sizeof text - l, "\n\nWSword needs a graphics driver with Vulkan 1.3: install the "
                          "latest driver for your GPU (NVIDIA, AMD or Intel).");
             } else if (strstr(line, "Vulkan") || strstr(line, "VK_") || strstr(line, "vk")) {  // (any other driver error)
                 size_t l = strlen(text);
@@ -258,7 +258,7 @@ void plat_fatal_notice(void) {
     }
     size_t l = strlen(text);
     snprintf(text + l, sizeof text - l, "\n\nDetails: %s", g_log_path);
-    MessageBoxA(NULL, text, "Savage Wind", MB_ICONERROR | MB_OK);
+    MessageBoxA(NULL, text, "WSword", MB_ICONERROR | MB_OK);
 }
 
 void plat_init(void) {
@@ -380,7 +380,7 @@ void plat_print_backtrace(void) {
         const char *s = plat_symbol(pc, &off);
         if (!s) s = rt_host_fn_name(pc, &off);
         if (s) fprintf(stderr, "  #%-2d %016llx %s+%llx\n", i, (unsigned long long)pc, s, (unsigned long long)off);
-        else fprintf(stderr, "  #%-2d %016llx savagewind+%llx\n", i, (unsigned long long)pc,
+        else fprintf(stderr, "  #%-2d %016llx WSword+%llx\n", i, (unsigned long long)pc,
                      (unsigned long long)(pc - exe));
     }
 }

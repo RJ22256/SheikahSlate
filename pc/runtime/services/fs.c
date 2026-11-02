@@ -37,7 +37,7 @@ typedef struct { uint64_t off, size; uint8_t *data; } Patch;
 typedef struct { uint64_t off, size; char *path; uint32_t meta; } RomFile;
 // Redirected voice files that got bigger than the game's own (voice_redirect), for rstb_patch
 typedef struct { const char *path; uint64_t grow; } GrownFile;
-// A RomFS image the game reads and what Savage Wind changes in it: the game's own (base + update, extracted/romfs)
+// A RomFS image the game reads and what WSword changes in it: the game's own (base + update, extracted/romfs)
 // and each add-on content's (extracted/aoc<index>). Both get the same changes (voices, overlay folder,
 // ResourceSizeTable, HUD letters); the functions below work on R, the image being indexed.
 typedef struct {
@@ -972,9 +972,9 @@ static void rom_index(void) {
         R->ov_n++;
         R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
     }
-    // The title screen's version line shows System/Version.txt ("1.8.2") through "Ver.%s": it reads "Savage Wind
+    // The title screen's version line shows System/Version.txt ("1.8.2") through "Ver.%s": it reads "WSword
     // <major>.<minor>" instead (the "Ver." goes in fs_title_version_patch), unless the overlay folder replaces the
-    // file. The line's text box holds 15 characters, so the full version is only in Savage Wind Configuration.
+    // file. The line's text box holds 15 characters, so the full version is only in WSword Configuration.
     for (int i = 0; i < R->rom_nfiles; i++) {
         if (strcmp(R->rom_files[i].path, "System/Version.txt")) continue;
         char host[1200];
@@ -984,8 +984,8 @@ static void rom_index(void) {
         static char text[64];
         const char *v = rt_version(), *dot = strchr(v, '.');
         int n = dot ? (int)strcspn(dot + 1, ".-") + (int)(dot - v) + 1 : (int)strlen(v);  // (up to the second '.')
-        snprintf(text, sizeof text, "Savage Wind %.*s", n, v);
-        if (strlen(text) > 15) snprintf(text, sizeof text, "Savage Wind");
+        snprintf(text, sizeof text, "WSword %.*s", n, v);
+        if (strlen(text) > 15) snprintf(text, sizeof text, "WSword");
         meta_copy(fmeta, foff, fsz);
         uint64_t rel = R->ov_end - R->rom_data_off, size = strlen(text);
         memcpy(R->ov_meta + R->rom_files[i].meta + 8, &rel, 8);
@@ -1009,7 +1009,7 @@ static void rom_index(void) {
 }
 
 // The title screen's version line: main formats System/Version.txt with "Ver.%s" (title_version_format; 1.8.2
-// 0x71014b854e in the Ghidra project, read by FUN_7100d4b57c and FUN_7100d4bca0); "%s" leaves just "Savage Wind
+// 0x71014b854e in the Ghidra project, read by FUN_7100d4b57c and FUN_7100d4bca0); "%s" leaves just "WSword
 // <version>". Called once main is loaded; anything else at that address is left alone.
 void fs_title_version_patch(void) {
     char *fmt = (char *)(uintptr_t)g_site.title_version_format;

@@ -1,4 +1,4 @@
-# Savage Wind build
+# WSword PC build (Savage Wind Recomp's: Revivedx and contributors, MIT - pc/LICENSE)
 # macOS: Homebrew clang/SDL3/FFmpeg, Metal renderer.
 # Windows: MSYS2 UCRT64 shell (see docs/BUILD-windows.md), clang + Vulkan renderer.
 # Linux: clang + Vulkan renderer, x86-64 or aarch64 (see docs/linux.md).
@@ -101,7 +101,8 @@ GAMELIB  := $(B)/swgame.so
 GAMELIB_LDFLAGS := -shared -fuse-ld=lld  # (the runtime functions it calls: the app's own, -rdynamic)
 GAMELIB_SHARED := -shared
 else
-EXE      := $(B)/savagewind.exe
+# (WSword: savagewind.exe in Savage Wind)
+EXE      := $(B)/WSword.exe
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
 OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX
 GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (simd.h)
@@ -111,7 +112,7 @@ GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
 # it (runtime/kernel.c thread_start)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,268435456 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared -lpdh -lws2_32 -l:libz.a \
-            $(if $(RELEASE),-Wl$(comma)--subsystem$(comma)windows)  # release: no console window (log -> savagewind.log)
+            $(if $(RELEASE),-Wl$(comma)--subsystem$(comma)windows)  # release: no console window (log -> WSword.log)
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 BACKEND_OBJ += $(B)/rt/platform/windows_rc.o  # the .exe's icon (Explorer, taskbar)
@@ -120,11 +121,11 @@ IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
 UIFLAGS  := -x c++ $(OSFLAGS)  # the .mm UI sources are plain C++ apart from __APPLE__ blocks
 GAMELIB  := $(B)/swgame.dll
 # the runtime functions it calls: exported by the .exe, linked through its import library
-LDFLAGS  += -Wl,--export-all-symbols -Wl,--out-implib,$(B)/savagewind.dll.a
-GAMELIB_LDFLAGS := -shared -fuse-ld=lld $(B)/savagewind.dll.a
+LDFLAGS  += -Wl,--export-all-symbols -Wl,--out-implib,$(B)/WSword.dll.a
+GAMELIB_LDFLAGS := -shared -fuse-ld=lld $(B)/WSword.dll.a
 GAMELIB_SHARED := -shared  # (+ the import library: runtime/gamebuild.c)
-# "Savage Wind Configuration.exe" in the release: starts savagewind.exe --config (runtime/platform/windows_config.c)
-CONFIG_EXE := $(B)/savagewind-config.exe
+# "WSword Configuration.exe" in the release: starts WSword.exe --config (runtime/platform/windows_config.c)
+CONFIG_EXE := $(B)/WSword-config.exe
 endif
 
 # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
@@ -280,14 +281,14 @@ gen-objs: $(GEN_OBJ)
 # Runtime objects only (no generated code, no link): quick compile check
 runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
 
-$(B)/rt/platform/windows_rc.o: runtime/platform/windows.rc runtime/platform/windows.manifest docs/icon/icon.ico
+$(B)/rt/platform/windows_rc.o: runtime/platform/windows.rc runtime/platform/windows.manifest docs/icon/wsword.ico
 	@mkdir -p $(dir $@)
 	$(WINDRES) -I docs/icon -I runtime/platform -O coff $< -o $@
 
 $(B)/rt/platform/windows_config.o: runtime/platform/windows_config.c
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -Wall $(OSFLAGS) -c $< -o $@
-$(B)/savagewind-config.exe: $(B)/rt/platform/windows_config.o $(B)/rt/platform/windows_rc.o
+$(B)/WSword-config.exe: $(B)/rt/platform/windows_config.o $(B)/rt/platform/windows_rc.o
 	$(CC) -o $@ $^ -fuse-ld=lld -Wl,--subsystem,windows
 
 VERSION  := $(shell sed -n 's/^\#define SAVAGEWIND_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
@@ -317,7 +318,7 @@ dmg: app
 # with build/deps-win/bin first (the FFmpeg DLL names are the same as MSYS2's GPL ones). vulkan-1.dll is left
 # out: every Vulkan driver installs the loader in System32. Saves and game files go next to the exe at run time.
 # Needs: Windows 10+ x64, a Vulkan 1.3 driver, an SSE4.2 CPU (GENARCH_COMPAT x86-64-v2; checked at startup).
-DIST     := build/dist/Savage Wind
+DIST     := build/dist/WSword
 WIN_B    := build/win-release
 deps-windows:
 	tools/build_deps_windows.sh
@@ -327,32 +328,34 @@ dist:
 	@! find tools -maxdepth 1 -name '*.py' -newer build/helper/swgen/swgen.exe | grep -q . || \
 	    { echo "make gen-helper first: tools/*.py changed since build/helper/swgen was frozen"; exit 1; }
 	@[ -x build/zig/zig.exe ] || { echo "tools/fetch_zig.sh first (the compiler)"; exit 1; }
-	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 $(WIN_B)/savagewind.exe $(WIN_B)/savagewind-config.exe
-	! nm $(WIN_B)/savagewind.exe | grep ' f_70' >/dev/null  # (no game code inside)
+	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 $(WIN_B)/WSword.exe $(WIN_B)/WSword-config.exe
+	! nm $(WIN_B)/WSword.exe | grep ' f_70' >/dev/null  # (no game code inside)
 	rm -rf build/dist && mkdir -p "$(DIST)/gamelib-src"
-	cp $(WIN_B)/savagewind.exe $(WIN_B)/savagewind.dll.a "$(DIST)/"
-	cp $(WIN_B)/savagewind-config.exe "$(DIST)/Savage Wind Configuration.exe"
+	cp $(WIN_B)/WSword.exe $(WIN_B)/WSword.dll.a "$(DIST)/"
+	cp $(WIN_B)/WSword-config.exe "$(DIST)/WSword Configuration.exe"
 	tools/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS))) \
 	    $(if $(GENFLAGS_COMPAT),-- $(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT))))  # (zig, its runtime built ahead of time)
 	cp -R build/helper/swgen "$(DIST)/"
 	cp -R build/zig-slim "$(DIST)/zig"
 	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/simd_softfma.h runtime/gamelib.h tools/gamelib_entry.c \
 	    runtime/hle/hle_symbols.txt "$(DIST)/gamelib-src/"
-	cp docs/icon/icon_1024.png "$(DIST)/icon.png"
+	cp docs/icon/wsword_1024.png "$(DIST)/icon.png"
 	cp third_party/fonts/FiraSans/FiraSans-SemiBold.ttf third_party/fonts/FiraSans/FiraSans-Medium.ttf "$(DIST)/"  # (menus, OFL)
 	cp third_party/fonts/FiraSans/OFL.txt "$(DIST)/FiraSans-OFL.txt"
 	cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$(DIST)/"  # (Thai menus, OFL)
 	cp third_party/fonts/NotoSansThai/OFL.txt "$(DIST)/NotoSansThai-OFL.txt"
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
-	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
-	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
+	cp LICENSE "$(DIST)/LICENSE.txt"  # (Savage Wind Recomp's MIT notice, LAS Recomp's in it)
+	cp README.md "$(DIST)/SavageWind-README.md"  # (licenses and source links of the bundled components: its "License")
+	cp ../docs/PC.md "$(DIST)/WSword-PC-guide.md"
+	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/WSword.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
 	! ls "$(DIST)" | grep -i splash  # (no start screen picture: the player's own, never shipped)
-	cd build/dist && if command -v zip >/dev/null; then zip -qr "SavageWind-$(VERSION)-windows.zip" "Savage Wind"; \
-	    else /c/Windows/System32/tar.exe -a -cf "SavageWind-$(VERSION)-windows.zip" "Savage Wind"; fi
-	@echo "build/dist/SavageWind-$(VERSION)-windows.zip"
+	cd build/dist && if command -v zip >/dev/null; then zip -qr "WSword-$(VERSION)-windows.zip" "WSword"; \
+	    else /c/Windows/System32/tar.exe -a -cf "WSword-$(VERSION)-windows.zip" "WSword"; fi
+	@echo "build/dist/WSword-$(VERSION)-windows.zip"
 
 # The game code generator as a standalone helper, so players need no Python: build/helper/swgen/ (swgen[.exe] +
 # _internal/), frozen by PyInstaller from tools/swgen.spec in its own venv (build/gen-venv). Shipped as swgen/ next to

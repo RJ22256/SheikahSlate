@@ -14,7 +14,7 @@
 //   - The menus' input timing counts frames: holding a direction on a value steps it every 6 frames on the title
 //     screen (0.2 s at 30 fps, 0.1 s at 120). The paused game (pause menu, map: the state at 0x7001cb48a4 is 2, 0
 //     while playing) updates VFR twice a frame.
-// So the game already runs at any frame rate as long as VFR is told how long a frame really took. Savage Wind:
+// So the game already runs at any frame rate as long as VFR is told how long a frame really took. WSword:
 //   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 300 fps at
 //     most, FPS_CEILING; with VSync On or Adaptive a little under the display's refresh rate), and skips the frame
 //     loop's vsync wait (rt_frame_wait, tools/patches.py);
