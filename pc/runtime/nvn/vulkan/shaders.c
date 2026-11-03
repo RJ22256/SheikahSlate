@@ -1261,6 +1261,14 @@ static const char *builtin_src(const char *name, int *stage) {
                                 "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
                                 "void main() { o = vec4(clamp(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).z * pc.a.x, 0.0, 1.0)); }\n";
     }
+    // (WSword) DLSS's motion vectors (exec.c dlss_scene): the vectors' .xy (t0) into an RG16F image
+    if (!strcmp(name, "dlss_mv.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() { o = vec4(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).xy, 0.0, 1.0); }\n";
+    }
     if (!strncmp(name, "taa_", 4)) {
         static const char *const names[] = {"taa_prepare.comp", "taa_shade_src.comp", "taa_shade_down.comp", "taa_shade.comp",
                                             "taa_reactivity.comp", "taa_instability.comp", "taa_resolve.comp"};

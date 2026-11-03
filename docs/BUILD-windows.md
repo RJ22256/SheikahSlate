@@ -11,15 +11,17 @@ from `pc/`.
 - the frozen game code generator (`swgen/`), and a slimmed zig for building the game code on the player's PC (`zig/`);
 - the headers that code is compiled against (`gamelib-src/`);
 - the fonts (Fira Sans, Inter, Noto Sans Thai), the start screen's art and icons, and the DLLs they load;
+- `wsword_dlss.dll`, WSword's bridge to NVIDIA's DLSS SDK (`pc/tools/dlss_bridge`), and the SDK's licence `NVIDIA-DLSS-LICENSE.txt`;
 - `LICENSE.txt` (Savage Wind's), `SavageWind-README.md` (the components' licenses), `lsfg-vk-LICENSE.md` / `lsfg-vk-README.md` (Lossless frame generation's backend, GPL-3.0) and `WSword-PC-guide.md` (this repository's `docs/PC.md`).
 
-**No game code and no game files.** The CI checks this.
+**No game code, no game files, no `Lossless.dll` and no `nvngx_dlss.dll`.** The CI checks this.
 
 ## On GitHub (what releases use)
 
 `.github/workflows/build-windows.yml` runs on every push to `main` and `pc-*` (MSYS2 UCRT64 with clang, on `windows-2022`):
 1. builds the LGPL FFmpeg with the root's `make deps-windows` (cached), copied into `pc/build/deps-win`;
-2. in `pc/`: `make gen-helper`, `tools/fetch_zig.sh` and `make dist`.
+2. fetches NVIDIA's DLSS SDK (https://github.com/NVIDIA/DLSS: its headers, `nvsdk_ngx_s.lib` and licence) into `pc/build/dlss-sdk` and builds `pc/build/wsword_dlss.dll` with MSVC (`cl`, from the runner's Visual Studio);
+3. in `pc/`: `make gen-helper`, `tools/fetch_zig.sh` and `make dist`.
 
 The zip is the run's `WSword-windows` artifact. Started by hand with a `release` tag, the run also publishes the zip as a GitHub release, with the notes from the `release_notes` file.
 
@@ -40,6 +42,7 @@ The zip is the run's `WSword-windows` artifact. Started by hand with a `release`
    make -j$(nproc) dist                    # build/dist/WSword-<version>-windows.zip
    ```
    `make` alone builds `build/WSword.exe` for development: a console window, with the log on it.
+5. DLSS (optional): build `wsword_dlss.dll` with MSVC as [pc/tools/dlss_bridge/README.md](../pc/tools/dlss_bridge/README.md) describes, into `pc/build/`, before `make dist`. Without it the zip has no DLSS.
 
 ## The Android build
 

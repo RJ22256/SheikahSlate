@@ -9,7 +9,8 @@
 //                  game's composite (vulkan/exec.c scene_upscale)
 //   MetalFX        (macOS) metal.m has no scene / final split yet: the modes stay greyed there, and MetalFX scales the
 //                  game's image to a bigger window
-//   FSR 3, DLSS    listed as coming later (temporal: they need motion vectors, which the game has none of)
+//   FSR 3          held back (fsr3_upscaler_enabled); temporal: this frame's motion vectors (vulkan/mvec.c), jitter
+//   DLSS           (WSword) NVIDIA DLSS, as FSR 3 (vulkan/dlss.h): on an RTX GPU with the player's nvngx_dlss.dll
 // The window size itself is Video > Window size (runtime/window_size.c). On a window that isn't 16:9, Video > Fill wide
 // screens widens the game's views to it (rt_persp, below) and its 16:9 render targets with them; off, the 16:9 image
 // is fitted into the window with bars. Video > Field of view scales the world's camera in play (rt_persp).
@@ -31,6 +32,7 @@
 
 #ifndef __APPLE__
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
+bool dlss_available(void);  // (WSword: vulkan/dlss.h - wsword_dlss.dll, an RTX GPU, the player's nvngx_dlss.dll)
 #endif
 // FSR 3 upscaling is held back until its cost on the thread that records the frame for Vulkan comes down (the draw
 // translation work in progress): today that thread limits 1080p and 1440p, and FSR 3's motion vectors make every mode
@@ -45,13 +47,15 @@ bool upscaler_available(int u) {
 #ifdef __APPLE__
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
-    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled());
+    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled()) ||
+           (u == UPSCALE_DLSS && dlss_available());
 #endif
 }
 
 bool rt_fsr3(void) { return g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3); }
+bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_available(UPSCALE_DLSS); }
 
-bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3(); }
+bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss(); }
 
 double upscale_mode_factor(int q) {
     static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0};

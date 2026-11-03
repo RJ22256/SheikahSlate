@@ -27,7 +27,7 @@ and their licenses.
 
 ## Updating
 
-**From 0.3.0-pc.1:** unzip `WSword-0.3.1-pc.1-windows.zip` over your `WSword` folder and replace the files. Your game files, game code, saves and settings stay as they are.
+**From 0.3.0-pc.1 or 0.3.1-pc.1:** unzip `WSword-0.3.2-pc.1-windows.zip` over your `WSword` folder and replace the files. Your game files, game code, saves and settings stay as they are.
 
 **From 0.2.8-pc.x:** unzip it over your `WSword` folder and replace the files. Then run `WSword.exe`:
 
@@ -59,18 +59,20 @@ If it asks for game files instead, choose the folder with your `exefs` and `romf
 **Settings** there are in the Glass Slate look: the pages down the left (Files, Video, Audio, Controls, Language, Saves), each option with its explanation on the right. **Files** has:
 - the game files and the game font;
 - **Look**: the start screen's background (a picture of your own, or the original) and WSword's icon (Sword, Slate, Midnight, Dawn, Ancient, Forest), on its window and in the taskbar;
-- **Lossless Scaling**: choose your own `Lossless.dll` for Lossless frame generation.
+- **Lossless Scaling**: choose your own `Lossless.dll` for Lossless frame generation;
+- **NVIDIA DLSS**: choose your own `nvngx_dlss.dll` for DLSS upscaling (NVIDIA RTX graphics cards).
 
 Saves are in `save\` in the data folder: next to `WSword.exe`, or in its `v190` / `v182` folder when you came from 0.2.8. The log is `WSword.log` next to `WSword.exe`.
 
 ## In the game
 
-- **Settings** are in the game's own Options: pause menu > System > Options, or Options on the title screen.
-  - Video: Mode, frame rate (30, 60, 90, 120 or no limit, the game at the right speed), resolution and AMD FSR, VSync, draw distance, colour grading.
+- **F1** opens WSword's **Settings** over the game, in the Glass Slate look (on a controller: **Back + Start**, or the guide button). F1 again, or Back, closes it. Its pages: Video, Audio, Controls, Language and Quit.
+  - Video: Mode, frame rate (30, 60, 90, 120 or no limit, the game at the right speed), resolution, the upscaler (AMD FSR or NVIDIA DLSS), VSync, draw distance, colour grading.
   - Frame generation: AMD FSR 3, or Lossless 2x / 3x / 4x (below).
   - Controls: keys, mouse, motion.
+- The game's own Options (pause menu > System > Options, or Options on the title screen) has most of them too.
 - **F10** shows the performance overlay: FPS, then the full one.
-- **Esc** frees the mouse; a click takes it back.
+- **Esc** pauses or goes back; **F2** frees the mouse, a click takes it back.
 
 | Action | Key | Action | Key |
 |---|---|---|---|
@@ -100,10 +102,24 @@ Lossless Scaling's frame generation, with your own copy of its `Lossless.dll`. I
 - On NVIDIA (GTX 16 / RTX 20 and newer), the frames are presented by a thread of their own, so the game goes on with its next frame meanwhile. On other GPUs they are presented from the game's own thread.
 - The frame generation code is lsfg-vk by PancakeTAS and contributors (GPL-3.0, `lsfg-vk-LICENSE.md` in the zip). WSword isn't made by or affiliated with Lossless Scaling's developers.
 
+## NVIDIA DLSS
+
+DLSS upscaling (Super Resolution) on **NVIDIA RTX** graphics cards (RTX 20 and newer), with your own copy of `nvngx_dlss.dll`. It isn't included with WSword: it comes with NVIDIA's DLSS SDK, and most games with DLSS have one in their folder.
+
+1. In **WSword Configuration**: Settings > Files > NVIDIA DLSS > **Choose nvngx_dlss.dll**. WSword keeps a copy next to `WSword.exe` (putting it there yourself works too, or in a `dlss` folder there).
+2. Settings > Video > **Upscaler** (or the game's Options > Video): **NVIDIA DLSS**, then its mode on the row below - Ultra Quality, Quality, Balanced, Performance or Ultra Performance. The further down, the smaller the game renders and the faster it is; DLSS fills in the detail.
+
+- The game is drawn at the lower resolution and DLSS brings it up to the window's, using the frames before it. Its anti-aliasing replaces the game's own, so the picture is steadier too.
+- Upscaler's description in Settings says why DLSS isn't offered, if it isn't (no RTX card, no `nvngx_dlss.dll`, an old driver) or why it stopped.
+- DLSS speeds up a GPU that's the bottleneck. Where the CPU holds the frame rate back it doesn't add frames, and costs a little.
+- `wsword_dlss.dll` in the zip is WSword's bridge to NVIDIA's DLSS SDK (`NVIDIA-DLSS-LICENSE.txt`). NVIDIA and DLSS are NVIDIA's trademarks; WSword isn't made by or affiliated with NVIDIA.
+
 ## What's different from 0.2.8-pc.x
 
 - **Much faster:** this is Savage Wind's engine.
 - **Back from 0.2.8 (0.3.1-pc.1):** the Glass Slate start screen and Settings, Video > Mode, the background and icon choices, and frame generation with your own Lossless.dll. AMD FSR 3 frame generation is there too.
+- **Back from 0.2.8 (0.3.2-pc.1):** Settings over the game on F1.
+- **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`.
 - **Game versions:** 1.8.2 and 1.9.0. 1.0.0 and 1.6.0 aren't supported.
 - **New:**
   - Savage Wind's settings in the game's own Options;

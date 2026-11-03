@@ -16,6 +16,7 @@
 #include "vk.h"
 #include "vram.h"
 #include "fsr3.h"
+#include "dlss.h"
 #include "mvec.h"
 #include "../output_scale.h"
 #include "record.h"
@@ -7665,7 +7666,7 @@ static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
 // Post image `i` at w x h in format f (kept until the size or format changes). 0, 1: SMAA edges / weights, 2: SMAA
 // output, 3, 4: FSR EASU / RCAS of the presented image; 5, 6: FSR EASU / RCAS of the 3D scene, 7: its CAS
 // sharpening (scene_post), 32: its colour grading.
-enum { POST_IMAGES = 33 };  // (mvec: 8 the object vectors, 9 the debug view, 10 the motion vectors, 11 / 12 TAA's
+enum { POST_IMAGES = 34 };  // (WSword: 33 DLSS's motion vectors, RG16F)  // (mvec: 8 the object vectors, 9 the debug view, 10 the motion vectors, 11 / 12 TAA's
                             //  history; FSR 3: 13 its output, 14 the depth, 15 the reactive mask; 16-31 TAA: mvec_taa)
 static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags extra);
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f) { return post_image_ex(i, w, h, f, 0); }
@@ -7832,7 +7833,7 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
 }
 static VkImageView post_process_view(VkCommandBuffer cb, VkImageView v, uint32_t bw, uint32_t bh, double ow_d, double oh_d) {
     const struct { uint32_t width, height; } bs = {bw, bh}, *b = &bs;
-    bool smaa = rt_antialias() == AA_SMAA && !rt_fsr3();  // (FSR 3 anti-aliases the scene itself)
+    bool smaa = rt_antialias() == AA_SMAA && !rt_fsr3() && !rt_dlss();  // (FSR 3 and DLSS anti-alias the scene themselves)
     uint32_t ow = (uint32_t)lround(ow_d), oh = (uint32_t)lround(oh_d);
     if (ow > 16384) ow = 16384;
     if (oh > 16384) oh = 16384;
@@ -7986,6 +7987,7 @@ static NvnTexture *scene_composite(Prog *pr, CmdRec *r) {
 
 static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend **taa);
 static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh);
+static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh);
 static void scene_post(Prog *pr, CmdRec *r) {
     scene_up.t = NULL;
     NvnTexture *taa_t = NULL;
@@ -7999,8 +8001,10 @@ static void scene_post(Prog *pr, CmdRec *r) {
     float gpc[16];
     bool grade = grade_wanted(&lut, gpc);
     bool fsr3 = fsr_on && rt_fsr3() && mvec_enabled();  // (FSR 3: its own sharpening, RCAS, in place of CAS)
-    if (!fsr3) rt_jitter_set_phases(8);
-    if (!fsr && !cas && !taa && !fsr3 && !grade) return;
+    bool dlss = fsr_on && !fsr3 && rt_dlss() && mvec_enabled();  // (WSword: NVIDIA DLSS - Sharpening's CAS after it)
+    if (!fsr3 && !dlss) rt_jitter_set_phases(8);
+    bool temporal_up = fsr3 || dlss;
+    if (!fsr && !cas && !taa && !temporal_up && !grade) return;
     NvnTexture *t = scene_composite(pr, r), *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
     if (!t) return;
     const float *vp = st.viewport[0];
@@ -8012,13 +8016,13 @@ static void scene_post(Prog *pr, CmdRec *r) {
     {
         TexBackend *b = vk_tex(t, false);
         // (else at its size in the window already; FSR 3: FSR 1 for a frame it can't do, its first)
-        bool up = (fsr || fsr3) && (ow > b->width + 1 || oh > b->height + 1);
+        bool up = (fsr || temporal_up) && (ow > b->width + 1 || oh > b->height + 1);
         if (t != taa_t) taa = NULL;
-        scene_mip_bias = (taa || fsr3) && ow && b->width ? log2f((float)b->width / (float)ow) - 1.0f : 0.0f;
+        scene_mip_bias = (taa || temporal_up) && ow && b->width ? log2f((float)b->width / (float)ow) - 1.0f : 0.0f;
         static const char *bias_env = (const char *)1;  // (testing) SAVAGEWIND_MIP_BIAS=<levels>: in place of that
         if (bias_env == (const char *)1) bias_env = getenv("SAVAGEWIND_MIP_BIAS");
-        if (bias_env && (taa || fsr3)) scene_mip_bias = (float)atof(bias_env);
-        if (!up && !cas && !taa && !fsr3 && !grade) return;
+        if (bias_env && (taa || temporal_up)) scene_mip_bias = (float)atof(bias_env);
+        if (!up && !cas && !taa && !temporal_up && !grade) return;
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
         if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) return;
@@ -8037,11 +8041,17 @@ static void scene_post(Prog *pr, CmdRec *r) {
             out = in = g;
         }
         TexBackend *f3 = fsr3 ? fsr3_scene(cb, in, ow, oh) : NULL;
+        TexBackend *dl = dlss ? dlss_scene(cb, in, ow, oh) : NULL;
         if (f3) {
             src = post_view(f3);
             out = f3;
             w = ow; h = oh;
             up = cas = false;
+        } else if (dl) {  // (DLSS: Sharpening's CAS after it, on the output)
+            src = post_view(dl);
+            out = dl;
+            w = ow; h = oh;
+            up = false;
         } else if (!up && !cas && !taa && !grade) {
             return;
         }
@@ -8066,7 +8076,7 @@ static void scene_post(Prog *pr, CmdRec *r) {
         }
         if (cas) {  // (after TAA: RCAS, as FSR 3 sharpens, its noise term keeping the residual flicker from being
                     //  pushed up the way CAS did; its strength FSR 3's: 2 - 2 x sharpness stops)
-            TexBackend *c = post_image(7, w, h, b->format);
+            TexBackend *c = post_image(7, w, h, dl ? dl->format : b->format);
             float sh = g_settings.sharpening / 10.0f;
             float pc[8] = {taa ? exp2f(-(2.0f - 2.0f * sh)) : sh, 0, 0, 0, (float)w, (float)h};
             VkImageView ci[3] = {src};
@@ -8476,7 +8486,7 @@ static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend 
             VkImageView in[3] = {post_view(mvec_target_img), dv};
             post_pass_pc(cb, "mvec_fill.frag", in, 2, mvec_vectors_img, pc, sizeof pc, false);
             vk_full_barrier(cb);
-            taa_img = rt_antialias() == AA_TAA && !rt_fsr3() ? mvec_taa(cb, b, frame) : NULL;  // (FSR 3 does its own)
+            taa_img = rt_antialias() == AA_TAA && !rt_fsr3() && !rt_dlss() ? mvec_taa(cb, b, frame) : NULL;  // (FSR 3 / DLSS do their own)
             taa_tex = t;
         }
         if (mvec_filled == frame && taa_img && taa_tex == t) *taa = taa_img, *taa_t = t;  // (a second composite: the same)
@@ -8676,6 +8686,70 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
     vk_dyn_forget();  // (FSR's own pipelines and sets were bound)
     vk_full_barrier(cb);
     rt_jitter_set_phases((uint32_t)fsr3_jitter_phases(w, ow));
+    return out;
+}
+
+// (WSword) NVIDIA DLSS (Video > Upscaler DLSS; dlss.h), as fsr3_scene: the scene b (render size, jittered with the
+// same Halton sequence, its length DLSS's own advice - 8 x the upscale's area) to ow x oh (post image 13, storage),
+// from this frame's motion vectors (their .xy into RG16F, post image 33: DLSS reads two channels) and the scene depth
+// (as R32F, post image 14). The vectors' scale and the jitter are FSR 3's: DLSS takes the same pixel offsets to where
+// each pixel was, and the same jitter (x right, y down). NULL when an input is missing or DLSS failed.
+static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh) {
+    uint64_t frame = renderer_present_count();
+    TexBackend *v = mvec_vectors_img, *db = mvec_depth ? vk_tex(mvec_depth, false) : NULL;
+    float jit[2], nr, fr, fov;
+    const char *why = mvec_filled != frame ? "no vectors this frame" : !v || v->width != b->width || v->height != b->height ? "vectors' size"
+                    : !db || !db->image || db->width != b->width || db->height != b->height ? "depth's size"
+                    : ow < b->width || oh < b->height ? "output smaller" : !mvec_camera_now(jit, &nr, &fr, &fov) ? "no camera" : NULL;
+    static const char *lwhy;
+    if (why != lwhy && why) LOG("[dlss] skipped: %s (scene %ux%u, vectors %ux%u, depth %ux%u)\n", why, b->width, b->height,
+                                v ? v->width : 0, v ? v->height : 0, db ? db->width : 0, db ? db->height : 0);
+    lwhy = why;
+    if (why) return NULL;
+    uint32_t w = b->width, h = b->height;
+    static const VkComponentMapping id = {0};
+    TexBackend *dep = post_image(14, w, h, VK_FORMAT_R32_SFLOAT), *mv = post_image(33, w, h, VK_FORMAT_R16G16_SFLOAT);
+    TexBackend *out = post_image_ex(13, ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
+    float pc[8] = {0};
+    VkImageView di[3] = {vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT)};
+    if (g_gpuprof_frame) gp_mark(cb, "DLSS depth copy");
+    post_pass(cb, "fsr3_depth.frag", di, 1, dep, pc, false);
+    VkImageView vi[3] = {post_view(v)};
+    post_pass(cb, "dlss_mv.frag", vi, 1, mv, pc, false);
+    vk_full_barrier(cb);
+    float flip = nvn_window_origin() == 0 ? -1.0f : 1.0f;  // (the game's NDC y to clip y: mvec_fill.frag's a.x)
+    static uint64_t last = ~0ull, last_ns;
+    uint64_t ns = SDL_GetTicksNS();
+    int q = g_settings.upscale_quality;  // (UPQ_*, UPQ_COUNT: the native size - DLAA)
+    WsDlssEval e = {
+        .cb = cb,
+        .color = {b->image, vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT),
+                  b->format, w, h},
+        .depth = {dep->image, post_view(dep), dep->format, w, h},
+        .motion = {mv->image, post_view(mv), mv->format, w, h},
+        .output = {out->image, post_view(out), out->format, ow, oh},
+        .jitter = {jit[0] * (float)w * 0.5f, -jit[1] * flip * (float)h * 0.5f},
+        .mv_scale = {-0.5f * (float)w, 0.5f * (float)h},
+        .dt_ms = last_ns && ns > last_ns ? (float)((ns - last_ns) / 1e6) : 16.7f,
+        .reset = last == ~0ull || last + 1 != frame,
+        .quality = q == UPQ_ULTRA ? WSDLSS_Q_ULTRA_QUALITY : q == UPQ_QUALITY ? WSDLSS_Q_QUALITY : q == UPQ_BALANCED ? WSDLSS_Q_BALANCED
+                 : q == UPQ_PERFORMANCE ? WSDLSS_Q_PERFORMANCE : q == UPQ_ULTRA_PERFORMANCE ? WSDLSS_Q_ULTRA_PERFORMANCE : WSDLSS_Q_DLAA,
+    };
+    static int sign = 0;  // (testing) SAVAGEWIND_DLSS_JITTER=-1: the jitter's sign flipped (DLSS's debug overlay checks it)
+    if (!sign) sign = getenv("SAVAGEWIND_DLSS_JITTER") && atoi(getenv("SAVAGEWIND_DLSS_JITTER")) < 0 ? -1 : 1;
+    e.jitter[0] *= (float)sign, e.jitter[1] *= (float)sign;
+    last_ns = ns;
+    if (g_gpuprof_frame) gp_mark(cb, "DLSS");
+    rec_drain();  // (NGX records into cb itself, and may wait for the device: what was queued before goes first)
+    if (!dlss_dispatch(&e)) return NULL;
+    if (g_gpuprof_frame) gp_mark(cb, "after DLSS");
+    last = frame;
+    vk_dyn_forget();  // (DLSS's own pipelines and sets were bound)
+    vk_full_barrier(cb);
+    // (the jitter sequence's length: DLSS's advice, at least 8 x the upscale's area in phases)
+    double k = (double)ow / (double)w;
+    uint32_t phases = (uint32_t)ceil(8.0 * k * k);
+    rt_jitter_set_phases(phases < 8 ? 8 : phases);
     return out;
 }
 

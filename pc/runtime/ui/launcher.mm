@@ -81,6 +81,10 @@ void vk_imgui_texture_free(uint64_t tex);
 #include "nvn/vulkan/lsfg.h"  // (WSword: lsfg_check_dll - Settings > Files > Lossless Scaling)
 const char *vk_lsfg_dll_path(void);  // (vulkan/device.c: lsfg/Lossless.dll next to WSword.exe, or in the data folder)
 const char *vk_gpu_name(void);       // (vulkan/device.c: the GPU and driver as they name themselves)
+const char *dlss_dll_path(void);     // (vulkan/dlss.c: nvngx_dlss.dll next to WSword.exe; is one there, why DLSS isn't offered)
+bool dlss_dll_present(void);
+void dlss_status(char *out, size_t n);
+bool renderer_gpu_rtx(void);
 const char *vk_driver_desc(void);
 }
 #ifdef __APPLE__
@@ -109,7 +113,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
 // (WSword PC: its own version, and the Savage Wind Recomp release it is built on - SW_BASE_VERSION)
-#define SAVAGEWIND_VERSION "0.3.1-pc.1"
+#define SAVAGEWIND_VERSION "0.3.2-pc.1"
 #define SW_BASE_VERSION "0.4.1-alpha.4"
 #define SW_BASE_LINE " \xc2\xb7 Savage Wind Recomp " SW_BASE_VERSION  // (after the version, lower right)
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
@@ -747,11 +751,11 @@ static bool menu_tip(float s) {
     if (open) {
         ImGui::SetWindowFontScale(1.25f);
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted(tr("WSword's video, audio and controls settings are in the game's own Options."));
+        ImGui::TextUnformatted(tr("In game, F1 opens WSword's Settings - Back + Start, or the guide button, on a controller."));
         ImGui::Spacing();
         ImGui::TextUnformatted(tr(pc_cursor_enabled()
-            ? "Open them from the title screen, or pause the game and choose System > Options. Esc opens pause or goes back. F2 frees the mouse cursor."
-            : "Open them from the title screen, or pause the game and choose System > Options. Esc frees the mouse cursor."));
+            ? "The game's own Options (pause the game, System > Options) has them too. Esc opens pause or goes back. F2 frees the mouse cursor."
+            : "The game's own Options (pause the game, System > Options) has them too. Esc frees the mouse cursor."));
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 14 * s));
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 180 * s) * 0.5f);
@@ -943,6 +947,50 @@ static void pick_background(SDL_Window *win) {
     pthread_mutex_unlock(&g_lock);
     static const SDL_DialogFileFilter f[] = {{"Pictures", "png;jpg;jpeg"}};
     SDL_ShowOpenFileDialog(picked_background, NULL, win, f, 1, NULL, false);
+}
+
+// (WSword) Settings > Files > NVIDIA DLSS: the player's own nvngx_dlss.dll (NVIDIA's DLSS, from the DLSS SDK or a game
+// that ships it), copied next to WSword.exe, where NGX looks for it (vulkan/dlss.c)
+static std::string g_dlss_msg;  // (g_lock)
+static bool g_dlss_failed, g_dlss_busy;
+static void SDLCALL picked_dlss(void *, const char *const *files, int) {
+    char msg[600] = "";
+    bool failed = false;
+    if (files && files[0]) {
+        char mz[2] = {0, 0};
+        FILE *f = fopen(files[0], "rb");
+        bool pe = f && fread(mz, 1, 2, f) == 2 && mz[0] == 'M' && mz[1] == 'Z';
+        if (f) fclose(f);
+        std::string dst = dlss_dll_path(), part = dst + ".part";
+        if (!pe) {
+            failed = true;
+            snprintf(msg, sizeof msg, "%s", tr("That isn't a DLL: choose nvngx_dlss.dll."));
+        } else if (!copy_file(files[0], part)) {
+            failed = true;
+            snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+        } else {
+            remove(dst.c_str());  // (Windows' rename doesn't replace)
+            if (rename(part.c_str(), dst.c_str()) != 0) {
+                failed = true;
+                snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+                remove(part.c_str());
+            } else {
+                fprintf(stderr, "[dlss] nvngx_dlss.dll added from %s\n", files[0]);
+                snprintf(msg, sizeof msg, "%s", tr("nvngx_dlss.dll added. Turn DLSS on in Settings > Video > Upscaler, or in "
+                                                   "the game's Options > Video."));
+            }
+        }
+    }
+    pthread_mutex_lock(&g_lock);
+    g_dlss_msg = msg, g_dlss_failed = failed, g_dlss_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+static void pick_dlss(SDL_Window *win) {
+    pthread_mutex_lock(&g_lock);
+    g_dlss_busy = true, g_dlss_msg.clear();
+    pthread_mutex_unlock(&g_lock);
+    static const SDL_DialogFileFilter f[] = {{"nvngx_dlss.dll", "dll"}};
+    SDL_ShowOpenFileDialog(picked_dlss, NULL, win, f, 1, NULL, false);
 }
 
 // Settings > Files > Look's app icons (paths.c rt_window_icons, in its order) and their pictures (freed before the
@@ -1185,7 +1233,7 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
         if (driver.size() > 48) driver.resize(48);
         std::string gpu = std::string(vk_gpu_name()) + (driver.empty() ? "" : "  \xc2\xb7  " + driver);
         text(ft, 14 * u, pad, ly + 24 * u, muted, gpu.c_str(), bw + 40 * u);
-        text(ft, 14 * u, pad, ly + 48 * u, muted, tr("In game: pause > System > Options. F10: the FPS."), bw + 40 * u);
+        text(ft, 14 * u, pad, ly + 48 * u, muted, tr("In game: F1 opens Settings (Back + Start on a controller). F10: the FPS."), bw + 40 * u);
     }
 
     // ---- the chips at the top right: the refresh rate, frame generation, the battery
@@ -1514,6 +1562,47 @@ static void prelaunch_tab(float sc) {
         }
         ImGui::TextDisabled("%s", tr("Frame generation code: lsfg-vk by PancakeTAS and contributors (GPL-3.0). WSword isn't "
                                      "made by or affiliated with Lossless Scaling's developers."));
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("NVIDIA DLSS");  // (WSword: Video > Upscaler's DLSS, with the player's own nvngx_dlss.dll - vulkan/dlss.c)
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_dlss_msg;
+        bool failed = g_dlss_failed, dbusy = g_dlss_busy;
+        pthread_mutex_unlock(&g_lock);
+        struct stat st;
+        bool have = dlss_dll_present();
+        char status[400];
+        dlss_status(status, sizeof status);
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("NVIDIA DLSS upscaling for NVIDIA RTX graphics cards, with your own nvngx_dlss.dll (from "
+                                     "NVIDIA's DLSS SDK, or the one a game ships). It isn't included with WSword. WSword "
+                                     "keeps a copy next to WSword.exe; then choose DLSS in Settings > Video > Upscaler, or in "
+                                     "the game's Options."));
+        if (have && stat(dlss_dll_path(), &st) == 0) ImGui::Text(tr("nvngx_dlss.dll: added (%.1f MB)"), st.st_size / 1048576.0);
+        else if (have) ImGui::Text("%s", tr("nvngx_dlss.dll: added (in the dlss folder)"));
+        else ImGui::Text("%s", tr("nvngx_dlss.dll: not added"));
+        ImGui::TextDisabled("%s", status);
+        if (dbusy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr(have ? "Choose another nvngx_dlss.dll" : "Choose nvngx_dlss.dll"))) pick_dlss(g_launcher_win);
+        if (have && stat(dlss_dll_path(), &st) == 0) {
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Remove nvngx_dlss.dll"))) {
+                unlink(dlss_dll_path());
+                pthread_mutex_lock(&g_lock);
+                g_dlss_msg = tr("nvngx_dlss.dll removed: DLSS is off until you add it again."), g_dlss_failed = false;
+                pthread_mutex_unlock(&g_lock);
+            }
+        }
+        if (dbusy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::TextDisabled("%s", tr("NVIDIA DLSS is NVIDIA's, through its DLSS SDK (NVIDIA-DLSS-LICENSE.txt). WSword isn't "
+                                     "made by or affiliated with NVIDIA."));
         ImGui::PopTextWrapPos();
     }
 #endif

@@ -21,6 +21,7 @@
 #include "vram.h"
 #include "record.h"
 #include "lsfg.h"
+#include "dlss.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -65,9 +66,10 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 static void create_instance(void) {
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
-    const char *ext[24];
+    const char *ext[40];
     uint32_t n_ext = 0;
     for (Uint32 i = 0; i < n_sdl && n_ext < 14; i++) ext[n_ext++] = sdl_ext[i];
+    static char dlss_ext[12][VK_MAX_EXTENSION_NAME_SIZE];  // (WSword: NVIDIA DLSS's, dlss.c - those the loader has)
     {   // the HDR10 colour space of an HDR swapchain (Video > HDR) comes with VK_EXT_swapchain_colorspace
         uint32_t nie = 0;
         vkEnumerateInstanceExtensionProperties(NULL, &nie, NULL);
@@ -76,6 +78,14 @@ static void create_instance(void) {
         for (uint32_t i = 0; i < nie && !g_cs_ext; i++)
             if (!strcmp(ie[i].extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) g_cs_ext = true;
         if (g_cs_ext) ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+        int nd = dlss_instance_extensions(dlss_ext, 12);
+        for (int k = 0; k < nd && n_ext < 30; k++) {
+            bool have = false, dup = false;
+            for (uint32_t i = 0; i < nie && !have; i++) have = !strcmp(ie[i].extensionName, dlss_ext[k]);
+            for (uint32_t i = 0; i < n_ext && !dup; i++) dup = !strcmp(ext[i], dlss_ext[k]);
+            if (have && !dup) ext[n_ext++] = dlss_ext[k];
+            if (!have) LOG("[dlss] instance extension %s: not there\n", dlss_ext[k]);
+        }
         free(ie);
     }
     bool validate = getenv("SAVAGEWIND_VK_VALIDATION") != NULL;
@@ -265,7 +275,7 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[24];
+    const char *ext[48];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
@@ -363,6 +373,25 @@ static void create_device(void) {
     // (WSword) NVIDIA's GPUs before Turing: no mesh shaders - and the second queue's presents faulted there (#36, below)
     bool nv_pre_turing = g_vk.props.vendorID == 0x10DE && !has_ext(ep, ne, "VK_NV_mesh_shader") &&
                          !has_ext(ep, ne, "VK_EXT_mesh_shader");
+    // (WSword) NVIDIA DLSS's device extensions (dlss.c: NGX's own list) on an RTX GPU, when wsword_dlss.dll is there -
+    // all of them, or DLSS isn't offered; and buffer device addresses, which they come with
+    static char dlss_ext[16][VK_MAX_EXTENSION_NAME_SIZE];
+    bool dlss_ok = false, dlss_bda = false;
+    if (renderer_gpu_rtx() && !getenv("SAVAGEWIND_NO_DLSS")) {
+        int nd = dlss_device_extensions(g_vk.inst, g_vk.phys, dlss_ext, 16);
+        dlss_ok = nd > 0;
+        for (int k = 0; k < nd; k++) {
+            if (!has_ext(ep, ne, dlss_ext[k])) { LOG("[dlss] device extension %s: not there\n", dlss_ext[k]); dlss_ok = false; }
+            dlss_bda |= strstr(dlss_ext[k], "buffer_device_address") != NULL;
+        }
+        for (int k = 0; k < nd && dlss_ok; k++) {
+            bool dup = false;
+            for (uint32_t i = 0; i < n_ext && !dup; i++) dup = !strcmp(ext[i], dlss_ext[k]);
+            if (!dup && n_ext < 40) ext[n_ext++] = dlss_ext[k];
+        }
+        if (nd > 0) LOG("[dlss] device extensions: %d%s\n", nd, dlss_ok ? "" : " - not all there: DLSS off");
+    }
+    dlss_device_ready(dlss_ok);
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -465,7 +494,9 @@ static void create_device(void) {
                                             .samplerMirrorClampToEdge = WANT(f12_have, samplerMirrorClampToEdge),
                                             .uniformAndStorageBuffer8BitAccess = WANT(f12_have, uniformAndStorageBuffer8BitAccess),
                                             .storageBuffer8BitAccess = WANT(f12_have, storageBuffer8BitAccess),
-                                            .scalarBlockLayout = WANT(f12_have, scalarBlockLayout), .pNext = &f13};
+                                            .scalarBlockLayout = WANT(f12_have, scalarBlockLayout),
+                                            .bufferDeviceAddress = dlss_bda && f12_have.bufferDeviceAddress,  // (WSword: DLSS's)
+                                            .pNext = &f13};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = WANT(f11_have, storageBuffer16BitAccess),
                                             .uniformAndStorageBuffer16BitAccess = g_vk.fp16, .pNext = &f12};

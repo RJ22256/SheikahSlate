@@ -124,6 +124,9 @@ void settings_load(void) {
             // for now: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled; dlss: not yet)
             g_settings.upscaler = !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL
                                 : !strcmp(val, "fsr3") ? (fsr3_upscaler_enabled() ? UPSCALE_FSR3_OR_SPATIAL : UPSCALE_SPATIAL)
+#ifndef __APPLE__
+                                : !strcmp(val, "dlss") ? UPSCALE_DLSS  // (WSword: vulkan/dlss.h; native when it isn't there)
+#endif
                                                        : UPSCALE_OFF;
         else if (!strcmp(key, "upscaler_quality")) {
             for (int i = 0; i < UPQ_COUNT; i++)

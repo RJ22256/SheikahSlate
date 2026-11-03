@@ -3,9 +3,9 @@
 #include <stdbool.h>
 
 // Upscalers (Video > Upscaler; runtime/nvn/output_scale.c): Off renders at the window's size; the others render
-// smaller by their quality mode's factor and scale up to the window. DLSS is listed as coming later.
+// smaller by their quality mode's factor and scale up to the window. (WSword) DLSS: vulkan/dlss.h.
 enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD FSR 1, Vulkan */,
-       UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */, UPSCALE_DLSS = 4 /* NVIDIA DLSS: not yet */,
+       UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */, UPSCALE_DLSS = 4 /* NVIDIA DLSS (WSword: vulkan/dlss.h) */,
        UPSCALE_COUNT };
 #ifdef __APPLE__
 #define UPSCALE_SPATIAL UPSCALE_METALFX  // each OS's spatial upscaler

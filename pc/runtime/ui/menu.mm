@@ -172,9 +172,11 @@ extern "C" bool menu_input_captured(void) {
 }
 
 // Esc opens the game's pause screen or backs out of a menu. F2 frees the mouse cursor; a click in the
-// window holds it again (runtime/hle/input.c).
+// window holds it again (runtime/hle/input.c). (WSword) F1 - or Back + Start / the guide button on a controller - opens
+// WSword's Settings over the game, in the Glass Slate look, as 0.2.8's did (Savage Wind had it off, its settings in the
+// game's own Options only, which still has them). SAVAGEWIND_OVERLAY=0: off.
 static bool overlay_enabled(void) {
-    static const bool on = getenv("SAVAGEWIND_OVERLAY") && *getenv("SAVAGEWIND_OVERLAY") != '0';
+    static const bool on = !getenv("SAVAGEWIND_OVERLAY") || *getenv("SAVAGEWIND_OVERLAY") != '0';
     return on;
 }
 static std::atomic<bool> g_cursor_free{false};
@@ -642,6 +644,7 @@ extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
 extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
 extern "C" void vk_lsfg_status(char *out, size_t n);  // (WSword: vulkan/device.c, Lossless frame generation's state)
+extern "C" void dlss_status(char *out, size_t n);     // (WSword: vulkan/dlss.c, NVIDIA DLSS's state)
 // Video > Upscaler mode's names, by UPQ_*
 static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
 extern "C" {
@@ -892,7 +895,8 @@ static void tab_display(void) {
         // game's own 1920 x 1080 image to a bigger window.
         std::string fsr3 = upscaler_available(UPSCALE_FSR3) ? std::string(tr("AMD FSR 3"))
                                                             : std::string(tr("FSR 3")) + " " + tr("(coming soon)");
-        std::string dlss = std::string(tr("DLSS")) + " " + tr(renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
+        std::string dlss = upscaler_available(UPSCALE_DLSS) ? std::string(tr("NVIDIA DLSS"))
+                         : std::string(tr("DLSS")) + " " + tr(renderer_gpu_rtx() ? "(add nvngx_dlss.dll)" : "(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
@@ -904,15 +908,20 @@ static void tab_display(void) {
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_DLSS};
         // (the FSR 3 paragraph on its own: the first one keeps its translations)
         static std::string uds;
+        char dst[400];
+        dlss_status(dst, sizeof dst);
         uds = std::string(tr("Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
                              "below), then FSR 1's edge-aware upscaling and sharpening bring it to the window. The HUD and "
                              "menus always render at the window's resolution.")) + "\n\n" +
               (upscaler_available(UPSCALE_FSR3)
                    ? tr("AMD FSR 3: it renders smaller and builds the full-resolution image from the frames before, "
                         "following the game's motion: sharper and steadier than FSR 1, and anti-aliased (Anti-aliasing "
-                        "has no effect with it). Sharpening sets its own sharpening. NVIDIA DLSS (NVIDIA RTX graphics "
-                        "cards) is coming in a later version.")
-                   : tr("AMD FSR 3 and NVIDIA DLSS (NVIDIA RTX graphics cards) are coming in a later version."));
+                        "has no effect with it). Sharpening sets its own sharpening.")
+                   : tr("AMD FSR 3 is coming in a later version.")) + "\n\n" +
+              tr("NVIDIA DLSS (NVIDIA RTX graphics cards, with your own nvngx_dlss.dll): it renders smaller (the mode "
+                 "below) and NVIDIA's AI upscaler builds the full-resolution image from the frames before, following the "
+                 "game's motion - anti-aliased too (Anti-aliasing has no effect with it). Sharpening still applies after "
+                 "it.") + "\n" + dst;
         const char *ud = uds.c_str();
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };
@@ -1708,34 +1717,18 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (open) {
         // dim the game behind the menu
         ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 110));
-        float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - 2 * 18 * scale;  // (all the height: a slim margin)
+        // (WSword's Glass Slate look, as the start screen's Settings: the rail of pages with its title and BACK -
+        // tabs_body - in a navy glass window over most of the screen; B / Esc close it too)
+        float w = io.DisplaySize.x * 0.94f, h = io.DisplaySize.y - 2 * 18 * scale;  // (all the height: a slim margin)
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * scale, 24 * scale));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 22 * scale);
         ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::PopStyleVar(2);
         ImFont *keep_big = g_font_big;  // (the window in the menu's font; header() uses g_font_big)
         g_font_big = g_menu_font_big;
         ImGui::PushFont(g_menu_font);
-        // header as on the start screen's Settings: the title, and a close X in the corner (B / Esc too). ("Title
-        // screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user 2026-10-11.)
-        ImGui::PushFont(g_font_big);
-        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Settings"));
-        ImGui::PopFont();
-        {
-            float bx = 44 * scale;
-            ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - bx);
-            ImVec2 p = ImGui::GetCursorScreenPos();
-            ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-            bool close = ImGui::InvisibleButton("##close", ImVec2(bx, bx), ImGuiButtonFlags_EnableNav);
-            ImGui::PopStyleColor();
-            bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-            ImU32 col = hot ? IM_COL32(236, 194, 84, 255) : IM_COL32(220, 216, 205, 255);
-            float m = bx * 0.3f, t = (hot ? 3.0f : 2.4f) * scale * 1.5f;
-            ImDrawList *dl = ImGui::GetWindowDrawList();
-            if (hot) dl->AddRectFilled(p, ImVec2(p.x + bx, p.y + bx), IM_COL32(255, 255, 255, 20), 8 * scale);
-            dl->AddLine(ImVec2(p.x + m, p.y + m), ImVec2(p.x + bx - m, p.y + bx - m), col, t);
-            dl->AddLine(ImVec2(p.x + bx - m, p.y + m), ImVec2(p.x + m, p.y + bx - m), col, t);
-            if (close) set_open(false);
-        }
 
         bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();  // (before the
         tabs_body(scale, true, NULL);                                                                          //  pages run)

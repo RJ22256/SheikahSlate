@@ -11,11 +11,11 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Publish the zip as a GitHub release with this tag (e.g. v0.3.1-pc.1); empty: none"
+        description: "Publish the zip as a GitHub release with this tag (e.g. v0.3.2-pc.1); empty: none"
         required: false
         default: ""
       release_notes:
-        description: "The release notes, a Markdown file in the repository (e.g. docs/releases/pc-0.3.1-pc.1.md)"
+        description: "The release notes, a Markdown file in the repository (e.g. docs/releases/pc-0.3.2-pc.1.md)"
         required: false
         default: ""
 
@@ -65,6 +65,32 @@ jobs:
             build/deps-win
             !build/deps-win/src
           key: ${{ steps.deps.outputs.cache-primary-key }}
+      # (WSword) NVIDIA DLSS's bridge, wsword_dlss.dll (pc/tools/dlss_bridge): MSVC against NVIDIA's DLSS SDK - its
+      # headers, the NGX static library and its licence only (no nvngx_dlss.dll: the player's own)
+      - name: NVIDIA DLSS SDK
+        shell: pwsh
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/NVIDIA/DLSS.git pc/build/dlss-sdk
+          git -C pc/build/dlss-sdk sparse-checkout set --no-cone '/include/' '/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib' '/LICENSE.txt'
+          git clone -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git pc/build/vulkan-headers
+          git -C pc/build/dlss-sdk log -1 --format='DLSS SDK %h %s'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: wsword_dlss.dll (MSVC)
+        shell: pwsh
+        working-directory: pc
+        run: |
+          # (the x64 MSVC environment for this step alone: vcvars64 - nothing of it reaches the MSYS2 steps)
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+                  -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $cl = 'cl /nologo /O2 /MT /EHsc /LD /std:c++17 /W3 /I build\dlss-sdk\include /I build\vulkan-headers\include ' +
+                'tools\dlss_bridge\wsword_dlss.cpp /Fe:build\wsword_dlss.dll /Fo:build\ ' +
+                '/link build\dlss-sdk\lib\Windows_x86_64\x64\nvsdk_ngx_s.lib advapi32.lib user32.lib shell32.lib ' +
+                'ole32.lib version.lib setupapi.lib cfgmgr32.lib gdi32.lib'
+          $bat = "@call `"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul`r`n$cl`r`nif errorlevel 1 exit /b 1`r`n" +
+                 "dumpbin /nologo /exports build\wsword_dlss.dll`r`n"
+          Set-Content -Path build\dlss_build.bat -Value $bat -Encoding ascii
+          cmd /c build\dlss_build.bat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Game code generator helper
         working-directory: pc
         run: make gen-helper GEN_PY="$(cygpath -u '${{ steps.py.outputs.python-path }}')"
@@ -80,10 +106,11 @@ jobs:
           D=build/dist/WSword
           bad=$(find "$D" -type d \( -name extracted -o -name 'generated*' -o -name exefs -o -name romfs \);
                 find "$D" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$D" -iname 'swgame*'
-                find "$D" -iname 'botwgame*'; find "$D" -iname 'Lossless*.dll'; find "$D" -iname 'splash*')
+                find "$D" -iname 'botwgame*'; find "$D" -iname 'Lossless*.dll'; find "$D" -iname 'splash*'; find "$D" -iname 'nvngx*')
           [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
           for f in WSword.exe WSword.dll.a "WSword Configuration.exe" LICENSE.txt WSword-PC-guide.md swgen/swgen.exe zig/zig.exe \
-                   Inter-Medium.otf Inter-Bold.otf launcher-background.png app-icon-forest.png lsfg-vk-LICENSE.md; do
+                   Inter-Medium.otf Inter-Bold.otf launcher-background.png app-icon-forest.png lsfg-vk-LICENSE.md \
+                   wsword_dlss.dll NVIDIA-DLSS-LICENSE.txt; do
             [ -e "$D/$f" ] || { echo "::error::missing: $f"; exit 1; }
           done
           # (the game code library imports the runtime from the exe by its name: the import library must name WSword.exe)
