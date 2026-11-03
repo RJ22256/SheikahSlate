@@ -246,6 +246,24 @@ void rec_stats_take(RecStats *o) {
 #define ENQ_T0() uint64_t enq_t0_ = prof_enq ? NOW() : 0
 #define ENQ_END() do { if (prof_enq) st_t.enqueue_ns += NOW() - enq_t0_; } while (0)
 
+// (WSword) a call of the caller's, its arguments copied after the header
+typedef struct { void (*fn)(const void *); uint64_t size; } CallArgs;
+static void call_run(const void *p) {
+    const CallArgs *a = p;
+    a->fn(after(a, sizeof *a));
+}
+void rec_call(void (*fn)(const void *args), const void *args, size_t size) {
+    if (on <= 0) { fn(args); return; }
+    if (size > 4096) FATAL("[vk] recorder: a call's arguments of %zu bytes\n", size);
+    ENQ_T0();
+    CallArgs *a = push(call_run, sizeof *a, size);
+    a->fn = fn;
+    a->size = size;
+    memcpy(after(a, sizeof *a), args, size);
+    commit();
+    ENQ_END();
+}
+
 // ================================================================== descriptor writes
 static bool write_is_image(const VkWriteDescriptorSet *w) {
     switch (w->descriptorType) {

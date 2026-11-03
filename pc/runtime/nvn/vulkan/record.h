@@ -30,6 +30,10 @@ void rec_wait_submitted(uint64_t seq);  // until the driver has submission seq (
 // Everything queued so far is recorded and submitted (the translating thread): before vkDeviceWaitIdle, before
 // recording into a command buffer directly (the menu's ImGui, frame generation), before using the queue outside it.
 void rec_drain(void);
+// (WSword) fn(args) on the recorder thread, in order with the commands around it (a copy of `size` bytes of args, at
+// most 4 KB, 16-aligned): work that records into the frame's command buffer itself - NVIDIA DLSS - without the
+// translating thread waiting for the recorder first (rec_drain). Recorder off: at once.
+void rec_call(void (*fn)(const void *args), const void *args, size_t size);
 
 // ---- profiling (SAVAGEWIND_VK_PROF): counts since the last take
 typedef struct {

@@ -16,7 +16,7 @@ The name shown in the windows, menus, messages and translations is WSword. Comme
 
 The `SAVAGEWIND_*` environment variables, `swgame.dll`, `swgen/` and the Linux and macOS names are Savage Wind's.
 
-**Version.** The version is `SAVAGEWIND_VERSION` in `runtime/ui/launcher.mm`: `0.3.2-pc.1`. `SW_BASE_VERSION` is the Savage Wind release it is built on, shown after the version on the configuration screen. The log's first line names both.
+**Version.** The version is `SAVAGEWIND_VERSION` in `runtime/ui/launcher.mm`: `0.3.3-pc.1`. `SW_BASE_VERSION` is the Savage Wind release it is built on, shown after the version on the configuration screen. The log's first line names both.
 
 **An older WSword's folder** (`runtime/paths.c` `wsword_older_root`):
 - **What it is.** 0.2.8-pc.x kept each game version in a folder of its own (`v182`, `v190`, with `game_version.txt` naming the one in use), on LAS Recomp's layout.
@@ -45,8 +45,12 @@ The `SAVAGEWIND_*` environment variables, `swgame.dll`, `swgen/` and the Linux a
 **NVIDIA DLSS** (0.3.2-pc.1): Video > Upscaler's NVIDIA DLSS (`settings.h` `UPSCALE_DLSS`, `output_scale.c` `rt_dlss`), on NVIDIA RTX GPUs with the player's own `nvngx_dlss.dll`.
 - **The bridge:** NVIDIA's NGX library is MSVC's, which this MinGW build can't link, so `tools/dlss_bridge/wsword_dlss.cpp` is built with MSVC into `wsword_dlss.dll` (by `build-windows.yml`, against NVIDIA's DLSS SDK from https://github.com/NVIDIA/DLSS) with a plain C interface (`runtime/nvn/vulkan/dlss_bridge.h`). `runtime/nvn/vulkan/dlss.c` loads it.
 - **The device** (`device.c`): on an RTX GPU, the instance and device extensions NGX names are enabled (with buffer device address), if the driver has all of them.
-- **Each frame** (`exec.c` `dlss_scene`, where FSR 3's upscale is): the scene at the render size, its depth (`fsr3_depth.frag`) and motion vectors (`dlss_mv.frag`, RG16F), FSR 3's jitter (in at least 8 phases) and motion-vector scale, into a storage image at the output size; Sharpening's CAS after it. Anti-aliasing (SMAA, TAA) is off with it, as with FSR 3.
-- **Failures:** NGX not starting, or DLSS failing three frames in a row, turns DLSS off for the run, with the reason in Upscaler's description (`dlss_status`) and the log. `SAVAGEWIND_NO_DLSS=1` leaves the bridge alone.
+- **Each frame** (`exec.c` `dlss_scene`, where FSR 3's upscale is): the scene at the render size, its depth (`fsr3_depth.frag`) and motion vectors (`dlss_mv.frag`, RG16F), FSR 3's jitter (in at least 8 phases) and motion-vector scale, into a storage image at the output size; Sharpening's CAS after it. Anti-aliasing (SMAA, TAA) is off with it, as with FSR 3. A second composite of the same scene in a frame reuses the first's output.
+- **On the recorder thread** (0.3.3-pc.1): NGX records into the frame's command buffer from a `record.c` `rec_call` packet, in order with the commands around it, so the translating thread doesn't wait for the recorder (`rec_drain`) every frame. It drains only to start NGX and when the feature is made again (other sizes, mode or model: `wsdlss_release_feature`, the device idle first). A failed frame shows the scene blitted plainly into DLSS's output.
+- **The model** (0.3.3-pc.1, Video > DLSS model, `settings.h` `dlss_model`, `dlss.c` `dlss_preset`): NGX's render preset for every mode. Automatic is NVIDIA's default on RTX 40 and newer (`device.c` `renderer_gpu_rtx40`: PCI device id 0x2600 and up) and the transformer K on RTX 20 / 30, where a 310.5+ `nvngx_dlss.dll`'s defaults for Performance (M) and Ultra Performance (L) cost 2-5x K's. CNN (E), Transformer (K) and Transformer 2 (M; L for Ultra Performance) pick one.
+- **Its GPU time:** a pair of timestamps around it each frame, read back 8 frames later without waiting; the average in the performance overlay, Upscaler's description and the log every 1800 frames.
+- **Failures:** NGX not starting, or DLSS failing three frames in a row, turns DLSS off for the run, with the reason in Upscaler's description (`dlss_status`) and the log. `SAVAGEWIND_NO_DLSS=1` leaves the bridge alone. NGX's own messages: the first 200 in the log (all with `SAVAGEWIND_DLSS_LOG=1`).
+- **`dlss_available`** runs many times a frame (with DLSS on, at every camera the game makes: `output_scale.c` `rt_jitter_on`), so the `nvngx_dlss.dll` lookup behind it is cached for half a second.
 
 **Packaging** (`Makefile` dist): the Inter fonts and their OFL, `launcher-background.png` and the icons (`assets/`), lsfg-vk's licence and README, `wsword_dlss.dll` and the DLSS SDK's licence (`NVIDIA-DLSS-LICENSE.txt`) when CI built them. No `nvngx*` file ships. `../docs/PC.md` ships as `WSword-PC-guide.md`, and Savage Wind's README as `SavageWind-README.md`.
 

@@ -645,6 +645,11 @@ extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
 extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
 extern "C" void vk_lsfg_status(char *out, size_t n);  // (WSword: vulkan/device.c, Lossless frame generation's state)
 extern "C" void dlss_status(char *out, size_t n);     // (WSword: vulkan/dlss.c, NVIDIA DLSS's state)
+#ifndef __APPLE__
+extern "C" bool renderer_gpu_rtx40(void);             // (WSword: vulkan/device.c, an RTX 40 or newer)
+extern "C" const char *dlss_model_in_use(void);       // (WSword: vulkan/dlss.c, the model DLSS runs and its GPU time)
+extern "C" float dlss_gpu_ms(void);
+#endif
 // Video > Upscaler mode's names, by UPQ_*
 static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
 extern "C" {
@@ -959,6 +964,28 @@ static void tab_display(void) {
         static int mshown = -1;
         opt_choice_avail("Upscaler mode", &g_settings.upscale_quality, &mshown, mn, mavail, UPQ_COUNT, UPQ_QUALITY,
                          md.c_str());
+#ifndef __APPLE__
+        if (renderer_gpu_rtx()) {  // (WSword) NVIDIA DLSS's model (settings.h DLSS_MODEL_*, vulkan/dlss.c dlss_preset);
+                                   // on RTX GPUs only, greyed unless DLSS runs
+            static const char *const models[DLSS_MODEL_COUNT] = {"Automatic", "CNN (fastest)", "Transformer", "Transformer 2"};
+            static std::string dd;
+            char now[400];
+            dlss_status(now, sizeof now);
+            dd = std::string(tr("Which of NVIDIA's DLSS models runs. Newer ones are sharper and steadier in motion, and cost "
+                                "more GPU time each frame - on RTX 20 and 30 cards enough to undo what rendering smaller "
+                                "saves.")) + "\n\n" +
+                 tr("Automatic: on RTX 40 and newer, NVIDIA's own choice for each mode; on RTX 20 and 30, the "
+                    "transformer for every mode.") + "\n" +
+                 tr("CNN: the older model, the fastest (about 1 ms at 1440p on an RTX 3060) - a little softer, with "
+                    "more ghosting.") + "\n" +
+                 tr("Transformer: sharper and steadier (about 2.4 ms there).") + "\n" +
+                 tr("Transformer 2: NVIDIA's newest, made for RTX 40 and newer (5-7 ms there).") + "\n\n" +
+                 tr(renderer_gpu_rtx40() ? "Automatic on this GPU: NVIDIA's choice." : "Automatic on this GPU: Transformer.") +
+                 "\n" + now + "\n" + tr("The performance overlay (F10, full) shows DLSS's time too.");
+            if (g_settings.upscaler != UPSCALE_DLSS || !upscaler_available(UPSCALE_DLSS)) opt_disable_next();
+            opt_choice("DLSS model", &g_settings.dlss_model, models, DLSS_MODEL_COUNT, DLSS_MODEL_AUTO, dd.c_str());
+        }
+#endif
         opt_indent(-1);
     }
 #ifdef __APPLE__
@@ -1214,6 +1241,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         case UPSCALE_METALFX: line += tr("MetalFX"); break;
         case UPSCALE_FSR1: line += tr("FSR 1"); break;
         case UPSCALE_FSR3: line += tr("FSR 3"); break;
+        case UPSCALE_DLSS: line += tr("DLSS"); break;
         default: line += tr("Off");
     }
     int q = g_settings.upscale_quality;
@@ -1224,9 +1252,18 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     }
     // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr3() ? tr("FSR 3") : rt_dlss() ? tr("DLSS") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
+#ifndef __APPLE__
+    if (rt_dlss() && dlss_model_in_use()[0]) {  // (WSword) DLSS's model and its own GPU time a frame
+        char dl[160];
+        float ms = dlss_gpu_ms();
+        if (ms > 0) snprintf(dl, sizeof dl, tr("DLSS: %s, %.2f ms GPU"), dlss_model_in_use(), ms);
+        else snprintf(dl, sizeof dl, tr("DLSS: %s"), dlss_model_in_use());
+        ImGui::TextDisabled("%s", dl);
+    }
+#endif
 #ifndef __APPLE__
     {   // the scene's size and the final image's (the HUD and menus render at that one)
         float rx, ry, ox, oy;

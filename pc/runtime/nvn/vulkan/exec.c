@@ -7987,7 +7987,7 @@ static NvnTexture *scene_composite(Prog *pr, CmdRec *r) {
 
 static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend **taa);
 static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh);
-static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh);
+static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh, VkImage scene);
 static void scene_post(Prog *pr, CmdRec *r) {
     scene_up.t = NULL;
     NvnTexture *taa_t = NULL;
@@ -8041,7 +8041,7 @@ static void scene_post(Prog *pr, CmdRec *r) {
             out = in = g;
         }
         TexBackend *f3 = fsr3 ? fsr3_scene(cb, in, ow, oh) : NULL;
-        TexBackend *dl = dlss ? dlss_scene(cb, in, ow, oh) : NULL;
+        TexBackend *dl = dlss ? dlss_scene(cb, in, ow, oh, b->image) : NULL;
         if (f3) {
             src = post_view(f3);
             out = f3;
@@ -8694,8 +8694,16 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
 // from this frame's motion vectors (their .xy into RG16F, post image 33: DLSS reads two channels) and the scene depth
 // (as R32F, post image 14). The vectors' scale and the jitter are FSR 3's: DLSS takes the same pixel offsets to where
 // each pixel was, and the same jitter (x right, y down). NULL when an input is missing or DLSS failed.
-static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh) {
+// (a second composite of the same scene in a frame: the output DLSS made for the first - evaluated again, DLSS would
+// start over from no history, twice the cost)
+static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh, VkImage scene) {
     uint64_t frame = renderer_present_count();
+    static uint64_t done_frame = ~0ull;
+    static VkImage done_scene;
+    static uint32_t done_ow, done_oh;
+    const VkImageUsageFlags out_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;  // (dlss.c's fallback blit)
+    if (done_frame == frame && done_scene == scene && done_ow == ow && done_oh == oh)
+        return post_image_ex(13, ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, out_usage);
     TexBackend *v = mvec_vectors_img, *db = mvec_depth ? vk_tex(mvec_depth, false) : NULL;
     float jit[2], nr, fr, fov;
     const char *why = mvec_filled != frame ? "no vectors this frame" : !v || v->width != b->width || v->height != b->height ? "vectors' size"
@@ -8709,7 +8717,7 @@ static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
     uint32_t w = b->width, h = b->height;
     static const VkComponentMapping id = {0};
     TexBackend *dep = post_image(14, w, h, VK_FORMAT_R32_SFLOAT), *mv = post_image(33, w, h, VK_FORMAT_R16G16_SFLOAT);
-    TexBackend *out = post_image_ex(13, ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
+    TexBackend *out = post_image_ex(13, ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, out_usage);
     float pc[8] = {0};
     VkImageView di[3] = {vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT)};
     if (g_gpuprof_frame) gp_mark(cb, "DLSS depth copy");
@@ -8740,10 +8748,12 @@ static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
     e.jitter[0] *= (float)sign, e.jitter[1] *= (float)sign;
     last_ns = ns;
     if (g_gpuprof_frame) gp_mark(cb, "DLSS");
-    rec_drain();  // (NGX records into cb itself, and may wait for the device: what was queued before goes first)
+    // (NGX records into cb on the recorder thread, in order with what was queued before it: record.h rec_call - the
+    // translating thread goes on without waiting for the recorder to catch up)
     if (!dlss_dispatch(&e)) return NULL;
     if (g_gpuprof_frame) gp_mark(cb, "after DLSS");
     last = frame;
+    done_frame = frame, done_scene = scene, done_ow = ow, done_oh = oh;
     vk_dyn_forget();  // (DLSS's own pipelines and sets were bound)
     vk_full_barrier(cb);
     // (the jitter sequence's length: DLSS's advice, at least 8 x the upscale's area in phases)

@@ -218,6 +218,11 @@ bool renderer_gpu_rtx(void) {
     return g_vk.phys && g_vk.props.vendorID == 0x10DE && strstr(g_vk.props.deviceName, "RTX") != NULL;
 }
 
+// (WSword) An RTX 40 (Ada) or newer: NVIDIA's newer DLSS models (presets L, M) are made for these and cost two to five
+// times the transformer K's on RTX 20 / 30 (vulkan/dlss.c dlss_preset). By the PCI device id: Turing 0x1E00-0x21FF,
+// Ampere 0x2200-0x25FF, Ada 0x2600-0x28FF, Blackwell 0x2900 and up.
+bool renderer_gpu_rtx40(void) { return renderer_gpu_rtx() && g_vk.props.deviceID >= 0x2600; }
+
 static bool g_fault_ext;
 // After VK_ERROR_DEVICE_LOST: what the driver says faulted (VK_EXT_device_fault), into the log.
 void vk_device_fault_report(void) {

@@ -28,9 +28,13 @@ const char *dlss_dll_path(void);
 bool dlss_dll_present(void);
 // Video > Upscaler's status line: why DLSS isn't offered, or what it does
 void dlss_status(char *out, size_t n);
-// DLSS into e->cb (NGX started the first time). false when it failed: the scene goes on without it (and DLSS is
-// offered no more this run, with the reason in dlss_status).
+// DLSS into e->cb, queued on the recorder thread in order with the commands around it (NGX started the first time;
+// e->preset is set from Video > DLSS model). false when DLSS can't run: the scene goes on without it. A failure on the
+// recorder thread shows that frame's scene scaled plainly; three in a row turn DLSS off for the run (dlss_status).
 bool dlss_dispatch(WsDlssEval *e);
+// The model DLSS was last made with ("" before), and its GPU time a frame, averaged (0: not measured yet)
+const char *dlss_model_in_use(void);
+float dlss_gpu_ms(void);
 void dlss_shutdown(void);
 
 #ifdef __cplusplus

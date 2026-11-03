@@ -16,6 +16,10 @@ enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD
 #define UPSCALE_FSR3_OR_SPATIAL UPSCALE_FSR3
 #define UPSCALE_DEFAULT UPSCALE_OFF      // the 3D image at the window's resolution
 #endif
+// (WSword) NVIDIA DLSS's model (Video > DLSS model): Automatic (NVIDIA's own choice per mode on RTX 40 and newer; the
+// transformer K on RTX 20 / 30, where NVIDIA's newer models for Performance and Ultra Performance cost more than they
+// save), the CNN (the fastest), the transformer (K), the second transformer (M, L for Ultra Performance)
+enum { DLSS_MODEL_AUTO, DLSS_MODEL_CNN, DLSS_MODEL_TRANSFORMER, DLSS_MODEL_TRANSFORMER2, DLSS_MODEL_COUNT };
 // quality modes, AMD's scale factors (per axis): Ultra Quality 1.3, Quality 1.5, Balanced 1.7, Performance 2.0,
 // Ultra Performance 3.0
 enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UPQ_ULTRA_PERFORMANCE = 4, UPQ_COUNT };
@@ -58,6 +62,7 @@ typedef struct {
     int window_w, window_h;  // Video > Window size, pixels (0: not chosen; runtime/window_size.c)
     int upscaler;        // UPSCALE_*: Off (render at the window's size), or render smaller and scale up
     int upscale_quality; // UPQ_*: the upscaler's mode (how much smaller it renders)
+    int dlss_model;      // (WSword) DLSS_MODEL_*: NVIDIA DLSS's model (vulkan/dlss.c dlss_preset)
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)

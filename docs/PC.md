@@ -27,7 +27,7 @@ and their licenses.
 
 ## Updating
 
-**From 0.3.0-pc.1 or 0.3.1-pc.1:** unzip `WSword-0.3.2-pc.1-windows.zip` over your `WSword` folder and replace the files. Your game files, game code, saves and settings stay as they are.
+**From 0.3.0-pc.1 or later:** unzip `WSword-0.3.3-pc.1-windows.zip` over your `WSword` folder and replace the files. Your game files, game code, saves and settings stay as they are.
 
 **From 0.2.8-pc.x:** unzip it over your `WSword` folder and replace the files. Then run `WSword.exe`:
 
@@ -110,8 +110,14 @@ DLSS upscaling (Super Resolution) on **NVIDIA RTX** graphics cards (RTX 20 and n
 2. Settings > Video > **Upscaler** (or the game's Options > Video): **NVIDIA DLSS**, then its mode on the row below - Ultra Quality, Quality, Balanced, Performance or Ultra Performance. The further down, the smaller the game renders and the faster it is; DLSS fills in the detail.
 
 - The game is drawn at the lower resolution and DLSS brings it up to the window's, using the frames before it. Its anti-aliasing replaces the game's own, so the picture is steadier too.
+- **DLSS model** (Settings > Video, under Upscaler mode): which of NVIDIA's models runs.
+  - **Automatic:** on RTX 40 and newer, NVIDIA's own choice for each mode; on RTX 20 and 30, the Transformer for every mode. NVIDIA's newest models, which recent `nvngx_dlss.dll` files use for Performance and Ultra Performance, cost those cards more than rendering smaller saves.
+  - **CNN (fastest):** the older model, about 1 ms a frame at 1440p on an RTX 3060. A little softer, with more ghosting.
+  - **Transformer:** sharper and steadier, about 2.4 ms there.
+  - **Transformer 2:** NVIDIA's newest, made for RTX 40 and newer. On an RTX 3060 at 1440p it takes 5-7 ms.
+- **What DLSS costs:** the performance overlay (F10, the full one) shows its model and GPU time a frame, as does Upscaler's description.
 - Upscaler's description in Settings says why DLSS isn't offered, if it isn't (no RTX card, no `nvngx_dlss.dll`, an old driver) or why it stopped.
-- DLSS speeds up a GPU that's the bottleneck. Where the CPU holds the frame rate back it doesn't add frames, and costs a little.
+- DLSS speeds up a GPU that's the bottleneck. If **GPU %** in the overlay is well under 100 without DLSS, the CPU is what holds the frame rate back: DLSS can't add frames there, and the motion information it needs costs the CPU a little.
 - `wsword_dlss.dll` in the zip is WSword's bridge to NVIDIA's DLSS SDK (`NVIDIA-DLSS-LICENSE.txt`). NVIDIA and DLSS are NVIDIA's trademarks; WSword isn't made by or affiliated with NVIDIA.
 
 ## What's different from 0.2.8-pc.x
@@ -119,7 +125,7 @@ DLSS upscaling (Super Resolution) on **NVIDIA RTX** graphics cards (RTX 20 and n
 - **Much faster:** this is Savage Wind's engine.
 - **Back from 0.2.8 (0.3.1-pc.1):** the Glass Slate start screen and Settings, Video > Mode, the background and icon choices, and frame generation with your own Lossless.dll. AMD FSR 3 frame generation is there too.
 - **Back from 0.2.8 (0.3.2-pc.1):** Settings over the game on F1.
-- **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`.
+- **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **Game versions:** 1.8.2 and 1.9.0. 1.0.0 and 1.6.0 aren't supported.
 - **New:**
   - Savage Wind's settings in the game's own Options;

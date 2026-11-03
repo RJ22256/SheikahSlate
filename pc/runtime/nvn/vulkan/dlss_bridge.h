@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WSDLSS_ABI 1  // (wsdlss_abi: the bridge and the runtime agree on these structures)
+#define WSDLSS_ABI 2  // (wsdlss_abi: the bridge and the runtime agree on these structures)
 
 typedef struct {
     VkInstance instance;
@@ -35,6 +35,10 @@ typedef struct {
 
 enum { WSDLSS_Q_ULTRA_QUALITY, WSDLSS_Q_QUALITY, WSDLSS_Q_BALANCED, WSDLSS_Q_PERFORMANCE, WSDLSS_Q_ULTRA_PERFORMANCE,
        WSDLSS_Q_DLAA };
+// The DLSS model (NGX's render presets, nvsdk_ngx_defs.h NVSDK_NGX_DLSS_Hint_Render_Preset): 0 NVIDIA's default for the
+// mode (with a 310.5+ nvngx_dlss.dll: K for DLAA / Quality / Balanced, M for Performance, L for Ultra Performance), E the
+// CNN (the fastest), K the transformer, L / M the second transformer (heavier, made for RTX 40 and newer)
+enum { WSDLSS_PRESET_DEFAULT = 0, WSDLSS_PRESET_E = 5, WSDLSS_PRESET_K = 11, WSDLSS_PRESET_L = 12, WSDLSS_PRESET_M = 13 };
 
 typedef struct {
     VkCommandBuffer cb;              // recording; DLSS's work goes into it (every image in VK_IMAGE_LAYOUT_GENERAL)
@@ -46,6 +50,7 @@ typedef struct {
     float dt_ms;
     int reset;                       // no usable history (a cut, the first frame)
     int quality;                     // WSDLSS_Q_*: the feature's mode (the render size is the caller's)
+    int preset;                      // WSDLSS_PRESET_*: the model the feature is made with
 } WsDlssEval;
 
 typedef int (*PFN_wsdlss_abi)(void);
@@ -56,8 +61,12 @@ typedef int (*PFN_wsdlss_device_extensions)(VkInstance instance, VkPhysicalDevic
                                             char (*out)[VK_MAX_EXTENSION_NAME_SIZE], int max);
 // NGX on the device, and DLSS's availability on this GPU and driver. 0, or -1 with the reason in err.
 typedef int (*PFN_wsdlss_init)(const WsDlssInit *in, char *err, int n);
-// DLSS into e->cb (the feature made, and made again, for the sizes and mode given). 0, or -1 with the reason in err.
+// DLSS into e->cb: the feature made first when there is none (its creation recorded into e->cb too). 0, or -1 with the
+// reason in err. A feature made for other sizes, mode or model is an error: the caller lets it go first
+// (wsdlss_release_feature). Called on the thread that records e->cb, which may not be the one that called init.
 typedef int (*PFN_wsdlss_evaluate)(const WsDlssEval *e, char *err, int n);
+// The feature let go (device_idle first), so the next evaluate makes it again
+typedef void (*PFN_wsdlss_release_feature)(void);
 // The feature let go and NGX shut down (the device idle first: the caller's)
 typedef void (*PFN_wsdlss_shutdown)(void);
 

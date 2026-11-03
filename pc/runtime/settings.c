@@ -150,6 +150,11 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "lossless_flow")) { int n = atoi(val); g_settings.lsfg_flow = n >= 25 && n <= 100 ? n : 0; }
         else if (!strcmp(key, "lossless_performance")) g_settings.lsfg_perf = atoi(val) != 0;
+        else if (!strcmp(key, "dlss_model")) {
+            static const char *const m[DLSS_MODEL_COUNT] = {"auto", "cnn", "transformer", "transformer2"};
+            for (int i = 0; i < DLSS_MODEL_COUNT; i++)
+                if (!strcmp(val, m[i])) g_settings.dlss_model = i;
+        }
         else if (!strcmp(key, "app_icon")) { int n = atoi(val); g_settings.app_icon = n >= 0 && n < 6 ? n : 0; }
         else if (!strcmp(key, "sharpening")) {  // (percent, in steps of 10)
             int p = atoi(val);
@@ -296,6 +301,9 @@ void settings_save(void) {
     int u = g_settings.upscaler, uq = g_settings.upscale_quality;
     fprintf(f, "upscaler = %s\n", u >= 0 && u < UPSCALE_COUNT ? ups[u] : "off");
     fprintf(f, "upscaler_quality = %s\n", k_quality[uq >= 0 && uq < UPQ_COUNT ? uq : UPQ_QUALITY]);
+    static const char *const dm[DLSS_MODEL_COUNT] = {"auto", "cnn", "transformer", "transformer2"};
+    int m = g_settings.dlss_model;
+    fprintf(f, "dlss_model = %s\n", dm[m >= 0 && m < DLSS_MODEL_COUNT ? m : 0]);
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_TAA ? "taa" : g_settings.antialias == AA_SMAA ? "smaa" : "off");
     int an = g_settings.anisotropy;
     if (an >= 1 && an <= 4) fprintf(f, "anisotropy = %dx\n", 1 << an);
