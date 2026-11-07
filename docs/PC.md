@@ -160,6 +160,16 @@ WSword loads your own ReShade itself, with no installer. ReShade isn't included 
 - To leave it out, turn Settings > Video > ReShade off and restart.
 - ReShade is crosire's ([reshade.me](https://reshade.me)). WSword isn't made by or affiliated with ReShade. The bridge's ReShade part uses ReShade's add-on API headers (BSD-3-Clause, `ReShade-API-LICENSE.md`).
 
+## Ray tracing (in development)
+
+Ray-traced sun shadows are being built for WSword. To build them right, WSword needs to know how the game draws its shadows on your PC. You can help with a report:
+
+1. In the game, stand somewhere in sunlight with shadows around you (trees, buildings, Link's own).
+2. Press **Ctrl+F9**. The game pauses for a moment while WSword writes the report.
+3. Send `WSword.log` (next to `WSword.exe`) and the `build\rt-report` folder (in the data folder: next to `WSword.exe`, or in its `v190` / `v182` folder).
+
+The report has only the game's drawing data and a picture of that frame: nothing personal.
+
 ## Mods
 
 Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they are: each is a folder with a `romfs` folder inside. They must be made for your game version (1.9.0 or 1.8.2).
@@ -181,6 +191,7 @@ Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
+- **New in 0.3.7-pc.1:** the ray tracing report (Ctrl+F9), the first step toward ray-traced shadows.
 - **New in 0.3.6-pc.1:** your own ReShade, loaded by WSword (Settings > Video > ReShade), with the game's depth for its effects.
 - **Game versions:** 1.8.2 and 1.9.0. 1.0.0 and 1.6.0 aren't supported.
 - **New:**

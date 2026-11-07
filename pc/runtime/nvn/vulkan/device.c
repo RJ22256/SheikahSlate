@@ -77,6 +77,28 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
     return VK_FALSE;
 }
 
+// (WSword) What the GPU offers for ray tracing (the ray tracing report, and once at startup)
+static void rt_caps_log(void) {
+    if (!g_vk.phys) return;
+    uint32_t n = 0;
+    vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &n, NULL);
+    VkExtensionProperties *e = calloc(n ? n : 1, sizeof *e);
+    vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &n, e);
+    static const char *const want[] = {"VK_KHR_acceleration_structure", "VK_KHR_ray_query", "VK_KHR_ray_tracing_pipeline",
+                                       "VK_KHR_deferred_host_operations", "VK_EXT_transform_feedback",
+                                       "VK_KHR_ray_tracing_position_fetch", "VK_EXT_opacity_micromap"};
+    char b[600];
+    int o = snprintf(b, sizeof b, "[rtr] %s (driver %u.%u): ", g_vk.props.deviceName, VK_API_VERSION_MAJOR(g_vk.props.driverVersion),
+                     VK_API_VERSION_MINOR(g_vk.props.driverVersion));
+    for (size_t k = 0; k < sizeof want / sizeof *want; k++) {
+        bool have = false;
+        for (uint32_t i = 0; i < n && !have; i++) have = !strcmp(e[i].extensionName, want[k]);
+        o += snprintf(b + o, sizeof b - o, "%s%s %s", k ? ", " : "", want[k] + 3, have ? "yes" : "no");
+    }
+    free(e);
+    LOG("%s\n", b);
+}
+
 // SAVAGEWIND_VK_VALIDATION=1: Khronos validation layer (MSYS2 package vulkan-validation-layers)
 static void create_instance(void) {
     Uint32 n_sdl = 0;
@@ -2160,6 +2182,10 @@ bool control_camera_view(float view[12]) {
 static void present_locked(NvnTexture *t) {
     g_last_presented = t;
     TexBackend *b = vk_tex(t, true);
+    {   // (WSword) the ray tracing report's frame, as the game made it
+        extern bool g_rt_report;
+        if (g_rt_report) renderer_save_texture_tex(b, "build/rt-report/frame.png");
+    }
     ctl_present_tex = b;
     b->presented = true;
     uint64_t t0 = SDL_GetTicksNS();
@@ -2368,6 +2394,25 @@ presented:
     if (debug_n < 0) { const char *e = getenv("SAVAGEWIND_DEBUG_FRAMES"); debug_n = e && atol(e) > 1 ? atol(e) : 1; }
     g_debug_frame = debug_at && total_frames >= (uint64_t)debug_at && total_frames < (uint64_t)debug_at + (uint64_t)debug_n;
     if (!g_debug_frame) { extern void vk_pick_report(void); vk_pick_report(); }  // (SAVAGEWIND_DEBUG_PICK)
+    {   // (WSword) the ray tracing report (Ctrl+F9: exec.c rt_report_draw): the next frame, once
+        extern bool g_rt_report;
+        extern volatile int g_rt_report_request;
+        extern const char *rt_version(void);
+        if (g_rt_report) {
+            g_rt_report = false;
+            LOG("[rtr] report done: WSword.log and the build\\rt-report folder in the data folder\n");
+        }
+        if (g_rt_report_request) {
+            g_rt_report_request = 0;
+            g_rt_report = true;
+            mkdir("build", 0755);
+            mkdir("build/rt-report", 0755);
+            LOG("[rtr] ray tracing report of frame %llu (WSword %s): shadow resolution %d, upscaler %d, window %ux%u\n",
+                (unsigned long long)total_frames + 1, rt_version(), g_settings.shadow_res, g_settings.upscaler,
+                g_vk.sc_extent.width, g_vk.sc_extent.height);
+            rt_caps_log();
+        }
+    }
     {   // SAVAGEWIND_GPUPROF_AT=<frame>[,<frame>...]: GPU time per pass of those frames ("[gpuprof]" in the log)
         extern bool g_gpuprof_frame;
         extern void vk_gpuprof_report(void);
@@ -2579,6 +2624,7 @@ void ui_window_init(void) {
         !SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface))
         FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
     pick_device();
+    rt_caps_log();
     create_device();
     create_swapchain();
     vk_exec_init();

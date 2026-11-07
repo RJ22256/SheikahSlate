@@ -1119,6 +1119,13 @@ void vk_trace_dump(NvnTexture *t);
 
 static int debug_pass_no;
 static NvnTexture *pass_dbg[8];  // (debug frame) the color targets of the pass in progress
+// (WSword) the ray tracing report (Ctrl+F9; rt_report_draw below): this frame is reported; the pass in progress drew a
+// full-screen draw that samples the sun's shadow maps (its targets saved at its end, build/rt-report/)
+bool g_rt_report;
+volatile int g_rt_report_request;
+static bool rtr_save_pass;
+static int rtr_pass_no;
+static void debug_save_channels(TexBackend *b, const char *path);
 static int pass_dbg_n, pass_dbg_draws;
 
 // ---- linear render targets (NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) go back to guest memory: the CPU reads them.
@@ -1627,6 +1634,18 @@ static void vk_end_pass_at(int line) {
     if (pass_nlinear) bar_other = true;  // (copies to memory)
     for (int i = 0; i < pass_nlinear; i++) readback_schedule(vk_cmd(), pass_linear[i], &pass_linear_view[i], pass_linear_has_view[i]);
     pass_nlinear = 0;
+    if (g_rt_report && rtr_save_pass) {  // (the ray tracing report) a pass that reads the sun's shadow maps: its targets
+        rtr_save_pass = false;
+        for (int i = 0; i < pass_dbg_n; i++) {
+            if (!pass_dbg[i] || !pass_dbg[i]->backend) continue;
+            char p[200];
+            snprintf(p, sizeof p, "build/rt-report/pass%02d_t%d_%ux%u_f%x.png", rtr_pass_no, i, pass_dbg[i]->width,
+                     pass_dbg[i]->height, pass_dbg[i]->format);
+            debug_save_channels(pass_dbg[i]->backend, p);
+            LOG("[rtr] saved %s (channels)\n", p);
+        }
+        rtr_pass_no++;
+    }
     // (debug frame) what the pass drew: its targets, as begin_pass recorded them (st.rt may name the next pass's)
     if (g_debug_frame && pass_dbg_n && pass_dbg[0] && pass_dbg[0]->backend) {
         char path[256];
@@ -6188,6 +6207,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
 
 // ================================================================== draws
 static void debug_draw(Prog *pr, CmdRec *r, bool indexed);
+static void rt_report_draw(Prog *pr, CmdRec *r, bool indexed);  // (WSword: the ray tracing report, Ctrl+F9)
 
 // (debugging) SAVAGEWIND_DEBUG_PICK=<x>,<y>[;<x>,<y>...] (up to 4 points, first-target pixels): in a debug frame each
 // draw copies those pixels of its first target afterwards (its own pass), and vk_pick_report logs, per point, the
@@ -6410,6 +6430,7 @@ static void draw_(CmdRec *r, bool indexed) {
         g_cur_fs_hash = last_hash;
     }
     if (g_debug_frame) { debug_draw(pr, r, indexed); pass_dbg_draws++; }
+    if (g_rt_report) rt_report_draw(pr, r, indexed);
     {   // (debugging) SAVAGEWIND_LOG_FS_CB=<fs hash>:<k>:<first float>:<count>: each frame, those floats of fragment cbuf k
         // (c[k], as the debug frame's fcb<k>) at the first draw of that shader: a parameter's course over a scripted walk
         static int on = -1;
@@ -7082,6 +7103,80 @@ have_pipe:
 }
 
 static void debug_save_channels(TexBackend *b, const char *path);
+
+// (WSword) The ray tracing report (Ctrl+F9, hle/input.c; one frame): what WSword's ray-traced sun shadows will be
+// built from, as the game draws them - into WSword.log ("[rtr]") and build/rt-report/. The draws into the sun's shadow
+// cascades (depth targets of RS_SHADOW): their shaders, topology, counts, the cascade layer, whether their fragment
+// shader discards (alpha-tested: leaves, grass), and their context constant buffer (c3: the light's camera, as the
+// world camera's is for the scene - fg_draw) once per buffer; the draws that sample the cascades: their targets and
+// textures, and for full-screen ones (the deferred sun shadow mask) their fragment constant buffers and their targets'
+// channels as pictures after the pass.
+static void rt_report_draw(Prog *pr, CmdRec *r, bool indexed) {
+    static int lines;
+    static uint64_t frame = ~0ull, c3_seen[64];
+    static int nc3;
+    if (frame != renderer_present_count()) frame = renderer_present_count(), lines = 0, nc3 = 0;
+    if (lines > 8000) return;
+    bool caster = st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SHADOW;
+    int reads = 0;
+    for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
+        NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
+        if (t && vk_texture_scale_group(t) == RS_SHADOW) reads |= 1 << (i < 30 ? i : 30);
+    }
+    if (!caster && !reads) return;
+    uint64_t count = r->x[2], inst = indexed ? r->x[6] : r->x[4];
+    char b[1600];
+    int o = snprintf(b, sizeof b, "[rtr] %s %c mode %llu count %llu inst %llu vs=%llx fs=%llx fshash %016llx discard %d vp %.0f %.0f %.0f %.0f",
+                     caster ? "caster" : "reader", indexed ? 'e' : 'a', (unsigned long long)r->x[0], (unsigned long long)count,
+                     (unsigned long long)inst, (unsigned long long)st.program->stages[0].code_addr,
+                     (unsigned long long)st.program->stages[1].code_addr, (unsigned long long)g_cur_fs_hash,
+                     pr->fi->uses_discard, st.viewport[0][0], st.viewport[0][1], st.viewport[0][2], st.viewport[0][3]);
+    if (st.rt.depth)
+        o += snprintf(b + o, sizeof b - o, " | depth %ux%ux%u f%#x", st.rt.depth->width, st.rt.depth->height, st.rt.depth->depth,
+                      st.rt.depth->format);
+    for (int i = 0; i < st.rt.ncolor && i < 8 && o < (int)sizeof b - 64; i++)
+        if (st.rt.color[i])
+            o += snprintf(b + o, sizeof b - o, " | rt%d %ux%u f%#x", i, st.rt.color[i]->width, st.rt.color[i]->height,
+                          st.rt.color[i]->format);
+    o += snprintf(b + o, sizeof b - o, " | vs out %#x attrs %#x | cascade-tex %#x", pr->vi->out_mask, pr->vi->attr_mask, reads);
+    LOG("%s\n", b);
+    lines++;
+    if (caster) {  // the context buffer: once per buffer
+        Range u = st.ubuf[0][0];
+        bool seen = false;
+        for (int i = 0; i < nc3 && !seen; i++) seen = c3_seen[i] == u.addr;
+        if (!seen && u.addr && u.size >= 58 * 4 && nc3 < 64) {
+            c3_seen[nc3++] = u.addr;
+            const float *f = (const float *)(uintptr_t)u.addr;
+            o = snprintf(b, sizeof b, "[rtr]   c3 %llx size %llu:", (unsigned long long)u.addr, (unsigned long long)u.size);
+            for (int k = 0; k < 64 && (k + 1) * 4 <= (int)u.size && o < (int)sizeof b - 20; k++) o += snprintf(b + o, sizeof b - o, " %.7g", f[k]);
+            LOG("%s\n", b);
+            lines++;
+        }
+        return;
+    }
+    for (int i = 0; i < pr->fi->ntex && i < 16; i++) {  // what a reader samples
+        NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
+        if (!t) continue;
+        LOG("[rtr]   tex%d %ux%ux%u f%#x group %u%s\n", i, t->width, t->height, t->depth, t->format, vk_texture_scale_group(t),
+            pr->fi->tex[i].shadow ? " (depth compare)" : "");
+        lines++;
+    }
+    if (count <= 6) {  // a full-screen draw (the deferred sun shadow mask, the lighting): its fragment constants
+        rtr_save_pass = true;
+        for (int c = 0; c < 18; c++) {
+            if (!((pr->fi->cbuf_mask >> (c + 3)) & 1) || !st.ubuf[1][c].addr) continue;
+            const float *f = (const float *)(uintptr_t)st.ubuf[1][c].addr;
+            o = snprintf(b, sizeof b, "[rtr]   fcb%d size %u:", c + 3, (unsigned)st.ubuf[1][c].size);
+            for (int k = 0; k < 256 && (k + 1) * 4 <= (int)st.ubuf[1][c].size; k++) {
+                if (o > (int)sizeof b - 20) { LOG("%s\n", b); lines++; o = snprintf(b, sizeof b, "[rtr]   fcb%d @%d:", c + 3, k); }
+                o += snprintf(b + o, sizeof b - o, " %.7g", f[k]);
+            }
+            LOG("%s\n", b);
+            lines++;
+        }
+    }
+}
 
 static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
     LOG("[draw] %s inst %llu mode %llu count %llu prog vs=%llx fs=%llx | vs cb %#x fs cb %#x | rt %d", indexed ? "e" : "a",
@@ -8220,7 +8315,7 @@ static struct {
 } rs_in;
 
 static void fg_draw(Prog *pr, CmdRec *r) {
-    if (!g_fg_want && !g_rs_want) return;
+    if (!g_fg_want && !g_rs_want && !g_rt_report) return;
     if (st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SCENE) {
         Range u = st.ubuf[0][0];
         const float *f = (const float *)(uintptr_t)u.addr;
@@ -8354,6 +8449,14 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
         if (d->image && d->width == scene->width && d->height == scene->height && d->layers == 1 && d->samples == 1 &&
             (best < 0 || fg.cand[i].draws > fg.cand[best].draws))
             best = i;
+    }
+    if (g_rt_report && best >= 0) {  // (the ray tracing report) the world camera's context buffer
+        const float *m = fg.cand[best].m;
+        char lb[1200];
+        int o = snprintf(lb, sizeof lb, "[rtr] world camera (%d candidates, %d draws), depth %ux%u:", fg.ncand,
+                         fg.cand[best].draws, vk_tex(fg.cand[best].depth, true)->width, vk_tex(fg.cand[best].depth, true)->height);
+        for (int k = 0; k < FG_CAMERA_FLOATS; k++) o += snprintf(lb + o, sizeof lb - o, " %.7g", m[k]);
+        LOG("%s\n", lb);
     }
     // (WSword) ReShade's depth (vk_reshade_depth, at this present): this frame's scene depth and its projection
     rs_in.ok = g_rs_want && best >= 0;
