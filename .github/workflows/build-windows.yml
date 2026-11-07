@@ -87,7 +87,8 @@ jobs:
           $names = gh release view $v -R NVIDIA-RTX/Streamline --json assets -q '.assets[].name'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Output "Streamline $v assets:"; $names
-          $pick = @($names | Where-Object { $_ -like '*.zip' -and $_ -notmatch 'symbol|pdb|debug|source' })
+          # (the x64 package: the release also has aarch64 and arm64ec ones)
+          $pick = @($names | Where-Object { $_ -like '*.zip' -and $_ -notmatch 'symbol|pdb|debug|source|aarch64|arm64' })
           if (-not $pick) { Write-Error 'no SDK zip in the release'; exit 1 }
           New-Item -ItemType Directory -Force pc/build/sl-dl, pc/build/streamline, pc/build/sl-include | Out-Null
           $found = $null
@@ -96,11 +97,11 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $d = "pc/build/sl-x/" + [IO.Path]::GetFileNameWithoutExtension($n)
             Expand-Archive -Force "pc/build/sl-dl/$n" $d
-            $i = Get-ChildItem $d -Recurse -Filter sl.interposer.dll | Where-Object { $_.FullName -notmatch 'develop|debug' } |
+            $i = Get-ChildItem $d -Recurse -Filter sl.interposer.dll | Where-Object { $_.DirectoryName -match '[\\/]bin[\\/]x64$' } |
                  Select-Object -First 1
             if ($i) { $found = $i; $root = $d; break }
           }
-          if (-not $found) { Write-Error 'no production sl.interposer.dll in the release'; exit 1 }
+          if (-not $found) { Write-Error 'no production x64 sl.interposer.dll (bin\x64) in the release'; exit 1 }
           $bin = $found.DirectoryName
           Write-Output "binaries: $bin"; Get-ChildItem $bin | Format-Table Name, Length
           foreach ($f in 'sl.interposer.dll', 'sl.common.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll') {
@@ -110,8 +111,12 @@ jobs:
           foreach ($f in 'NvLowLatencyVk.dll') { if (Test-Path "$bin/$f") { Copy-Item "$bin/$f" pc/build/streamline/ } }
           $inc = (Get-ChildItem $root -Recurse -Filter sl.h | Select-Object -First 1).DirectoryName
           Copy-Item "$inc/*" pc/build/sl-include/ -Recurse
-          Get-ChildItem $root -File -Recurse -Depth 2 | Where-Object { $_.Name -match 'licen' -and $_.FullName -notmatch 'include|source|external' } |
-            ForEach-Object { Copy-Item $_.FullName ("pc/build/streamline/Streamline-" + $_.Name) }
+          # (Streamline's own licences and Reflex's: not the nvngx ones - no nvngx DLL ships, and DLSS's is NVIDIA-DLSS-LICENSE.txt)
+          foreach ($l in 'license.txt', '3rd-party-licenses.md') {
+            $p = Get-ChildItem $root -File -Recurse -Depth 2 -Filter $l | Select-Object -First 1
+            if ($p) { Copy-Item $p.FullName "pc/build/streamline/Streamline-$l" }
+          }
+          if (Test-Path "$bin/reflex.license.txt") { Copy-Item "$bin/reflex.license.txt" pc/build/streamline/Streamline-reflex.license.txt }
           Get-ChildItem pc/build/streamline | Format-Table Name, Length
           if (-not (Get-ChildItem pc/build/streamline -Filter 'Streamline-*licen*')) {  # (the repository's, then)
             git clone -q --depth 1 --filter=blob:none --sparse https://github.com/NVIDIA-RTX/Streamline.git pc/build/sl-repo
