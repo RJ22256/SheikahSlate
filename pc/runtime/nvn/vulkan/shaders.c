@@ -1269,6 +1269,35 @@ static const char *builtin_src(const char *name, int *stage) {
                "layout(location = 0) out vec4 o;\n"
                "void main() { o = vec4(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).xy, 0.0, 1.0); }\n";
     }
+    // (WSword) NVIDIA DLSS frame generation's inputs as the window shows the game's image (exec.c vk_dlssg_prepare):
+    // each pixel of the game's rectangle (a.zw: its size) from the texel the present's mapping (present.vert: a.x the
+    // flip, b the uv crop) takes it from - the depth (t0: a depth view) as R32F; the motion vectors (t0: .xy the uv
+    // offset to where the pixel was, or with a.y mvec.c's per-object NDC differences) in the rectangle's uv
+    if (!strcmp(name, "dlssg_depth.frag") || !strcmp(name, "dlssg_mv.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return name[6] == 'd' ? "#version 450\n"
+                                "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+                                "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+                                "layout(location = 0) out vec4 o;\n"
+                                "void main() {\n"
+                                "  vec2 q = gl_FragCoord.xy / pc.a.zw;\n"
+                                "  vec2 s = pc.b.xy + vec2(q.x, pc.a.x > 0.5 ? 1.0 - q.y : q.y) * pc.b.zw;\n"
+                                "  ivec2 n = textureSize(t0, 0);\n"
+                                "  o = vec4(texelFetch(t0, clamp(ivec2(s * vec2(n)), ivec2(0), n - 1), 0).r);\n"
+                                "}\n"
+                              : "#version 450\n"
+                                "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+                                "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+                                "layout(location = 0) out vec4 o;\n"
+                                "void main() {\n"
+                                "  vec2 q = gl_FragCoord.xy / pc.a.zw;\n"
+                                "  vec2 s = pc.b.xy + vec2(q.x, pc.a.x > 0.5 ? 1.0 - q.y : q.y) * pc.b.zw;\n"
+                                "  ivec2 n = textureSize(t0, 0);\n"
+                                "  vec2 m = texelFetch(t0, clamp(ivec2(s * vec2(n)), ivec2(0), n - 1), 0).xy;\n"
+                                "  vec2 d = pc.a.y > 0.5 ? m * vec2(-0.5, 0.5) : m;\n"
+                                "  o = vec4(d.x / pc.b.z, (pc.a.x > 0.5 ? -d.y : d.y) / pc.b.w, 0.0, 1.0);\n"
+                                "}\n";
+    }
     if (!strncmp(name, "taa_", 4)) {
         static const char *const names[] = {"taa_prepare.comp", "taa_shade_src.comp", "taa_shade_down.comp", "taa_shade.comp",
                                             "taa_reactivity.comp", "taa_instability.comp", "taa_resolve.comp"};

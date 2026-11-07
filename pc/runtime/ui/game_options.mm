@@ -42,6 +42,10 @@ void rt_request_reboot(int kind);           // runtime/main.c (1: start the game
 void menu_request_window_apply(void);       // menu.mm (fullscreen / window size, applied by the window loop)
 void menu_size_list_open(void);             // menu.mm (Window size's list, over the screen)
 bool renderer_gpu_rtx(void);                // vulkan/device.c, metal.m
+#ifndef __APPLE__
+bool dlssg_gpu_ok(void);                    // (WSword) vulkan/dlssg.c: RTX 40 and newer, RTX 50
+bool dlssg_gpu_mfg(void);
+#endif
 }
 
 namespace {
@@ -126,7 +130,18 @@ std::unordered_map<uint32_t, std::u16string> g_text;
 // ---- values
 const char *const k_perf[] = {"Off", "FPS", "Full"};
 // (WSword) Frame generation: settings.h frame_gen (AMD FSR 3) / lsfg (Lossless, 1-3 frames made)
-const char *const k_fg[] = {"Off", "AMD FSR 3", "Lossless 2x", "Lossless 3x", "Lossless 4x"};
+const char *const k_fg[] = {"Off", "AMD FSR 3", "Lossless 2x", "Lossless 3x", "Lossless 4x", "NVIDIA DLSS 2x",
+                            "NVIDIA DLSS 3x", "NVIDIA DLSS 4x"};
+#ifndef __APPLE__
+// (WSword) NVIDIA DLSS's: on RTX 40 (2x) and RTX 50 (3x, 4x; vulkan/dlssg.c); a setting this GPU can't run still shows
+static int fg_value(void) {
+    return g_settings.dlssg > 0 ? 4 + g_settings.dlssg : g_settings.lsfg > 0 ? 1 + g_settings.lsfg : g_settings.frame_gen ? 1 : 0;
+}
+static int fg_count(void) {
+    int n = 5 + (dlssg_gpu_ok() ? (dlssg_gpu_mfg() ? 3 : 1) : 0);
+    return fg_value() + 1 > n ? fg_value() + 1 : n;
+}
+#endif
 // Upscaler: Off (the game's image scaled plainly), this OS's spatial upscaler, and the temporal ones still to come. A
 // value that can't be picked yet (Item.value_off) is shown greyed and never stored: g_shown keeps the row on it until
 // the page opens again. So are the upscaler's modes until the game renders below the window's size (output_scale.c).
@@ -447,16 +462,18 @@ void build_items(void) {
     // Savage Wind's FSR 3 one: the page keeps its row count; Lossless's flow scale and performance mode, and Mode, are
     // in WSword's Settings (F1).
     Item fg = choice(P_VIDEO, "Frame generation", "",
-                     [](const Item &) { return N(k_fg); }, [](const Item &, int x) { return tr(k_fg[x]); },
-                     [](const Item &) { return g_settings.lsfg > 0 ? 1 + g_settings.lsfg : g_settings.frame_gen ? 1 : 0; },
+                     [](const Item &) { return fg_count(); }, [](const Item &, int x) { return tr(k_fg[x]); },
+                     [](const Item &) { return fg_value(); },
                      [](const Item &, int x) {
                          g_settings.frame_gen = x == 1;
-                         g_settings.lsfg = x >= 2 ? x - 1 : 0;
+                         g_settings.lsfg = x >= 2 && x <= 4 ? x - 1 : 0;
+                         g_settings.dlssg = x >= 5 ? x - 4 : 0;
                      }, 0);
-    fg.reset = [](const Item &) { g_settings.frame_gen = false, g_settings.lsfg = 0; };
+    fg.reset = [](const Item &) { g_settings.frame_gen = false, g_settings.lsfg = 0, g_settings.dlssg = 0; };
     fg.desc_fn = [](const Item &) {  // (one line)
-        return g_settings.lsfg > 0 ? tr("Lossless.dll's frames: the game draws a half, a third or a quarter of the rate.")
-                                   : tr("More frames on screen than the game draws. Adds a little delay.");
+        return g_settings.dlssg > 0 ? tr("NVIDIA DLSS: with your nvngx_dlssg.dll, from the next start of WSword.")
+             : g_settings.lsfg > 0  ? tr("Lossless.dll's frames: the game draws a half, a third or a quarter of the rate.")
+                                    : tr("More frames on screen than the game draws. Adds a little delay.");
     };
     v.push_back(fg);
 #endif

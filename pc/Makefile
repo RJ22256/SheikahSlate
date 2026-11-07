@@ -371,7 +371,10 @@ dist:
 	cp third_party/lsfg-vk/README.WSword.md "$(DIST)/lsfg-vk-README.md"
 	if [ -f build/wsword_dlss.dll ]; then cp build/wsword_dlss.dll "$(DIST)/" && \
 	    cp build/dlss-sdk/LICENSE.txt "$(DIST)/NVIDIA-DLSS-LICENSE.txt"; fi  # (NVIDIA DLSS's bridge: tools/dlss_bridge, built by MSVC)
+	if [ -d build/streamline ]; then mkdir -p "$(DIST)/streamline" && \
+	    cp build/streamline/* "$(DIST)/streamline/"; fi  # (NVIDIA DLSS frame generation: Streamline's DLLs and licence, CI's)
 	! ls "$(DIST)" | grep -i nvngx  # (no nvngx_dlss.dll: the player's own)
+	! ls "$(DIST)/streamline" 2>/dev/null | grep -i nvngx  # (no nvngx_dlssg.dll either)
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp LICENSE "$(DIST)/LICENSE.txt"  # (Savage Wind Recomp's MIT notice, LAS Recomp's in it)

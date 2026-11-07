@@ -27,7 +27,7 @@ and their licenses.
 
 ## Updating
 
-**From 0.3.0-pc.1 or later:** unzip `WSword-0.3.3-pc.1-windows.zip` over your `WSword` folder and replace the files. Your game files, game code, saves and settings stay as they are.
+**From 0.3.0-pc.1 or later:** unzip `WSword-0.3.4-pc.1-windows.zip` over your `WSword` folder and replace the files. Your game files, game code, saves and settings stay as they are.
 
 **From 0.2.8-pc.x:** unzip it over your `WSword` folder and replace the files. Then run `WSword.exe`:
 
@@ -120,12 +120,31 @@ DLSS upscaling (Super Resolution) on **NVIDIA RTX** graphics cards (RTX 20 and n
 - DLSS speeds up a GPU that's the bottleneck. If **GPU %** in the overlay is well under 100 without DLSS, the CPU is what holds the frame rate back: DLSS can't add frames there, and the motion information it needs costs the CPU a little.
 - `wsword_dlss.dll` in the zip is WSword's bridge to NVIDIA's DLSS SDK (`NVIDIA-DLSS-LICENSE.txt`). NVIDIA and DLSS are NVIDIA's trademarks; WSword isn't made by or affiliated with NVIDIA.
 
+## NVIDIA DLSS frame generation
+
+NVIDIA's frame generation on **NVIDIA RTX 40** graphics cards and newer: **2x** on RTX 40, and **3x** and **4x** on RTX 50. It uses your own copy of `nvngx_dlssg.dll`, which isn't included with WSword. It comes with NVIDIA's Streamline SDK, and most games with DLSS frame generation have one in their folder.
+
+1. In **WSword Configuration**: Settings > Files > **NVIDIA DLSS frame generation** > **Choose nvngx_dlssg.dll**. WSword keeps a copy in the `streamline` folder next to `WSword.exe`.
+2. Settings > Video > **Frame generation** (or the game's Options > Video): **NVIDIA DLSS 2x** (3x, 4x on RTX 50).
+3. **Restart WSword.** NVIDIA's frame generation has to be in from the moment WSword starts.
+
+- **The frame rate** counts the frames on screen, as with the other frame generation: at 120, 2x draws 60.
+- **Windows:** Windows 10 version 2004 or newer, and **Hardware-accelerated GPU scheduling** on (Windows Settings > System > Display > Graphics > Change default graphics settings; then restart the PC).
+- **VSync:** NVIDIA's frame generation has no VSync on Vulkan, so with it Video > VSync On and Adaptive work as Fast. With G-SYNC or FreeSync the display still follows the frames.
+- **NVIDIA Reflex** comes with it, to keep the delay down.
+- **HDR** is off while it's in (SDR).
+- The menus, the map, the title screen and the F1 Settings show the game's own frames.
+- The frame generation line in Settings > Video says what it does, or why it doesn't: no RTX 40, no `nvngx_dlssg.dll`, scheduling off, an old driver. So does `WSword.log` (its `[dlssg]` lines).
+- To leave it out completely, choose another Frame generation and restart.
+- The `streamline` folder in the zip holds NVIDIA's Streamline (its signed `sl.*.dll` files and licence). NVIDIA, RTX, DLSS and Reflex are NVIDIA's trademarks; WSword isn't made by or affiliated with NVIDIA.
+
 ## What's different from 0.2.8-pc.x
 
 - **Much faster:** this is Savage Wind's engine.
 - **Back from 0.2.8 (0.3.1-pc.1):** the Glass Slate start screen and Settings, Video > Mode, the background and icon choices, and frame generation with your own Lossless.dll. AMD FSR 3 frame generation is there too.
 - **Back from 0.2.8 (0.3.2-pc.1):** Settings over the game on F1.
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
+- **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Game versions:** 1.8.2 and 1.9.0. 1.0.0 and 1.6.0 aren't supported.
 - **New:**
   - Savage Wind's settings in the game's own Options;

@@ -17,6 +17,7 @@
 #include "vram.h"
 #include "fsr3.h"
 #include "dlss.h"
+#include "dlssg.h"
 #include "mvec.h"
 #include "../output_scale.h"
 #include "record.h"
@@ -8152,9 +8153,10 @@ static struct {
 } fg;
 
 // Its own images (with storage use, which post_image's lack): 0 the HUD-less copy, 1 motion vectors, 2 the
-// interpolated frame
+// interpolated frame; (WSword) NVIDIA DLSS frame generation's inputs as the window shows the game's image: 3 the
+// HUD-less image, 4 depth, 5 motion vectors (vk_dlssg_prepare)
 static TexBackend *fg_image(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage) {
-    static TexBackend img[3];
+    static TexBackend img[6];
     TexBackend *d = &img[i];
     if (d->image && (d->width != w || d->height != h || d->format != f)) {
         vk_views_forget(d);
@@ -8270,6 +8272,58 @@ static bool fg_project(const double *vp, const float *p, float ysign, bool gl_de
     uv[0] = (float)((c[0] / c[3] + 1) / 2), uv[1] = (float)((c[1] / c[3] * ysign + 1) / 2);
     *d = (float)(gl_depth ? (c[2] / c[3] + 1) / 2 : c[2] / c[3]);
     return true;
+}
+
+// (WSword) NVIDIA DLSS frame generation (dlssg.c): vk_fg_generate's inputs of this frame - the HUD-less copy, the
+// scene's depth, the motion vectors (fg_mv.frag's camera and Link's box, or mvec.c's per object) - and its camera, in
+// Streamline's terms (row-major matrices for row vectors; view space x right, y up, z forward; clip z 0..1), for
+// vk_dlssg_prepare at the present
+static struct {
+    bool ok;
+    uint64_t frame;  // (renderer_present_count() + 1 of the frame they are of)
+    TexBackend *hl, *depth, *mv;
+    bool objv, reset;
+    float v2c[16], c2v[16], c2p[16], p2c[16];
+    float pos[3], up[3], right[3], fwd[3], near_, far_, fov, aspect;
+} dg_in;
+
+static void mul4(const double *a, const double *b, double *o) {  // (row-major: o = a b)
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) {
+            double s = 0;
+            for (int k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c];
+            o[r * 4 + c] = s;
+        }
+}
+static void sl_matrix(const double *m, float *o) {  // (column vectors -> Streamline's row vectors: the transpose)
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) o[r * 4 + c] = (float)m[c * 4 + r];
+}
+
+bool vk_dlssg_have_inputs(void) { return dg_in.ok && dg_in.frame == renderer_present_count() + 1; }
+
+static bool invert4(const double *m, double *o);
+// The camera of the frame (m: the world camera's constants, fg_draw; mm: this clip -> the previous one, OpenGL style)
+static void dlssg_camera(const float *m, const double *mm, bool gl_depth) {
+    double P[16], Z[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, S[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1};
+    for (int i = 0; i < 16; i++) P[i] = m[28 + i];
+    if (gl_depth) Z[10] = 0.5, Z[11] = 0.5;  // (OpenGL's clip z -1..1 -> 0..1, as the depth buffer holds it)
+    double zp[16], v2c[16], c2v[16], zi[16], t[16], c2p[16], p2c[16];
+    mul4(Z, P, zp);
+    mul4(zp, S, v2c);  // (Streamline's view space looks down +z, OpenGL's down -z)
+    invert4(v2c, c2v);
+    invert4(Z, zi);
+    mul4(Z, mm, t);
+    mul4(t, zi, c2p);
+    invert4(c2p, p2c);
+    sl_matrix(v2c, dg_in.v2c), sl_matrix(c2v, dg_in.c2v), sl_matrix(c2p, dg_in.c2p), sl_matrix(p2c, dg_in.p2c);
+    float right[3] = {m[44], m[48], m[52]}, up[3] = {m[45], m[49], m[53]}, fwd[3] = {-m[46], -m[50], -m[54]};
+    float pos[3] = {m[47], m[51], m[55]};
+    memcpy(dg_in.pos, pos, sizeof pos), memcpy(dg_in.up, up, sizeof up);
+    memcpy(dg_in.right, right, sizeof right), memcpy(dg_in.fwd, fwd, sizeof fwd);
+    dg_in.near_ = m[56], dg_in.far_ = m[57];
+    dg_in.fov = 2 * atanf(1 / m[33]);
+    dg_in.aspect = m[28] != 0 ? m[33] / m[28] : 16.0f / 9.0f;
 }
 
 // At the game's present (device.c), outside the window image's rendering: the frame between the previous one and
@@ -8396,6 +8450,16 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
                     cb = vk_cmd();
                 }
             }
+            if (dlssg_running()) {  // (WSword) NVIDIA DLSS frame generation: the inputs kept; its frames come at the present
+                dg_in.ok = true, dg_in.frame = renderer_present_count() + 1;
+                dg_in.hl = hl, dg_in.depth = db, dg_in.mv = mv, dg_in.objv = objv, dg_in.reset = reset;
+                dlssg_camera(m, mm, gl_depth);
+                static int logged_dg;
+                if (!logged_dg++)
+                    LOG("[dlssg] first frame's inputs: depth %ux%u, motion vectors %ux%u (%s), HUD-less %ux%u, near %g far %g "
+                        "fovy %.1f\n", db->width, db->height, mv->width, mv->height, objv ? "per object" : "camera and Link's box",
+                        hl->width, hl->height, m[56], m[57], dg_in.fov * 57.29578f);
+            } else {
             TexBackend *o = fg_image(2, b->width, b->height, unorm_of(b->format), VK_IMAGE_USAGE_STORAGE_BIT);
             FgConfig cfg = {b->width, b->height, db->width, db->height, unorm_of(b->format), unorm_of(hl->format), false};
             static int dbg = -1;
@@ -8431,6 +8495,7 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
             if (!logged++)
                 LOG("[fg] first frame: depth %ux%u format %d, final image %ux%u format %d, near %g far %g fovy %.1f\n",
                     db->width, db->height, db->format, b->width, b->height, b->format, m[56], m[57], f.fovy * 57.29578f);
+            }
         }
         memcpy(fg.prev_vp, vp, sizeof vp);
         memcpy(fg.prev_pos, pos, sizeof pos), memcpy(fg.prev_fwd, fwd, sizeof fwd);
@@ -8796,6 +8861,80 @@ static void present_draw_src(VkCommandBuffer cb, VkImageView src, float vx, floa
 }
 
 static void save_view_png(TexBackend *b, VkImageView src, const char *path);
+
+// (WSword) NVIDIA DLSS frame generation's inputs (dg_in, vk_fg_generate) as the window shows the game's image: in
+// images the size of its rectangle there (vx..vh), placed as vk_present_draw places it (pv: the flip and the crop) -
+// the HUD-less copy post-processed as the game's image is, the depth and the motion vectors (in that rectangle's uv,
+// where each pixel was) - so they line up with the window's image, which Streamline's frame generation makes the
+// frames between from. Between vk_frame_begin and the game image's draw; cb's window rendering suspended meanwhile.
+void vk_frame_suspend(void);  // (device.c)
+void vk_frame_resume(void);
+bool vk_dlssg_prepare(VkCommandBuffer cb, float vx, float vy, float vw, float vh, const float pv[8], WsSlFrame *o) {
+    if (!vk_dlssg_have_inputs()) return false;
+    dg_in.ok = false;
+    int32_t ew = (int32_t)g_vk.sc_extent.width, eh = (int32_t)g_vk.sc_extent.height;
+    int32_t x0 = (int32_t)lroundf(vx), y0 = (int32_t)lroundf(vy), x1 = (int32_t)lroundf(vx + vw), y1 = (int32_t)lroundf(vy + vh);
+    x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > ew ? ew : x1, y1 = y1 > eh ? eh : y1;
+    if (x1 - x0 < 64 || y1 - y0 < 64) return false;
+    uint32_t w = (uint32_t)(x1 - x0), h = (uint32_t)(y1 - y0);
+    const VkImageUsageFlags u = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    TexBackend *hd = fg_image(3, w, h, g_vk.sc_format, u), *dd = fg_image(4, w, h, VK_FORMAT_R32_SFLOAT, u),
+               *md = fg_image(5, w, h, VK_FORMAT_R16G16_SFLOAT, u);
+    // the HUD-less image as the game's is drawn: post-processed (anti-aliasing, FSR 1) and placed
+    VkImageView src = post_process(cb, dg_in.hl, pv[6] > 0 ? vw / pv[6] : vw, pv[7] > 0 ? vh / pv[7] : vh);
+    (void)present_pipeline(g_vk.sc_format);  // (made before the rendering begins)
+    vk_frame_suspend();
+    cb = vk_cmd();
+    vk_full_barrier(cb);
+    if (g_gpuprof_frame) gp_mark(cb, "DLSS frame generation: inputs");
+    VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = post_view(hd),
+                                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
+                          .colorAttachmentCount = 1, .pColorAttachments = &ca};
+    rec_CmdBeginRendering(cb, &ri);
+    VkRect2D sc = {{0, 0}, {w, h}};
+    rec_CmdSetScissor(cb, 0, 1, &sc);
+    present_draw_src(cb, src, 0, 0, (float)w, (float)h, pv);
+    rec_CmdEndRendering(cb);
+    vk_dyn_forget();
+    // depth and motion vectors (shaders.c dlssg_depth.frag, dlssg_mv.frag): each pixel of the rectangle from the
+    // texel the present's mapping takes it from
+    static const VkComponentMapping id = {0};
+    TexBackend *db = dg_in.depth;
+    VkImageView dv = vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
+    float pc[8] = {pv[0], dg_in.objv ? 1.0f : 0.0f, (float)w, (float)h, pv[4], pv[5], pv[6], pv[7]};
+    post_pass(cb, "dlssg_depth.frag", &dv, 1, dd, pc, false);
+    VkImageView mvv = post_view(dg_in.mv);
+    post_pass(cb, "dlssg_mv.frag", &mvv, 1, md, pc, false);
+    vk_full_barrier(cb);
+    vk_frame_resume();
+    memset(o, 0, sizeof *o);
+    const VkImageUsageFlags iu = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | u;
+    o->hudless = (WsSlImage){hd->image, post_view(hd), hd->format, w, h, iu};
+    o->depth = (WsSlImage){dd->image, post_view(dd), dd->format, w, h, iu};
+    o->motion = (WsSlImage){md->image, post_view(md), md->format, w, h, iu};
+    o->rect[0] = (uint32_t)x0, o->rect[1] = (uint32_t)y0, o->rect[2] = w, o->rect[3] = h;
+    memcpy(o->view_to_clip, dg_in.v2c, sizeof o->view_to_clip), memcpy(o->clip_to_view, dg_in.c2v, sizeof o->clip_to_view);
+    memcpy(o->clip_to_prev_clip, dg_in.c2p, sizeof o->clip_to_prev_clip);
+    memcpy(o->prev_clip_to_clip, dg_in.p2c, sizeof o->prev_clip_to_clip);
+    o->mv_scale[0] = o->mv_scale[1] = 1;  // (uv units of the rectangle)
+    memcpy(o->cam_pos, dg_in.pos, sizeof o->cam_pos), memcpy(o->cam_up, dg_in.up, sizeof o->cam_up);
+    memcpy(o->cam_right, dg_in.right, sizeof o->cam_right), memcpy(o->cam_fwd, dg_in.fwd, sizeof o->cam_fwd);
+    o->cam_near = dg_in.near_, o->cam_far = dg_in.far_, o->cam_fov = dg_in.fov, o->cam_aspect = dg_in.aspect;
+    o->reset = dg_in.reset;
+    {   // (testing) SAVAGEWIND_DLSSG_INPUTS_AT=<presented frame>: those images saved (build/frames/dlssg_*.png)
+        static long at = -1;
+        if (at < 0) at = getenv("SAVAGEWIND_DLSSG_INPUTS_AT") ? atol(getenv("SAVAGEWIND_DLSSG_INPUTS_AT")) : 0;
+        if (at && (long)renderer_present_count() + 1 == at) {
+            mkdir("build/frames", 0755);
+            save_view_png(hd, raw_view(hd), "build/frames/dlssg_hudless.png");
+            save_view_png(md, post_view(md), "build/frames/dlssg_motion.png");
+            save_view_png(dd, post_view(dd), "build/frames/dlssg_depth.png");
+        }
+    }
+    return true;
+}
 
 // Screenshot of a game texture (presented crop applied to build/frame_* shots), via the present shader into RGBA8.
 void renderer_save_texture_tex(TexBackend *b, const char *path) {

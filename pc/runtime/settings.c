@@ -150,6 +150,10 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "lossless_flow")) { int n = atoi(val); g_settings.lsfg_flow = n >= 25 && n <= 100 ? n : 0; }
         else if (!strcmp(key, "lossless_performance")) g_settings.lsfg_perf = atoi(val) != 0;
+        else if (!strcmp(key, "dlss_frame_generation")) {  // (WSword: off | 2x | 3x | 4x)
+            int n = atoi(val);
+            g_settings.dlssg = n >= 2 && n <= 4 ? n - 1 : 0;
+        }
         else if (!strcmp(key, "dlss_model")) {
             static const char *const m[DLSS_MODEL_COUNT] = {"auto", "cnn", "transformer", "transformer2"};
             for (int i = 0; i < DLSS_MODEL_COUNT; i++)
@@ -312,6 +316,8 @@ void settings_save(void) {
     fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
     if (g_settings.lsfg) fprintf(f, "lossless_frame_generation = %dx\n", g_settings.lsfg + 1);
     else fprintf(f, "lossless_frame_generation = off\n");
+    if (g_settings.dlssg) fprintf(f, "dlss_frame_generation = %dx\n", g_settings.dlssg + 1);
+    else fprintf(f, "dlss_frame_generation = off\n");
     fprintf(f, "lossless_flow = %d\nlossless_performance = %d\napp_icon = %d\n", g_settings.lsfg_flow, g_settings.lsfg_perf,
             g_settings.app_icon);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);

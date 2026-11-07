@@ -83,6 +83,9 @@ const char *vk_lsfg_dll_path(void);  // (vulkan/device.c: lsfg/Lossless.dll next
 const char *vk_gpu_name(void);       // (vulkan/device.c: the GPU and driver as they name themselves)
 const char *dlss_dll_path(void);     // (vulkan/dlss.c: nvngx_dlss.dll next to WSword.exe; is one there, why DLSS isn't offered)
 bool dlss_dll_present(void);
+const char *dlssg_dll_path(void);    // (vulkan/dlssg.c: nvngx_dlssg.dll in streamline\, NVIDIA DLSS frame generation's)
+bool dlssg_dll_present(void);
+void dlssg_status(char *out, size_t n);
 void dlss_status(char *out, size_t n);
 bool renderer_gpu_rtx(void);
 const char *vk_driver_desc(void);
@@ -113,7 +116,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
 // (WSword PC: its own version, and the Savage Wind Recomp release it is built on - SW_BASE_VERSION)
-#define SAVAGEWIND_VERSION "0.3.3-pc.1"
+#define SAVAGEWIND_VERSION "0.3.4-pc.1"
 #define SW_BASE_VERSION "0.4.1-alpha.4"
 #define SW_BASE_LINE " \xc2\xb7 Savage Wind Recomp " SW_BASE_VERSION  // (after the version, lower right)
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
@@ -993,6 +996,51 @@ static void pick_dlss(SDL_Window *win) {
     SDL_ShowOpenFileDialog(picked_dlss, NULL, win, f, 1, NULL, false);
 }
 
+// (WSword) Settings > Files > NVIDIA DLSS frame generation: the player's own nvngx_dlssg.dll, copied into the streamline
+// folder next to WSword.exe, where Streamline looks for it (vulkan/dlssg.c)
+static std::string g_dlssg_msg;  // (g_lock)
+static bool g_dlssg_failed, g_dlssg_busy;
+static void SDLCALL picked_dlssg(void *, const char *const *files, int) {
+    char msg[600] = "";
+    bool failed = false;
+    if (files && files[0]) {
+        char mz[2] = {0, 0};
+        FILE *f = fopen(files[0], "rb");
+        bool pe = f && fread(mz, 1, 2, f) == 2 && mz[0] == 'M' && mz[1] == 'Z';
+        if (f) fclose(f);
+        mkdir((std::string(rt_exe_dir()) + "/streamline").c_str(), 0755);
+        std::string dst = dlssg_dll_path(), part = dst + ".part";
+        if (!pe) {
+            failed = true;
+            snprintf(msg, sizeof msg, "%s", tr("That isn't a DLL: choose nvngx_dlssg.dll."));
+        } else if (!copy_file(files[0], part)) {
+            failed = true;
+            snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+        } else {
+            remove(dst.c_str());  // (Windows' rename doesn't replace)
+            if (rename(part.c_str(), dst.c_str()) != 0) {
+                failed = true;
+                snprintf(msg, sizeof msg, tr("That didn't work: %s"), strerror(errno));
+                remove(part.c_str());
+            } else {
+                fprintf(stderr, "[dlssg] nvngx_dlssg.dll added from %s\n", files[0]);
+                snprintf(msg, sizeof msg, "%s", tr("nvngx_dlssg.dll added. Choose NVIDIA DLSS in Settings > Video > Frame "
+                                                   "generation, then restart WSword."));
+            }
+        }
+    }
+    pthread_mutex_lock(&g_lock);
+    g_dlssg_msg = msg, g_dlssg_failed = failed, g_dlssg_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+static void pick_dlssg(SDL_Window *win) {
+    pthread_mutex_lock(&g_lock);
+    g_dlssg_busy = true, g_dlssg_msg.clear();
+    pthread_mutex_unlock(&g_lock);
+    static const SDL_DialogFileFilter f[] = {{"nvngx_dlssg.dll", "dll"}};
+    SDL_ShowOpenFileDialog(picked_dlssg, NULL, win, f, 1, NULL, false);
+}
+
 // Settings > Files > Look's app icons (paths.c rt_window_icons, in its order) and their pictures (freed before the
 // start screen's ImGui backend goes, when a game starts)
 static const char *const k_icon_names[RT_WINDOW_ICONS] = {"Sword", "Slate", "Midnight", "Dawn", "Ancient", "Forest"};
@@ -1242,7 +1290,11 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
         const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
         char b[96];
         if (dm && dm->refresh_rate > 1) snprintf(b, sizeof b, "%d Hz", (int)lroundf(dm->refresh_rate)), chips.push_back(b);
-        if (g_settings.lsfg > 0) {
+        if (g_settings.dlssg > 0) {  // (WSword: NVIDIA DLSS frame generation, vulkan/dlssg.c)
+            snprintf(b, sizeof b, tr(dlssg_dll_present() ? "NVIDIA DLSS %dx" : "NVIDIA DLSS %dx: no nvngx_dlssg.dll"),
+                     g_settings.dlssg + 1);
+            chips.push_back(b);
+        } else if (g_settings.lsfg > 0) {
             struct stat st;
             bool dll = stat(vk_lsfg_dll_path(), &st) == 0;
             snprintf(b, sizeof b, tr(dll ? "Lossless %dx" : "Lossless %dx: no Lossless.dll"), g_settings.lsfg + 1);
@@ -1603,6 +1655,49 @@ static void prelaunch_tab(float sc) {
         }
         ImGui::TextDisabled("%s", tr("NVIDIA DLSS is NVIDIA's, through its DLSS SDK (NVIDIA-DLSS-LICENSE.txt). WSword isn't "
                                      "made by or affiliated with NVIDIA."));
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("NVIDIA DLSS frame generation");  // (WSword: Video > Frame generation's NVIDIA DLSS - vulkan/dlssg.c)
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_dlssg_msg;
+        bool failed = g_dlssg_failed, dbusy = g_dlssg_busy;
+        pthread_mutex_unlock(&g_lock);
+        struct stat st;
+        bool have = dlssg_dll_present();
+        char status[600];
+        dlssg_status(status, sizeof status);
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("NVIDIA DLSS frame generation for NVIDIA RTX 40 and newer (3x and 4x on RTX 50), with "
+                                     "your own nvngx_dlssg.dll (from NVIDIA's Streamline SDK, or the one a game ships). It "
+                                     "isn't included with WSword. WSword keeps a copy in its streamline folder; then choose "
+                                     "NVIDIA DLSS in Settings > Video > Frame generation and restart WSword. Windows' "
+                                     "Hardware-accelerated GPU scheduling must be on."));
+        if (have && stat(dlssg_dll_path(), &st) == 0) ImGui::Text(tr("nvngx_dlssg.dll: added (%.1f MB)"), st.st_size / 1048576.0);
+        else ImGui::Text("%s", tr("nvngx_dlssg.dll: not added"));
+        ImGui::TextDisabled("%s", status);
+        if (dbusy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr(have ? "Choose another nvngx_dlssg.dll" : "Choose nvngx_dlssg.dll"))) pick_dlssg(g_launcher_win);
+        if (have) {
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Remove nvngx_dlssg.dll"))) {
+                bool gone = unlink(dlssg_dll_path()) == 0;
+                pthread_mutex_lock(&g_lock);
+                g_dlssg_msg = tr(gone ? "nvngx_dlssg.dll removed: DLSS frame generation is off from the next start."
+                                      : "It's in use: remove it after closing WSword."),
+                g_dlssg_failed = !gone;
+                pthread_mutex_unlock(&g_lock);
+            }
+        }
+        if (dbusy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::TextDisabled("%s", tr("DLSS frame generation is NVIDIA's, through its Streamline SDK (its licence: the "
+                                     "streamline folder). WSword isn't made by or affiliated with NVIDIA."));
         ImGui::PopTextWrapPos();
     }
 #endif

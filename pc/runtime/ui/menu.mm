@@ -649,6 +649,9 @@ extern "C" void dlss_status(char *out, size_t n);     // (WSword: vulkan/dlss.c,
 extern "C" bool renderer_gpu_rtx40(void);             // (WSword: vulkan/device.c, an RTX 40 or newer)
 extern "C" const char *dlss_model_in_use(void);       // (WSword: vulkan/dlss.c, the model DLSS runs and its GPU time)
 extern "C" float dlss_gpu_ms(void);
+extern "C" void dlssg_status(char *out, size_t n);    // (WSword: vulkan/dlssg.c, NVIDIA DLSS frame generation)
+extern "C" bool dlssg_gpu_ok(void);
+extern "C" bool dlssg_gpu_mfg(void);
 #endif
 // Video > Upscaler mode's names, by UPQ_*
 static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
@@ -1033,10 +1036,15 @@ static void tab_display(void) {
     {   // Frame generation: AMD FSR 3 (vulkan/framegen.cpp), or (WSword) Lossless Scaling's from the player's own
         // Lossless.dll (vulkan/device.c lsfg_prepare). The frame rate counts the presented frames (framepace.c).
         opt_section("Frame generation");
-        static const char *const fgn[] = {"Off", "AMD FSR 3", "Lossless 2x", "Lossless 3x", "Lossless 4x"};
-        int fv = g_settings.lsfg > 0 ? 1 + g_settings.lsfg : g_settings.frame_gen ? 1 : 0;
-        char st[600];
+        // (WSword) and NVIDIA DLSS frame generation (vulkan/dlssg.c, Streamline): 2x on RTX 40, 3x and 4x on RTX 50
+        static const char *const fgn[] = {"Off", "AMD FSR 3", "Lossless 2x", "Lossless 3x", "Lossless 4x",
+                                          "NVIDIA DLSS 2x", "NVIDIA DLSS 3x", "NVIDIA DLSS 4x"};
+        int fv = g_settings.dlssg > 0 ? 4 + g_settings.dlssg : g_settings.lsfg > 0 ? 1 + g_settings.lsfg : g_settings.frame_gen ? 1 : 0;
+        int fcount = 5 + (dlssg_gpu_ok() ? (dlssg_gpu_mfg() ? 3 : 1) : 0);
+        if (fv + 1 > fcount) fcount = fv + 1;  // (a setting this GPU can't run still shows)
+        char st[600], dst[600];
         vk_lsfg_status(st, sizeof st);
+        dlssg_status(dst, sizeof dst);
         static std::string d;
         d = std::string(tr("AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
                            "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
@@ -1048,10 +1056,15 @@ static void tab_display(void) {
                          "and the multiplier the game keeps up with. It adds about half a game frame of delay and some GPU "
                          "time; the menus, the map and the FPS counter are never generated. Add Lossless.dll on the start "
                          "screen: Settings > Files > Lossless Scaling.") +
-            "\n\n" + st;
-        if (opt_choice("Frame generation", &fv, fgn, 5, 0, d.c_str(), false)) {
+            "\n\n" + tr("NVIDIA DLSS 2x (RTX 40 and newer), 3x and 4x (RTX 50): NVIDIA's frame generation, from your own "
+                         "nvngx_dlssg.dll - added on the start screen: Settings > Files > NVIDIA DLSS frame generation. It "
+                         "starts with WSword: choose it, then restart. It brings NVIDIA Reflex, and VSync On works as Fast "
+                         "with it - use G-SYNC or a frame rate cap. Windows' Hardware-accelerated GPU scheduling must be on.") +
+            "\n\n" + st + "\n" + dst;
+        if (opt_choice("Frame generation", &fv, fgn, fcount, 0, d.c_str(), false)) {
             g_settings.frame_gen = fv == 1;
-            g_settings.lsfg = fv >= 2 ? fv - 1 : 0;
+            g_settings.lsfg = fv >= 2 && fv <= 4 ? fv - 1 : 0;
+            g_settings.dlssg = fv >= 5 ? fv - 4 : 0;
         }
         {   // (settings.h lsfg_flow: 0 Automatic, shown as the lowest step)
             int fl = g_settings.lsfg_flow > 0 ? g_settings.lsfg_flow : 20;

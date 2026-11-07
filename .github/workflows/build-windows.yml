@@ -11,11 +11,11 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Publish the zip as a GitHub release with this tag (e.g. v0.3.3-pc.1); empty: none"
+        description: "Publish the zip as a GitHub release with this tag (e.g. v0.3.4-pc.1); empty: none"
         required: false
         default: ""
       release_notes:
-        description: "The release notes, a Markdown file in the repository (e.g. docs/releases/pc-0.3.3-pc.1.md)"
+        description: "The release notes, a Markdown file in the repository (e.g. docs/releases/pc-0.3.4-pc.1.md)"
         required: false
         default: ""
 
@@ -75,6 +75,50 @@ jobs:
           git clone -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git pc/build/vulkan-headers
           git -C pc/build/dlss-sdk log -1 --format='DLSS SDK %h %s'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # (WSword) NVIDIA DLSS frame generation: NVIDIA's Streamline SDK release (https://github.com/NVIDIA-RTX/Streamline,
+      # MIT; its signed production DLLs) - its headers for the bridge, and the interposer and the plugins frame generation
+      # needs for the zip's streamline folder (no nvngx_dlssg.dll: the player's own)
+      - name: NVIDIA Streamline SDK
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = 'v2.14.16'
+          $names = gh release view $v -R NVIDIA-RTX/Streamline --json assets -q '.assets[].name'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Output "Streamline $v assets:"; $names
+          $pick = @($names | Where-Object { $_ -like '*.zip' -and $_ -notmatch 'symbol|pdb|debug|source' })
+          if (-not $pick) { Write-Error 'no SDK zip in the release'; exit 1 }
+          New-Item -ItemType Directory -Force pc/build/sl-dl, pc/build/streamline, pc/build/sl-include | Out-Null
+          $found = $null
+          foreach ($n in $pick) {
+            gh release download $v -R NVIDIA-RTX/Streamline -p $n -D pc/build/sl-dl --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $d = "pc/build/sl-x/" + [IO.Path]::GetFileNameWithoutExtension($n)
+            Expand-Archive -Force "pc/build/sl-dl/$n" $d
+            $i = Get-ChildItem $d -Recurse -Filter sl.interposer.dll | Where-Object { $_.FullName -notmatch 'develop|debug' } |
+                 Select-Object -First 1
+            if ($i) { $found = $i; $root = $d; break }
+          }
+          if (-not $found) { Write-Error 'no production sl.interposer.dll in the release'; exit 1 }
+          $bin = $found.DirectoryName
+          Write-Output "binaries: $bin"; Get-ChildItem $bin | Format-Table Name, Length
+          foreach ($f in 'sl.interposer.dll', 'sl.common.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll') {
+            if (-not (Test-Path "$bin/$f")) { Write-Error "missing $f"; exit 1 }
+            Copy-Item "$bin/$f" pc/build/streamline/
+          }
+          foreach ($f in 'NvLowLatencyVk.dll') { if (Test-Path "$bin/$f") { Copy-Item "$bin/$f" pc/build/streamline/ } }
+          $inc = (Get-ChildItem $root -Recurse -Filter sl.h | Select-Object -First 1).DirectoryName
+          Copy-Item "$inc/*" pc/build/sl-include/ -Recurse
+          Get-ChildItem $root -File -Recurse -Depth 2 | Where-Object { $_.Name -match 'licen' -and $_.FullName -notmatch 'include|source|external' } |
+            ForEach-Object { Copy-Item $_.FullName ("pc/build/streamline/Streamline-" + $_.Name) }
+          Get-ChildItem pc/build/streamline | Format-Table Name, Length
+          if (-not (Get-ChildItem pc/build/streamline -Filter 'Streamline-*licen*')) {  # (the repository's, then)
+            git clone -q --depth 1 --filter=blob:none --sparse https://github.com/NVIDIA-RTX/Streamline.git pc/build/sl-repo
+            git -C pc/build/sl-repo sparse-checkout set --no-cone '/license.txt' '/3rd-party-licenses.md'
+            Copy-Item pc/build/sl-repo/license.txt pc/build/streamline/Streamline-license.txt
+            Copy-Item pc/build/sl-repo/3rd-party-licenses.md pc/build/streamline/Streamline-3rd-party-licenses.md -ErrorAction SilentlyContinue
+          }
       - name: wsword_dlss.dll (MSVC)
         shell: pwsh
         working-directory: pc
@@ -83,9 +127,10 @@ jobs:
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
                   -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $cl = 'cl /nologo /O2 /MT /EHsc /LD /std:c++17 /W3 /I build\dlss-sdk\include /I build\vulkan-headers\include ' +
-                'tools\dlss_bridge\wsword_dlss.cpp /Fe:build\wsword_dlss.dll /Fo:build\ ' +
+                '/I build\sl-include tools\dlss_bridge\wsword_dlss.cpp tools\dlss_bridge\wsword_sl.cpp ' +
+                '/Fe:build\wsword_dlss.dll /Fo:build\ ' +
                 '/link build\dlss-sdk\lib\Windows_x86_64\x64\nvsdk_ngx_s.lib advapi32.lib user32.lib shell32.lib ' +
-                'ole32.lib version.lib setupapi.lib cfgmgr32.lib gdi32.lib'
+                'ole32.lib version.lib setupapi.lib cfgmgr32.lib gdi32.lib wintrust.lib crypt32.lib'
           $bat = "@call `"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul`r`n$cl`r`nif errorlevel 1 exit /b 1`r`n" +
                  "dumpbin /nologo /exports build\wsword_dlss.dll`r`n"
           Set-Content -Path build\dlss_build.bat -Value $bat -Encoding ascii
@@ -110,7 +155,8 @@ jobs:
           [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
           for f in WSword.exe WSword.dll.a "WSword Configuration.exe" LICENSE.txt WSword-PC-guide.md swgen/swgen.exe zig/zig.exe \
                    Inter-Medium.otf Inter-Bold.otf launcher-background.png app-icon-forest.png lsfg-vk-LICENSE.md \
-                   wsword_dlss.dll NVIDIA-DLSS-LICENSE.txt; do
+                   wsword_dlss.dll NVIDIA-DLSS-LICENSE.txt streamline/sl.interposer.dll streamline/sl.dlss_g.dll \
+                   streamline/sl.common.dll streamline/sl.reflex.dll streamline/sl.pcl.dll; do
             [ -e "$D/$f" ] || { echo "::error::missing: $f"; exit 1; }
           done
           # (the game code library imports the runtime from the exe by its name: the import library must name WSword.exe)

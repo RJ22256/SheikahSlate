@@ -22,6 +22,20 @@
 #include "record.h"
 #include "lsfg.h"
 #include "dlss.h"
+#include "dlssg.h"
+
+// (WSword) The swapchain's functions, and the device's wait: vulkan-1's, or with NVIDIA DLSS frame generation
+// Streamline's proxies (dlssg.h; set in create_device)
+static struct {
+    PFN_vkCreateSwapchainKHR create;
+    PFN_vkDestroySwapchainKHR destroy;
+    PFN_vkGetSwapchainImagesKHR images;
+    PFN_vkAcquireNextImageKHR acquire;
+    PFN_vkQueuePresentKHR present;
+    PFN_vkDeviceWaitIdle wait_idle;
+} sc_fn;
+static void dev_wait_idle(void) { (sc_fn.wait_idle ? sc_fn.wait_idle : vkDeviceWaitIdle)(g_vk.dev); }
+static uint32_t g_dlssg_present_frame;  // (the game's frame being presented: Streamline's present markers, queue_present)
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -111,12 +125,24 @@ static void create_instance(void) {
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
-    VkResult r = vkCreateInstance(&ci, NULL, &g_vk.inst);
+    // (WSword) NVIDIA DLSS frame generation: the instance through Streamline (dlssg.c), which adds what it needs
+    PFN_vkCreateInstance create = vkCreateInstance;
+    if (dlssg_start()) {
+        PFN_vkCreateInstance p = (PFN_vkCreateInstance)dlssg_gipa()(VK_NULL_HANDLE, "vkCreateInstance");
+        if (p) create = p;
+    }
+    VkResult r = create(&ci, NULL, &g_vk.inst);
     if (r != VK_SUCCESS && validate) {
         LOG("[vk] validation layer unavailable (%d); continuing without\n", r);
         ci.enabledLayerCount = 0;
         ci.enabledExtensionCount--;
         validate = false;
+        r = create(&ci, NULL, &g_vk.inst);
+    }
+    if (r != VK_SUCCESS && create != vkCreateInstance) {  // (WSword: without Streamline, then)
+        char why[96];
+        snprintf(why, sizeof why, "its vkCreateInstance failed (%d)", r);
+        dlssg_abandon(why);
         r = vkCreateInstance(&ci, NULL, &g_vk.inst);
     }
     if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (is a Vulkan 1.3 driver installed?)\n", r);
@@ -374,7 +400,8 @@ static void create_device(void) {
                has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
     bool pwait = getenv("SAVAGEWIND_LOG_PRESENT") && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
-                 has_ext(ep, ne, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+                 has_ext(ep, ne, VK_KHR_PRESENT_WAIT_EXTENSION_NAME) &&
+                 !dlssg_loaded();  // (WSword: Streamline presents frames of its own; no present ids through it)
     // (WSword) NVIDIA's GPUs before Turing: no mesh shaders - and the second queue's presents faulted there (#36, below)
     bool nv_pre_turing = g_vk.props.vendorID == 0x10DE && !has_ext(ep, ne, "VK_NV_mesh_shader") &&
                          !has_ext(ep, ne, "VK_EXT_mesh_shader");
@@ -592,7 +619,24 @@ static void create_device(void) {
                                   .queueCount = two_q ? 2 : 1, .pQueuePriorities = prio};
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
-    VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+    // (WSword) NVIDIA DLSS frame generation: the device through Streamline, which adds its extensions, features and
+    // queues (after WSword's: these stay the first of the family)
+    PFN_vkCreateDevice create = dlssg_loaded() ? (PFN_vkCreateDevice)dlssg_gipa()(g_vk.inst, "vkCreateDevice") : NULL;
+    VK_CHECK((create ? create : vkCreateDevice)(g_vk.phys, &di, NULL, &g_vk.dev));
+    sc_fn.create = vkCreateSwapchainKHR, sc_fn.destroy = vkDestroySwapchainKHR, sc_fn.images = vkGetSwapchainImagesKHR;
+    sc_fn.acquire = vkAcquireNextImageKHR, sc_fn.present = vkQueuePresentKHR, sc_fn.wait_idle = vkDeviceWaitIdle;
+    if (dlssg_loaded()) {
+        PFN_vkGetDeviceProcAddr gd = dlssg_gdpa();
+#define SL_FN(field, T, name) do { T p_ = (T)gd(g_vk.dev, name); if (p_) sc_fn.field = p_; else LOG("[dlssg] no Streamline " name "\n"); } while (0)
+        SL_FN(create, PFN_vkCreateSwapchainKHR, "vkCreateSwapchainKHR");
+        SL_FN(destroy, PFN_vkDestroySwapchainKHR, "vkDestroySwapchainKHR");
+        SL_FN(images, PFN_vkGetSwapchainImagesKHR, "vkGetSwapchainImagesKHR");
+        SL_FN(acquire, PFN_vkAcquireNextImageKHR, "vkAcquireNextImageKHR");
+        SL_FN(present, PFN_vkQueuePresentKHR, "vkQueuePresentKHR");
+        SL_FN(wait_idle, PFN_vkDeviceWaitIdle, "vkDeviceWaitIdle");
+#undef SL_FN
+        dlssg_device_ready(g_vk.phys);
+    }
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
     if (qi.queueCount == 2) vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 1, &g_vk.present_queue);
@@ -897,6 +941,14 @@ static void *pc_saver(void *arg) {
 // captured, covered, busy) slows the game with it (4-21 fps with the GPU mostly idle, before the present thread).
 // With G-SYNC / FreeSync, On is the one that lets the display follow the game without tearing (framepace.c keeps the
 // frame rate a little under the refresh rate then).
+// (WSword) Video > VSync, as it works: with Streamline in, On and Adaptive work as Fast (NVIDIA's DLSS frame generation
+// has no VSync on Vulkan; with G-SYNC / FreeSync the display still follows the frames)
+static int vsync_setting(void) {
+    int v = g_settings.vsync;
+    if (dlssg_loaded() && (v == 0 || v == 2)) v = 1;  // (by_vsync below: 0 On, 1 Fast, 2 Adaptive, 3 Off)
+    return v;
+}
+
 static VkPresentModeKHR wanted_present_mode(void) {
     static const VkPresentModeKHR by_vsync[VSYNC_COUNT] = {
         VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_RELAXED_KHR,
@@ -907,7 +959,7 @@ static VkPresentModeKHR wanted_present_mode(void) {
              : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR
              : !strcmp(e, "relaxed")   ? VK_PRESENT_MODE_FIFO_RELAXED_KHR
                                        : VK_PRESENT_MODE_FIFO_KHR;
-    int v = g_settings.vsync;
+    int v = vsync_setting();
     return by_vsync[v >= 0 && v < VSYNC_COUNT ? v : VSYNC_DEFAULT];
 }
 
@@ -941,7 +993,7 @@ static VkPresentModeKHR present_mode(char *have, size_t cap) {
     const char *env = getenv("SAVAGEWIND_VK_PRESENT");
     VkPresentModeKHR forced = wanted_present_mode();
     const VkPresentModeKHR one_shot[2] = {forced, NONE};  // the env override is a single mode, FIFO behind it
-    int v = g_settings.vsync;
+    int v = vsync_setting();
     const VkPresentModeKHR *ladder = (env && *env) ? one_shot : pref[v >= 0 && v < VSYNC_COUNT ? v : VSYNC_DEFAULT];
     for (int j = 0; ladder[j] != NONE; j++)
         for (uint32_t i = 0; i < n; i++)
@@ -979,7 +1031,9 @@ static bool hdr_wanted(float *white) {
     if (g_settings.hdr == HDR_ON) on = true;
     if (g_settings.hdr == HDR_OFF) on = false;
     *white = g_settings.hdr_white ? (float)g_settings.hdr_white : w >= 80 ? w : 200;
-    return on && g_cs_ext;
+    // (WSword) with Streamline in, SDR: DLSS frame generation's images are the window's 8-bit ones (HDR10 here is
+    // drawn in 8-bit images and then converted, which its frames would skip)
+    return on && g_cs_ext && !dlssg_loaded();
 }
 
 static const char k_hdr_vs[] =
@@ -1134,15 +1188,15 @@ static void create_swapchain(void) {
     LOG("[vk] swapchain %ux%u, %u images, present mode %s (VSync %s; surface has %s), %s, display %.2f Hz\n",
         ext.width, ext.height, count, present_mode_name(mode), present_mode_name(wanted_present_mode()), modes, kind,
         winsize_refresh_rate());
-    VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
+    VK_CHECK(sc_fn.create(g_vk.dev, &ci, NULL, &g_vk.swapchain));
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     hdr_release();
-    if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
+    if (old) sc_fn.destroy(g_vk.dev, old, NULL);
     g_vk.sc_format = draw.format;
     g_vk.sc_extent = ext;
     g_vk.sc_mode = wanted_present_mode();  // (what was asked: a change of Video > VSync makes it again)
     g_vk.sc_count = 8;
-    vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
+    sc_fn.images(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
     g_hdr = hdr_found;
     if (g_hdr) hdr_make_images(g_vk.sc_count, ext);
     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
@@ -1267,7 +1321,17 @@ static void *pt_waiter(void *arg) {
 }
 
 // vkQueuePresentKHR, timed and given a present id for the waiter when SAVAGEWIND_LOG_PRESENT asks
+static VkResult queue_present_timed(VkQueue q, const VkPresentInfoKHR *info);
 static VkResult queue_present(VkQueue q, const VkPresentInfoKHR *info) {
+    uint32_t f = g_dlssg_present_frame;  // (WSword) the game's frame, with NVIDIA DLSS frame generation: its markers
+    g_dlssg_present_frame = 0;
+    if (f) dlssg_marker(WSSL_M_PRESENT_START, f);
+    VkResult r = queue_present_timed(q, info);
+    if (f) dlssg_marker(WSSL_M_PRESENT_END, f);
+    return r;
+}
+static VkResult queue_present_timed(VkQueue q, const VkPresentInfoKHR *info) {
+    if (dlssg_loaded()) return sc_fn.present(q, info);  // (no present ids through Streamline)
     if (pt_every < 0) {
         const char *e = getenv("SAVAGEWIND_LOG_PRESENT");
         pt_every = e ? atoi(e) : 0;
@@ -1278,7 +1342,7 @@ static VkResult queue_present(VkQueue q, const VkPresentInfoKHR *info) {
             if (g_vk.present_wait) { pthread_t t; pthread_create(&t, NULL, pt_waiter, NULL); }
         }
     }
-    if (pt_every <= 0) return vkQueuePresentKHR(q, info);
+    if (pt_every <= 0) return sc_fn.present(q, info);
     pthread_mutex_lock(&pt_m);
     uint64_t id = ++pt_id;
     if (!pt_from) pt_from = id;
@@ -1287,7 +1351,7 @@ static VkResult queue_present(VkQueue q, const VkPresentInfoKHR *info) {
     VkPresentInfoKHR pi = *info;
     if (g_vk.present_wait) pi.pNext = &pid;
     uint64_t t = SDL_GetTicksNS();
-    VkResult r = vkQueuePresentKHR(q, &pi);
+    VkResult r = sc_fn.present(q, &pi);
     pthread_mutex_lock(&pt_m);
     pt[id % PT_RING].call = t, pt[id % PT_RING].shown = 0;
     pt_sc = info->pSwapchains[0];
@@ -1311,7 +1375,8 @@ static void recreate_swapchain(void) {
     vk_present_idle();
     pt_retire();
     rec_drain();
-    vkDeviceWaitIdle(g_vk.dev);
+    dlssg_off();  // (WSword: NVIDIA's advice - DLSS frame generation off before the window's swapchain changes)
+    dev_wait_idle();
     create_swapchain();
 }
 
@@ -1420,7 +1485,9 @@ static bool present_threaded(void) {
                                      : forced == 1 ? "a thread of their own (second queue)"
                                      : "the calling thread; Lossless frame generation's on a thread of their own (second queue)");
     }
-    bool on = g_vk.present_queue != g_vk.queue && (forced == 1 || (forced == -1 && g_present_groups));
+    // (WSword: with Streamline, on the calling thread and the game's queue - DLSS frame generation's own presents keep
+    // the inputs it reads in order with that queue)
+    bool on = g_vk.present_queue != g_vk.queue && (forced == 1 || (forced == -1 && g_present_groups)) && !dlssg_loaded();
     if (on && !g_pres_thread_on) {
         pthread_t t;
         g_pres_thread_on = pthread_create(&t, NULL, present_thread, NULL) == 0;
@@ -1476,10 +1543,10 @@ static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
         uint64_t tc = SDL_GetTicksNS();
         VkResult r;
         if (acquire_test_timeout()) r = VK_TIMEOUT;
-        else if (!threaded) r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, ACQUIRE_GIVE_UP_NS, sem, VK_NULL_HANDLE, img);
+        else if (!threaded) r = sc_fn.acquire(g_vk.dev, g_vk.swapchain, ACQUIRE_GIVE_UP_NS, sem, VK_NULL_HANDLE, img);
         else {
             pthread_mutex_lock(&sc_lock);
-            r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 2000000, sem, VK_NULL_HANDLE, img);
+            r = sc_fn.acquire(g_vk.dev, g_vk.swapchain, 2000000, sem, VK_NULL_HANDLE, img);
             pthread_mutex_unlock(&sc_lock);
         }
         if (r != VK_TIMEOUT && r != VK_NOT_READY) return r;
@@ -1789,26 +1856,32 @@ static uint64_t pso_wait(void) {  // ns waited
 extern volatile int g_fg_want;
 extern volatile int g_fg_active;  // (framepace.c: the game draws every other presented frame)
 TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b);
+// (WSword, exec.c) NVIDIA DLSS frame generation: this frame has its inputs (vk_fg_generate found them), and they made
+// into images as the window shows the game's image (vx..vh, pv: vk_present_draw's), with the camera, into *out
+bool vk_dlssg_have_inputs(void);
+bool vk_dlssg_prepare(VkCommandBuffer cb, float vx, float vy, float vw, float vh, const float pv[8], WsSlFrame *out);
 static uint64_t gen_frames;
 static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame after a generated one saved)
 
 void vk_fg_wait_idle(void) {
     vk_present_idle();
     rec_drain();
-    vkDeviceWaitIdle(g_vk.dev);
+    dev_wait_idle();
 }
 
 static bool fg_wanted(void) {
     static int forced = -2;
     if (forced == -2) forced = getenv("SAVAGEWIND_FG") ? atoi(getenv("SAVAGEWIND_FG")) : -1;
-    if (!(forced >= 0 ? forced : g_settings.frame_gen)) return false;
+    // (WSword) NVIDIA DLSS frame generation uses frame generation's inputs too (vk_fg_generate, dlssg.c)
+    bool dg = dlssg_running();
+    if (!(forced >= 0 ? forced : g_settings.frame_gen || dg)) return false;
     static int log = -1;
     static uint64_t n;
     if (log < 0) log = getenv("SAVAGEWIND_FG_LOG") != NULL;
     if (log && n++ % 300 == 0)
         LOG("[fg] wanted? title %d menu %d paused %d F1 menu %d\n", framepace_title_ui(), framepace_menu_ui(),
             framepace_paused(), menu_is_open());
-    if (g_settings.lsfg > 0) return false;  // (WSword: Lossless frame generation chosen instead - lsfg_prepare)
+    if (g_settings.lsfg > 0 && !dg) return false;  // (WSword: Lossless frame generation chosen instead - lsfg_prepare)
     return !framepace_title_ui() && !framepace_menu_ui() && !framepace_paused() && !menu_is_open();
 }
 
@@ -2077,7 +2150,13 @@ static void present_locked(NvnTexture *t) {
     vk_end_pass();
     g_present_split[1] += SDL_GetTicksNS() - t0;
     t0 += pso_wait();  // (not the acquire's time)
-    // Frame generation: the frame between the last one and this (exec.c vk_fg_generate), presented first
+    // (WSword) NVIDIA DLSS frame generation: this frame's latency markers (its simulation taken to end here, its
+    // submissions to the GPU from here to its present) - Streamline's Reflex
+    bool dg = dlssg_running();
+    uint32_t dg_frame = (uint32_t)(total_frames + 1);
+    if (dg) dlssg_marker(WSSL_M_SIM_END, dg_frame), dlssg_marker(WSSL_M_RENDER_START, dg_frame);
+    // Frame generation: the frame between the last one and this (exec.c vk_fg_generate), presented first (with DLSS
+    // frame generation none: its inputs kept for vk_dlssg_prepare, the frames made at the present)
     TexBackend *gen = vk_fg_generate(t, b);
     {   // (measuring) SAVAGEWIND_FG_TEST=1: the frame made, not presented
         static int test = -1;
@@ -2087,8 +2166,9 @@ static void present_locked(NvnTexture *t) {
     // (WSword) Lossless frame generation instead, when chosen: the game's image into it, its frames shown first
     bool lsfg_on = false;
     uint64_t lsfg_sig = 0;
-    int lsfg_show = gen ? 0 : lsfg_prepare(b, &lsfg_on, &lsfg_sig);
-    g_fg_active = gen ? 2 : lsfg_on ? lf.gen + 1 : 0;  // (framepace.c: the game draws one frame in that many)
+    int lsfg_show = gen || dg ? 0 : lsfg_prepare(b, &lsfg_on, &lsfg_sig);
+    bool dg_on = dg && vk_dlssg_have_inputs();
+    g_fg_active = gen ? 2 : lsfg_on ? lf.gen + 1 : dg_on ? dlssg_frames() + 1 : 0;  // (framepace.c: the game draws one frame in that many)
     g_present_groups = lsfg_on;  // (present_threaded: its groups on the present thread)
     g_group_size = lsfg_on ? lf.gen + 1 : 2;
     static const float black[4] = {0, 0, 0, 1};
@@ -2172,6 +2252,10 @@ static void present_locked(NvnTexture *t) {
             }
             frame_kind = PRES_AFTER_GEN, frame_pos = lsfg_show, frame_group = lsfg_show + 1;
         }
+        // (WSword) NVIDIA DLSS frame generation: its inputs as the window shows the game's image (exec.c), first
+        WsSlFrame sf;
+        bool sf_ok = dg && vk_dlssg_prepare(cb, (float)vx, (float)vy, (float)vw, (float)vh, pv, &sf);
+        cb = vk_cmd();
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("SAVAGEWIND_MENU_AT") ? atol(getenv("SAVAGEWIND_MENU_AT")) : 0;
@@ -2179,6 +2263,18 @@ static void present_locked(NvnTexture *t) {
         if (menu_render_needed()) rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
         g_present_split[2] += SDL_GetTicksNS() - td;
+        if (dg) {  // (outside the window image's rendering: Streamline may record into cb)
+            if (!sf_ok) memset(&sf, 0, sizeof sf);
+            sf.frame = dg_frame, sf.on = sf_ok, sf.frames = dlssg_frames();
+            sf.back_w = g_vk.sc_extent.width, sf.back_h = g_vk.sc_extent.height;
+            sf.back_format = g_vk.sc_format, sf.back_count = g_vk.sc_count;
+            vk_frame_suspend();
+            sf.cb = vk_cmd();
+            dlssg_frame(&sf);
+            vk_frame_resume();
+            dlssg_marker(WSSL_M_RENDER_END, dg_frame);
+            g_dlssg_present_frame = dg_frame;  // (queue_present: its present markers)
+        }
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("SAVAGEWIND_WINDOW_SHOT") ? atol(getenv("SAVAGEWIND_WINDOW_SHOT")) : 0;
         bool shot = win_shot && (long)total_frames + 1 == win_shot;
@@ -2406,7 +2502,7 @@ static void quick_exit_handler(void) {
     if (g_vk.dev) {
         vk_present_idle();
         rec_drain();
-        vkDeviceWaitIdle(g_vk.dev);
+        dev_wait_idle();
         if (trace) LOG("[vk] exit: saving the pipeline cache\n");
         vk_pipeline_cache_save();
         extern void vk_pso_flush(void);
@@ -2456,7 +2552,10 @@ void ui_window_init(void) {
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
     winsize_apply(window);
     create_instance();
-    if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
+    // (WSword) with NVIDIA DLSS frame generation, the surface through Streamline (dlssg.c), as its swapchain needs
+    if (!dlssg_create_surface(window, g_vk.inst, &g_vk.surface) &&
+        !SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface))
+        FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
     pick_device();
     create_device();
     create_swapchain();
@@ -2480,7 +2579,7 @@ void backend_reset(void) {
     if (!g_vk.dev) return;
     vk_present_idle();
     rec_drain();
-    vkDeviceWaitIdle(g_vk.dev);
+    dev_wait_idle();
     extern void vk_textures_reset(void);
     extern void vk_exec_reset(void);
     vk_textures_reset();
@@ -2543,4 +2642,7 @@ void backend_present(NvnTexture *t) {
     gpu_lock();
     present_locked(t);
     gpu_unlock();
+    // (WSword) NVIDIA DLSS frame generation's Reflex: its sleep before the next frame starts, then that frame's
+    // simulation start (dlssg.c) - not holding the GPU lock
+    if (dlssg_running()) dlssg_sleep((uint32_t)(total_frames + 1));
 }

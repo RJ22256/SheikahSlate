@@ -16,7 +16,7 @@ The name shown in the windows, menus, messages and translations is WSword. Comme
 
 The `SAVAGEWIND_*` environment variables, `swgame.dll`, `swgen/` and the Linux and macOS names are Savage Wind's.
 
-**Version.** The version is `SAVAGEWIND_VERSION` in `runtime/ui/launcher.mm`: `0.3.3-pc.1`. `SW_BASE_VERSION` is the Savage Wind release it is built on, shown after the version on the configuration screen. The log's first line names both.
+**Version.** The version is `SAVAGEWIND_VERSION` in `runtime/ui/launcher.mm`: `0.3.4-pc.1`. `SW_BASE_VERSION` is the Savage Wind release it is built on, shown after the version on the configuration screen. The log's first line names both.
 
 **An older WSword's folder** (`runtime/paths.c` `wsword_older_root`):
 - **What it is.** 0.2.8-pc.x kept each game version in a folder of its own (`v182`, `v190`, with `game_version.txt` naming the one in use), on LAS Recomp's layout.
@@ -52,6 +52,15 @@ The `SAVAGEWIND_*` environment variables, `swgame.dll`, `swgen/` and the Linux a
 - **Failures:** NGX not starting, or DLSS failing three frames in a row, turns DLSS off for the run, with the reason in Upscaler's description (`dlss_status`) and the log. `SAVAGEWIND_NO_DLSS=1` leaves the bridge alone. NGX's own messages: the first 200 in the log (all with `SAVAGEWIND_DLSS_LOG=1`).
 - **`dlss_available`** runs many times a frame (with DLSS on, at every camera the game makes: `output_scale.c` `rt_jitter_on`), so the `nvngx_dlss.dll` lookup behind it is cached for half a second.
 
-**Packaging** (`Makefile` dist): the Inter fonts and their OFL, `launcher-background.png` and the icons (`assets/`), lsfg-vk's licence and README, `wsword_dlss.dll` and the DLSS SDK's licence (`NVIDIA-DLSS-LICENSE.txt`) when CI built them. No `nvngx*` file ships. `../docs/PC.md` ships as `WSword-PC-guide.md`, and Savage Wind's README as `SavageWind-README.md`.
+**NVIDIA DLSS frame generation** (0.3.4-pc.1): Video > Frame generation's NVIDIA DLSS 2x / 3x / 4x (`settings.h` `dlssg`), through NVIDIA's Streamline SDK in its manual hooking mode, with the player's own `nvngx_dlssg.dll` in `streamline\`.
+- **The bridge** (`tools/dlss_bridge/wsword_sl.cpp`, `dlss_bridge.h` `wssl_*`, ABI 3): loads `streamline\sl.interposer.dll` at run time (its NVIDIA signature checked), `slInit` with manual hooking and frame-based tagging, DLSS-G, Reflex and PCL.
+- **At startup only** (`vulkan/dlssg.c` `dlssg_start`, from `device.c` `create_instance`), when the setting is on and `nvngx_dlssg.dll` is there: the instance, the window's surface (`vkCreateWin32SurfaceKHR`), the device and the swapchain functions (create, destroy, images, acquire, present, device wait) are Streamline's. Unsupported (`wssl_device_ready`: no RTX 40, scheduling off, an old driver): the feature unloaded, a plain swapchain. Changing the setting needs a restart.
+- **While it's in** (`device.c`): presents inline on the game's queue (no present thread: Streamline's own presents keep the inputs in order with it), no present ids, SDR, and VSync On / Adaptive as Fast (no VSync with it on Vulkan). Off (`wssl_off`) before the swapchain is made again.
+- **Each frame:** the inputs of frame generation's own (`exec.c` `vk_fg_generate`: the HUD-less copy, the scene's depth, fg_mv.frag's camera and Link's box vectors) and its camera in Streamline's terms (row vectors; view z forward; clip z 0..1: `dlssg_camera`). `vk_dlssg_prepare` makes them into images the size of the game's rectangle in the window, placed as the present places the game's image (its flip and crop; `dlssg_depth.frag`, `dlssg_mv.frag`; the HUD-less copy post-processed and drawn as the game's image is), tagged with that rectangle as the backbuffer's subrect. Constants, tags and options go in a `rec_call` packet on the recorder thread (outside any rendering), before the present.
+- **Reflex markers:** simulation end and render submit start at the present, render submit end before it, present start and end around it, then (outside the GPU lock) Reflex's sleep and the next frame's simulation start.
+- **Pacing:** `g_fg_active` is the multiplier while it makes frames (framepace.c: the game draws one in that many); off in the menus (mode off, the resources kept).
+- **Failures:** three `wssl_frame` failures in a row turn it off for the run. `SAVAGEWIND_NO_DLSSG=1` leaves Streamline out; `SAVAGEWIND_DLSSG_LOG=1`: Streamline's verbose log; `SAVAGEWIND_DLSSG_INPUTS_AT=<frame>`: its inputs saved as PNGs.
+
+**Packaging** (`Makefile` dist): the Inter fonts and their OFL, `launcher-background.png` and the icons (`assets/`), lsfg-vk's licence and README, `wsword_dlss.dll` and the DLSS SDK's licence (`NVIDIA-DLSS-LICENSE.txt`), and Streamline's signed DLLs and licence in `streamline\`, when CI fetched and built them. No `nvngx*` file ships. `../docs/PC.md` ships as `WSword-PC-guide.md`, and Savage Wind's README as `SavageWind-README.md`.
 
 **FFmpeg** (`tools/build_deps_windows.sh`): WSword's version, the same FFmpeg. It is configured for a neutral prefix, so no path of the build machine ends up in the DLLs.

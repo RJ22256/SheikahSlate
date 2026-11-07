@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WSDLSS_ABI 2  // (wsdlss_abi: the bridge and the runtime agree on these structures)
+#define WSDLSS_ABI 3  // (wsdlss_abi: the bridge and the runtime agree on these structures)
 
 typedef struct {
     VkInstance instance;
@@ -69,6 +69,72 @@ typedef int (*PFN_wsdlss_evaluate)(const WsDlssEval *e, char *err, int n);
 typedef void (*PFN_wsdlss_release_feature)(void);
 // The feature let go and NGX shut down (the device idle first: the caller's)
 typedef void (*PFN_wsdlss_shutdown)(void);
+
+
+// ---- (ABI 3) NVIDIA DLSS frame generation, through NVIDIA's Streamline SDK (https://github.com/NVIDIA-RTX/Streamline,
+// MIT; its signed sl.interposer.dll and plugins in WSword's streamline folder, with the player's own nvngx_dlssg.dll).
+// Streamline in its "manual hooking" mode: WSword makes its Vulkan instance, device, window surface and swapchain with
+// the interposer's functions (wssl_gipa / wssl_gdpa) and presents through it; DLSS frame generation makes the frames
+// between two of the game's at its present.
+typedef struct {
+    const wchar_t *dir;             // the folder of sl.interposer.dll, the sl.*.dll plugins and nvngx_dlssg.dll
+    const char *engine_version;     // WSword's version
+    void (*log)(const char *line);  // Streamline's messages, into WSword.log
+} WsSlInit;
+
+typedef struct {
+    VkImage image;
+    VkImageView view;
+    VkFormat format;
+    uint32_t width, height;
+    VkImageUsageFlags usage;
+} WsSlImage;  // (in VK_IMAGE_LAYOUT_GENERAL)
+
+typedef struct {
+    uint32_t frame;                    // the frame's index (its markers' too)
+    VkCommandBuffer cb;                // recording, for the queue that presents it
+    int on;                            // frames made at its present (0: none - the menus; the inputs let go)
+    int frames;                        // the frames made between two of the game's (1: 2x)
+    WsSlImage depth, motion, hudless;  // the game's rectangle as the window shows it (rect): depth R32F, motion vectors
+                                       // RG16F (the uv offset to where each pixel was, times mv_scale), the image
+                                       // without its HUD
+    uint32_t rect[4];                  // that rectangle in the window's image: left, top, width, height
+    uint32_t back_w, back_h;           // the window's image
+    VkFormat back_format;
+    uint32_t back_count;
+    float view_to_clip[16], clip_to_view[16], clip_to_prev_clip[16], prev_clip_to_clip[16];  // row-major, row vectors
+    float mv_scale[2];
+    float cam_pos[3], cam_up[3], cam_right[3], cam_fwd[3];
+    float cam_near, cam_far, cam_fov, cam_aspect;  // (fov: vertical, radians)
+    int reset;                         // a cut: no history
+} WsSlFrame;
+
+typedef struct {
+    int status;           // DLSSGStatus bits (0: fine)
+    uint32_t max_frames;  // the most frames it can make between two (1: 2x only)
+    uint32_t presented;   // frames presented since the last call
+    uint32_t min_size;    // the window's smallest side it works at
+} WsSlState;
+
+enum { WSSL_M_SIM_START, WSSL_M_SIM_END, WSSL_M_RENDER_START, WSSL_M_RENDER_END, WSSL_M_PRESENT_START, WSSL_M_PRESENT_END };
+
+// Streamline started (before the Vulkan instance: its interposer's signature checked, then slInit). 0, or -1 and why.
+typedef int (*PFN_wssl_init)(const WsSlInit *in, char *err, int n);
+// The interposer's vkGetInstanceProcAddr / vkGetDeviceProcAddr: its proxies for what it hooks, vulkan-1's for the rest
+typedef PFN_vkGetInstanceProcAddr (*PFN_wssl_gipa)(void);
+typedef PFN_vkGetDeviceProcAddr (*PFN_wssl_gdpa)(void);
+// After the device (made with the interposer's vkCreateDevice): DLSS frame generation on this GPU, Windows and driver
+// (1), or why not (0, err; the feature unloaded: a plain swapchain). Reflex on.
+typedef int (*PFN_wssl_device_ready)(VkPhysicalDevice phys, char *err, int n);
+// A latency marker (WSSL_M_*), and Reflex's sleep (then the frame's simulation start), for the frame index given
+typedef void (*PFN_wssl_marker)(int marker, uint32_t frame);
+typedef void (*PFN_wssl_sleep)(uint32_t frame);
+// The frame's constants, inputs and options, before its present (on the thread that records f->cb). 0, or -1 and why.
+typedef int (*PFN_wssl_frame)(const WsSlFrame *f, char *err, int n);
+typedef int (*PFN_wssl_state)(WsSlState *s);
+// Frame generation off at once (before the swapchain is made again), and Streamline shut down (before the device goes)
+typedef void (*PFN_wssl_off)(void);
+typedef void (*PFN_wssl_shutdown)(void);
 
 #ifdef __cplusplus
 }

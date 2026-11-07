@@ -82,6 +82,12 @@ static void load(void) {
     LOG("[dlss] wsword_dlss.dll loaded\n");
 }
 
+// (dlssg.c) an export of the bridge, once it loaded and its ABI matched (NULL otherwise)
+void *dlss_bridge_proc(const char *name) {
+    load();
+    return d.loaded ? (void *)GetProcAddress(d.h, name) : NULL;
+}
+
 static const wchar_t *data_path(void) {
     static wchar_t w[1100];
     if (!w[0]) wide(rt_exe_dir(), w, 1100);
