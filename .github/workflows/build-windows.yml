@@ -171,9 +171,11 @@ jobs:
           du -sh "$D"
           echo "::notice title=Zip::$(ls build/dist/*.zip) $(du -m build/dist/*.zip | cut -f1) MB"
       - uses: actions/upload-artifact@v4
+        continue-on-error: true  # (the account's artifact storage can be full: the release below doesn't need it)
         with:
           name: WSword-windows
           path: pc/build/dist/*.zip
+          retention-days: 3
           if-no-files-found: error
           compression-level: 0
       # (workflow_dispatch's release: the zip as a GitHub release from this commit, the notes from the repository's file)
