@@ -8209,8 +8209,18 @@ static void fg_before_draw(void) {
     if (fg.copy_pending) fg_copy_hudless();
 }
 
+// (WSword) ReShade's depth is wanted (reshade.c: its effects get the game's): the camera candidates are looked for
+// then too (not the HUD-less copy)
+volatile int g_rs_want;
+static struct {
+    bool ok;
+    TexBackend *depth;
+    float A, B;  // the projection's row 2 (z), its z and w columns: a depth value's distance from the camera
+    bool gl;     // OpenGL's depth range (clip z -1..1)
+} rs_in;
+
 static void fg_draw(Prog *pr, CmdRec *r) {
-    if (!g_fg_want) return;
+    if (!g_fg_want && !g_rs_want) return;
     if (st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SCENE) {
         Range u = st.ubuf[0][0];
         const float *f = (const float *)(uintptr_t)u.addr;
@@ -8234,7 +8244,7 @@ static void fg_draw(Prog *pr, CmdRec *r) {
     if (t) {
         fg.out_rt = st.rt.color[0];
         fg.scene = t;
-        fg.copy_pending = true;  // (after this draw: fg_before_draw)
+        fg.copy_pending = g_fg_want != 0;  // (after this draw: fg_before_draw)
     }
 }
 
@@ -8344,6 +8354,12 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
         if (d->image && d->width == scene->width && d->height == scene->height && d->layers == 1 && d->samples == 1 &&
             (best < 0 || fg.cand[i].draws > fg.cand[best].draws))
             best = i;
+    }
+    // (WSword) ReShade's depth (vk_reshade_depth, at this present): this frame's scene depth and its projection
+    rs_in.ok = g_rs_want && best >= 0;
+    if (rs_in.ok) {
+        const float *pm = fg.cand[best].m;
+        rs_in.depth = vk_tex(fg.cand[best].depth, true), rs_in.A = pm[38], rs_in.B = pm[39], rs_in.gl = nvn_depth_mode() == 0;
     }
     bool ok = g_fg_want && fg.hudless_ok && best >= 0 && b->image && b->layers == 1 && b->samples == 1;
     {   // why not, now and then (a frame in play without what generation needs)
@@ -8934,6 +8950,69 @@ bool vk_dlssg_prepare(VkCommandBuffer cb, float vx, float vy, float vw, float vh
         }
     }
     return true;
+}
+
+// (WSword) ReShade's depth (reshade.c): an R32F image the window's size, each pixel of the game's rectangle there
+// (vx..vh, placed as vk_present_draw places the game's image: pv's flip and crop) from the 3D scene's depth, encoded
+// as ReShade's default depth settings read it (shaders.c reshade_depth.frag: ReShade.fxh's linearized depth = the
+// distance in metres / 1000), the rest 0 (as far as it goes: the sky); all 0 when this frame drew no 3D scene. Left
+// in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL for ReShade's effects at the present; its view (0: none).
+VkImageView vk_reshade_depth(float vx, float vy, float vw, float vh, const float pv[8]) {
+    static TexBackend img;
+    uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
+    if (!w || !h) return VK_NULL_HANDLE;
+    if (img.image && (img.width != w || img.height != h)) {
+        vk_views_forget(&img);
+        vk_defer_image(img.image, img.mem);
+        img.image = VK_NULL_HANDLE, img.mem = VK_NULL_HANDLE;
+    }
+    if (!img.image) {
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R32_SFLOAT, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &img.image, &img.mem, NULL) != VK_SUCCESS) return VK_NULL_HANDLE;
+        img.format = ci.format; img.width = w; img.height = h; img.depth = 1; img.layers = 1; img.levels = 1;
+        img.samples = 1; img.aspect = VK_IMAGE_ASPECT_COLOR_BIT; img.base_type = VK_IMAGE_VIEW_TYPE_2D;
+        LOG("[reshade] depth image %ux%u\n", w, h);
+    }
+    bool have = rs_in.ok && rs_in.depth && rs_in.depth->image;
+    rs_in.ok = false;
+    vk_frame_suspend();
+    VkCommandBuffer cb = vk_cmd();
+    if (g_gpuprof_frame) gp_mark(cb, "ReShade depth");
+    // its contents for writing (ReShade's reads of the last one done: the queue's order, and this barrier's first scope)
+    VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                .dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT,
+                                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .image = img.image,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+    rec_CmdPipelineBarrier2(cb, &di);
+    if (have) {
+        static const VkComponentMapping id = {0};
+        TexBackend *db = rs_in.depth;
+        VkImageView dv = vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
+        float pc[12] = {pv[0], rs_in.gl ? 1.0f : 0.0f, vw, vh, pv[4], pv[5], pv[6], pv[7], vx, vy, rs_in.A, rs_in.B};
+        post_pass_pc(cb, "reshade_depth.frag", &dv, 1, &img, pc, sizeof pc, false);
+    } else {
+        VkClearColorValue zero = {{0, 0, 0, 0}};
+        VkImageSubresourceRange rr = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        rec_CmdClearColorImage(cb, img.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rr);
+    }
+    // for ReShade's effects: sampled, in the layout its descriptors name
+    ib.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, ib.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    ib.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, ib.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
+    ib.oldLayout = VK_IMAGE_LAYOUT_GENERAL, ib.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    rec_CmdPipelineBarrier2(cb, &di);
+    vk_full_barrier(cb);
+    vk_dyn_forget();
+    vk_frame_resume();
+    return post_view(&img);
 }
 
 // Screenshot of a game texture (presented crop applied to build/frame_* shots), via the present shader into RGBA8.

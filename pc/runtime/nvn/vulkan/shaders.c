@@ -1269,6 +1269,31 @@ static const char *builtin_src(const char *name, int *stage) {
                "layout(location = 0) out vec4 o;\n"
                "void main() { o = vec4(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).xy, 0.0, 1.0); }\n";
     }
+    // (WSword) ReShade's depth (exec.c vk_reshade_depth): each pixel of the window, within the game's rectangle there
+    // (c.xy its corner, a.zw its size) from the scene depth's texel the present's mapping takes it from (a.x the flip,
+    // b the uv crop), its distance from the camera (the projection's c.z, c.w; a.y: OpenGL's depth range) encoded so
+    // ReShade.fxh's defaults (RESHADE_DEPTH_INPUT_IS_REVERSED 1, RESHADE_DEPTH_LINEARIZATION_FAR_PLANE 1000) read it
+    // as that distance / 1000: GetLinearizedDepth's x / (F - x (F - 1)) inverted, then reversed. Outside it: 0 (far).
+    if (!strcmp(name, "reshade_depth.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; vec4 c; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  vec2 q = (gl_FragCoord.xy - pc.c.xy) / pc.a.zw;\n"
+               "  if (any(lessThan(q, vec2(0.0))) || any(greaterThanEqual(q, vec2(1.0)))) { o = vec4(0.0); return; }\n"
+               "  vec2 s = pc.b.xy + vec2(q.x, pc.a.x > 0.5 ? 1.0 - q.y : q.y) * pc.b.zw;\n"
+               "  ivec2 n = textureSize(t0, 0);\n"
+               "  float d = texelFetch(t0, clamp(ivec2(s * vec2(n)), ivec2(0), n - 1), 0).r;\n"
+               "  float z = pc.a.y > 0.5 ? d * 2.0 - 1.0 : d;\n"
+               "  float dist = pc.c.w / (z + pc.c.z);\n"
+               "  float l = clamp(dist / 1000.0, 0.0, 1.0);\n"
+               "  if (!(dist > 0.0)) l = 1.0;\n"
+               "  float x = l * 1000.0 / (1.0 + l * 999.0);\n"
+               "  o = vec4(1.0 - x);\n"
+               "}\n";
+    }
     // (WSword) NVIDIA DLSS frame generation's inputs as the window shows the game's image (exec.c vk_dlssg_prepare):
     // each pixel of the game's rectangle (a.zw: its size) from the texel the present's mapping (present.vert: a.x the
     // flip, b the uv crop) takes it from - the depth (t0: a depth view) as R32F; the motion vectors (t0: .xy the uv

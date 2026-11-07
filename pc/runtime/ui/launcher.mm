@@ -86,6 +86,7 @@ bool dlss_dll_present(void);
 const char *dlssg_dll_path(void);    // (vulkan/dlssg.c: nvngx_dlssg.dll in streamline\, NVIDIA DLSS frame generation's)
 bool dlssg_dll_present(void);
 void dlssg_status(char *out, size_t n);
+#include "nvn/vulkan/reshade.h"  // (WSword: Settings > Files > ReShade)
 void dlss_status(char *out, size_t n);
 bool renderer_gpu_rtx(void);
 const char *vk_driver_desc(void);
@@ -116,7 +117,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
 // (WSword PC: its own version, and the Savage Wind Recomp release it is built on - SW_BASE_VERSION)
-#define SAVAGEWIND_VERSION "0.3.5-pc.1"
+#define SAVAGEWIND_VERSION "0.3.6-pc.1"
 #define SW_BASE_VERSION "0.4.1-alpha.4"
 #define SW_BASE_LINE " \xc2\xb7 Savage Wind Recomp " SW_BASE_VERSION  // (after the version, lower right)
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
@@ -1033,6 +1034,26 @@ static void SDLCALL picked_dlssg(void *, const char *const *files, int) {
     g_dlssg_msg = msg, g_dlssg_failed = failed, g_dlssg_busy = false;
     pthread_mutex_unlock(&g_lock);
 }
+// (WSword) Settings > Files > ReShade: the player's own ReShade64.dll - the DLL, or taken out of ReShade's setup
+// program - into the reshade folder next to WSword.exe (vulkan/reshade.c reshade_import)
+static std::string g_rs_msg;  // (g_lock)
+static bool g_rs_failed, g_rs_busy;
+static void SDLCALL picked_reshade(void *, const char *const *files, int) {
+    char msg[600] = "";
+    bool ok = true;
+    if (files && files[0]) ok = reshade_import(files[0], msg, sizeof msg);
+    pthread_mutex_lock(&g_lock);
+    g_rs_msg = msg[0] ? tr(msg) : "", g_rs_failed = !ok, g_rs_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+static void pick_reshade(SDL_Window *win) {
+    pthread_mutex_lock(&g_lock);
+    g_rs_busy = true, g_rs_msg.clear();
+    pthread_mutex_unlock(&g_lock);
+    static const SDL_DialogFileFilter f[] = {{"ReShade64.dll or ReShade's setup", "dll;exe"}};
+    SDL_ShowOpenFileDialog(picked_reshade, NULL, win, f, 1, NULL, false);
+}
+
 static void pick_dlssg(SDL_Window *win) {
     pthread_mutex_lock(&g_lock);
     g_dlssg_busy = true, g_dlssg_msg.clear();
@@ -1698,6 +1719,54 @@ static void prelaunch_tab(float sc) {
         }
         ImGui::TextDisabled("%s", tr("DLSS frame generation is NVIDIA's, through its Streamline SDK (its licence: the "
                                      "streamline folder). WSword isn't made by or affiliated with NVIDIA."));
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("ReShade");  // (WSword: Settings > Video > ReShade - vulkan/reshade.c)
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_rs_msg;
+        bool failed = g_rs_failed, rbusy = g_rs_busy;
+        pthread_mutex_unlock(&g_lock);
+        struct stat st;
+        bool have = reshade_dll_present();
+        char status[600];
+        reshade_status(status, sizeof status);
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("Your own ReShade, loaded by WSword itself: no installer. Choose ReShade64.dll, or "
+                                     "ReShade's setup program as you downloaded it from reshade.me (WSword takes ReShade64.dll "
+                                     "out of it) - the version with full add-on support for add-ons. WSword keeps it in its "
+                                     "reshade folder, with ReShade's settings, presets and shaders (a reshade-shaders folder "
+                                     "there). Then turn it on in Settings > Video > ReShade and restart WSword."));
+        if (have && stat(reshade_dll_path(), &st) == 0) ImGui::Text(tr("ReShade64.dll: added (%.1f MB)"), st.st_size / 1048576.0);
+        else ImGui::Text("%s", tr("ReShade64.dll: not added"));
+        ImGui::TextDisabled("%s", status);
+        if (rbusy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr(have ? "Choose another ReShade" : "Choose ReShade"))) pick_reshade(g_launcher_win);
+        if (have) {
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Remove ReShade"))) {
+                bool gone = unlink(reshade_dll_path()) == 0;
+                pthread_mutex_lock(&g_lock);
+                g_rs_msg = tr(gone ? "ReShade64.dll removed: ReShade is off from the next start (its settings and shaders "
+                                     "stay in the reshade folder)."
+                                   : "It's in use: remove it after closing WSword."),
+                g_rs_failed = !gone;
+                pthread_mutex_unlock(&g_lock);
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Open the ReShade folder"))) {
+            mkdir(reshade_dir(), 0755);
+            reveal_folder(reshade_dir());
+        }
+        if (rbusy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::TextDisabled("%s", tr("ReShade is crosire's (reshade.me). WSword isn't made by or affiliated with ReShade."));
         ImGui::PopTextWrapPos();
     }
 #endif

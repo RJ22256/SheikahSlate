@@ -370,7 +370,8 @@ dist:
 	cp third_party/lsfg-vk/LICENSE.md "$(DIST)/lsfg-vk-LICENSE.md"  # (Lossless frame generation's backend, GPL-3.0: runtime/nvn/vulkan/lsfg.cpp)
 	cp third_party/lsfg-vk/README.WSword.md "$(DIST)/lsfg-vk-README.md"
 	if [ -f build/wsword_dlss.dll ]; then cp build/wsword_dlss.dll "$(DIST)/" && \
-	    cp build/dlss-sdk/LICENSE.txt "$(DIST)/NVIDIA-DLSS-LICENSE.txt"; fi  # (NVIDIA DLSS's bridge: tools/dlss_bridge, built by MSVC)
+	    cp build/dlss-sdk/LICENSE.txt "$(DIST)/NVIDIA-DLSS-LICENSE.txt" && \
+	    cp third_party/reshade/LICENSE.md "$(DIST)/ReShade-API-LICENSE.md"; fi  # (NVIDIA DLSS's bridge: tools/dlss_bridge, built by MSVC; its ReShade add-on part: ReShade's API headers, BSD-3-Clause)
 	if [ -d build/streamline ]; then mkdir -p "$(DIST)/streamline" && \
 	    cp build/streamline/* "$(DIST)/streamline/"; fi  # (NVIDIA DLSS frame generation: Streamline's DLLs and licence, CI's)
 	! ls "$(DIST)" | grep -i nvngx  # (no nvngx_dlss.dll: the player's own)

@@ -11,11 +11,11 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Publish the zip as a GitHub release with this tag (e.g. v0.3.5-pc.1); empty: none"
+        description: "Publish the zip as a GitHub release with this tag (e.g. v0.3.6-pc.1); empty: none"
         required: false
         default: ""
       release_notes:
-        description: "The release notes, a Markdown file in the repository (e.g. docs/releases/pc-0.3.5-pc.1.md)"
+        description: "The release notes, a Markdown file in the repository (e.g. docs/releases/pc-0.3.6-pc.1.md)"
         required: false
         default: ""
 
@@ -132,7 +132,8 @@ jobs:
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
                   -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $cl = 'cl /nologo /O2 /MT /EHsc /LD /std:c++17 /W3 /I build\dlss-sdk\include /I build\vulkan-headers\include ' +
-                '/I build\sl-include tools\dlss_bridge\wsword_dlss.cpp tools\dlss_bridge\wsword_sl.cpp ' +
+                '/I build\sl-include /I third_party\reshade\include tools\dlss_bridge\wsword_dlss.cpp ' +
+                'tools\dlss_bridge\wsword_sl.cpp tools\dlss_bridge\wsword_reshade.cpp ' +
                 '/Fe:build\wsword_dlss.dll /Fo:build\ ' +
                 '/link build\dlss-sdk\lib\Windows_x86_64\x64\nvsdk_ngx_s.lib advapi32.lib user32.lib shell32.lib ' +
                 'ole32.lib version.lib setupapi.lib cfgmgr32.lib gdi32.lib wintrust.lib crypt32.lib'
@@ -156,7 +157,7 @@ jobs:
           D=build/dist/WSword
           bad=$(find "$D" -type d \( -name extracted -o -name 'generated*' -o -name exefs -o -name romfs \);
                 find "$D" -name '*.c' ! -path '*/zig/lib/*' ! -path '*/gamelib-src/gamelib_entry.c'; find "$D" -iname 'swgame*'
-                find "$D" -iname 'botwgame*'; find "$D" -iname 'Lossless*.dll'; find "$D" -iname 'splash*'; find "$D" -iname 'nvngx*')
+                find "$D" -iname 'botwgame*'; find "$D" -iname 'Lossless*.dll'; find "$D" -iname 'splash*'; find "$D" -iname 'nvngx*'; find "$D" -iname 'ReShade*.dll')
           [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
           for f in WSword.exe WSword.dll.a "WSword Configuration.exe" LICENSE.txt WSword-PC-guide.md swgen/swgen.exe zig/zig.exe \
                    Inter-Medium.otf Inter-Bold.otf launcher-background.png app-icon-forest.png lsfg-vk-LICENSE.md \

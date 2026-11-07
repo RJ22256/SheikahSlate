@@ -56,11 +56,13 @@ If it asks for game files instead, choose the folder with your `exefs` and `romf
 - chips at the top right: the monitor's refresh rate, frame generation, the battery on a laptop;
 - a card at the lower right: when you last saved, Resume, and the **modes** - Battery (30 fps, AMD FSR 1), Performance (60), Turbo (120) and Unlocked (no limit). Video > Mode in Settings and in the game's Options has them too.
 
-**Settings** there are in the Glass Slate look: the pages down the left (Files, Video, Audio, Controls, Language, Saves), each option with its explanation on the right. **Files** has:
+**Settings** there are in the Glass Slate look: the pages down the left (Files, Video, Audio, Controls, Language, Mods, Saves), each option with its explanation on the right. **Files** has:
 - the game files and the game font;
 - **Look**: the start screen's background (a picture of your own, or the original) and WSword's icon (Sword, Slate, Midnight, Dawn, Ancient, Forest), on its window and in the taskbar;
 - **Lossless Scaling**: choose your own `Lossless.dll` for Lossless frame generation;
-- **NVIDIA DLSS**: choose your own `nvngx_dlss.dll` for DLSS upscaling (NVIDIA RTX graphics cards).
+- **NVIDIA DLSS**: choose your own `nvngx_dlss.dll` for DLSS upscaling (NVIDIA RTX graphics cards);
+- **NVIDIA DLSS frame generation**: your own `nvngx_dlssg.dll`;
+- **ReShade**: your own ReShade, which WSword loads itself (below).
 
 Saves are in `save\` in the data folder: next to `WSword.exe`, or in its `v190` / `v182` folder when you came from 0.2.8. The log is `WSword.log` next to `WSword.exe`.
 
@@ -138,6 +140,26 @@ NVIDIA's frame generation on **NVIDIA RTX 40** graphics cards and newer: **2x** 
 - To leave it out completely, choose another Frame generation and restart.
 - The `streamline` folder in the zip holds NVIDIA's Streamline (its signed `sl.*.dll` files and licence). NVIDIA, RTX, DLSS and Reflex are NVIDIA's trademarks; WSword isn't made by or affiliated with NVIDIA.
 
+## ReShade
+
+WSword loads your own ReShade itself, with no installer. ReShade isn't included with WSword.
+
+1. Download ReShade from [reshade.me](https://reshade.me). Get the version **with full add-on support** if you use ReShade add-ons.
+2. In **WSword Configuration**: Settings > Files > **ReShade** > **Choose ReShade**. Pick ReShade's setup program as you downloaded it (WSword takes `ReShade64.dll` out of it), or a `ReShade64.dll`. WSword keeps it in its `reshade` folder.
+3. Settings > Video > **ReShade**: On. **Restart WSword.**
+4. In the game, **Home** opens ReShade's menu.
+
+- **Its files:** ReShade's settings (`ReShade.ini`), log, presets, shaders and add-ons are in the `reshade` folder (**Open the ReShade folder** in Settings > Files). Put shader packs in `reshade\reshade-shaders\Shaders` (and their textures in `reshade\reshade-shaders\Textures`), and add-ons (`.addon64`) in `reshade\`.
+- **If you installed ReShade for WSword with ReShade's installer before:** WSword uses the `ReShade.ini` it left next to `WSword.exe`, so your presets and shaders stay where they are. You can uninstall it from WSword with the installer, so it isn't loaded twice.
+- **Depth:** Settings > Video > **ReShade depth**.
+  - **The game's (WSword)** (the default): WSword gives ReShade's effects the game's own 3D depth, lined up with the picture. It's set up for ReShade's default depth settings: leave `RESHADE_DEPTH_INPUT_IS_REVERSED`, `IS_UPSIDE_DOWN`, `IS_LOGARITHMIC` and `RESHADE_DEPTH_LINEARIZATION_FAR_PLANE` as they are. The linear depth is the distance in metres / 1000, so everything past 1 km counts as far away. ReShade's Generic Depth add-on is turned off then (it costs CPU time), and its Add-ons page lists "WSword game depth" instead.
+  - **ReShade's own detection:** ReShade's Generic Depth add-on looks for the depth itself.
+  - Where the game draws no 3D scene (the title screen, some menus), the depth is empty (far away).
+- ReShade's effects cover the whole window, WSword's own menus and the performance overlay too.
+- `WSword.log` says what happened (its `[reshade]` lines), and ReShade's own `ReShade.log` is in the `reshade` folder.
+- To leave it out, turn Settings > Video > ReShade off and restart.
+- ReShade is crosire's ([reshade.me](https://reshade.me)). WSword isn't made by or affiliated with ReShade. The bridge's ReShade part uses ReShade's add-on API headers (BSD-3-Clause, `ReShade-API-LICENSE.md`).
+
 ## Mods
 
 Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they are: each is a folder with a `romfs` folder inside. They must be made for your game version (1.9.0 or 1.8.2).
@@ -159,6 +181,7 @@ Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
+- **New in 0.3.6-pc.1:** your own ReShade, loaded by WSword (Settings > Video > ReShade), with the game's depth for its effects.
 - **Game versions:** 1.8.2 and 1.9.0. 1.0.0 and 1.6.0 aren't supported.
 - **New:**
   - Savage Wind's settings in the game's own Options;

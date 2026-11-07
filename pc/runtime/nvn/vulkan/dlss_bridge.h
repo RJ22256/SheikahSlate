@@ -136,6 +136,16 @@ typedef int (*PFN_wssl_state)(WsSlState *s);
 typedef void (*PFN_wssl_off)(void);
 typedef void (*PFN_wssl_shutdown)(void);
 
+// (WSword) ReShade (tools/dlss_bridge/wsword_reshade.cpp; vulkan/reshade.c): the player's own ReShade, loaded as a
+// Vulkan layer, given the game's depth for its effects - the bridge registered with it as an add-on (ReShade's add-on
+// API, third_party/reshade), binding a view of WSword's depth image to the DEPTH semantic when ReShade's effects begin.
+// Found by name (dlss_bridge_proc): an older bridge without them leaves ReShade to its own depth.
+// wsrs_attach: once ReShade's module is loaded (after the instance is made); 1 registered, 0 not (why: in `why`).
+typedef int (*PFN_wsrs_attach)(void (*log)(const char *line), char *why, int why_size);
+// The view ReShade's effects get as DEPTH from the next present on (0: none); an R32F image's, the window's size, in
+// VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL when the effects run
+typedef void (*PFN_wsrs_depth)(uint64_t view);
+
 #ifdef __cplusplus
 }
 #endif

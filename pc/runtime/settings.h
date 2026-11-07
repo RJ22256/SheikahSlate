@@ -76,6 +76,11 @@ typedef struct {
     // (WSword) NVIDIA DLSS frame generation (vulkan/dlssg.c, Streamline): frames made between two of the game's, 0 off,
     // 1 2x, 2 3x, 3 4x (3x and 4x: RTX 50). Instead of FSR 3's and Lossless's while on; from the next start of WSword.
     int dlssg;
+    // (WSword) the player's own ReShade (vulkan/reshade.c): loaded as a Vulkan layer from the reshade folder next to
+    // WSword.exe, from the next start; its effects given the game's depth unless reshade_own_depth (ReShade's own
+    // detection, its Generic Depth add-on)
+    bool reshade;
+    bool reshade_own_depth;
     char mods_off[512];  // (WSword) game mods turned off (runtime/mods.c: their folder names, separated by '|')
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect

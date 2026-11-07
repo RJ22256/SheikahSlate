@@ -23,6 +23,7 @@
 #include "lsfg.h"
 #include "dlss.h"
 #include "dlssg.h"
+#include "reshade.h"
 
 // (WSword) The swapchain's functions, and the device's wait: vulkan-1's, or with NVIDIA DLSS frame generation
 // Streamline's proxies (dlssg.h; set in create_device)
@@ -108,7 +109,10 @@ static void create_instance(void) {
     const char *ar = getenv("SAVAGEWIND_VK_ADDR_REPORT");
     if (ar) sscanf(ar, "%llx-%llx", (unsigned long long *)&g_addr_report_lo, (unsigned long long *)&g_addr_report_hi);
     if (validate || ar) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-    const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
+    // the validation layer first (taken out again if it isn't there), then (WSword) the player's own ReShade (reshade.c)
+    const char *layers[2] = {"VK_LAYER_KHRONOS_validation"};
+    uint32_t n_layers = validate ? 1 : 0;
+    n_layers += (uint32_t)reshade_instance_layers(layers + n_layers, 1);
     // The release as the application's and engine's version ("0.4.1-alpha.4": 0.4.104): drivers keep their shader
     // caches per application, and with one version for every release AMD's Windows driver reused what it had cached
     // for Alpha 2 in Alpha 3, built for another setup - a black window until the player reset that cache (#85)
@@ -124,7 +128,7 @@ static void create_instance(void) {
     LOG("[vk] application version %u.%u.%u (WSword %s)\n", vmaj, vmin, vpatch * 100 + vpre, rt_version());
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
-                               .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
+                               .enabledLayerCount = n_layers, .ppEnabledLayerNames = layers};
     // (WSword) NVIDIA DLSS frame generation: the instance through Streamline (dlssg.c), which adds what it needs
     PFN_vkCreateInstance create = vkCreateInstance;
     if (dlssg_start()) {
@@ -134,11 +138,19 @@ static void create_instance(void) {
     VkResult r = create(&ci, NULL, &g_vk.inst);
     if (r != VK_SUCCESS && validate) {
         LOG("[vk] validation layer unavailable (%d); continuing without\n", r);
-        ci.enabledLayerCount = 0;
+        ci.enabledLayerCount--, ci.ppEnabledLayerNames = layers + 1;
         ci.enabledExtensionCount--;
         validate = false;
         r = create(&ci, NULL, &g_vk.inst);
     }
+    bool with_reshade = ci.enabledLayerCount > (validate ? 1u : 0u);
+    if (r != VK_SUCCESS && with_reshade) {  // (WSword: without ReShade, then)
+        LOG("[vk] vkCreateInstance with ReShade's layer failed (%d); again without it\n", r);
+        ci.enabledLayerCount--;
+        with_reshade = false;
+        r = create(&ci, NULL, &g_vk.inst);
+    }
+    reshade_instance_made(r == VK_SUCCESS && with_reshade);
     if (r != VK_SUCCESS && create != vkCreateInstance) {  // (WSword: without Streamline, then)
         char why[96];
         snprintf(why, sizeof why, "its vkCreateInstance failed (%d)", r);
@@ -1487,7 +1499,9 @@ static bool present_threaded(void) {
     }
     // (WSword: with Streamline, on the calling thread and the game's queue - DLSS frame generation's own presents keep
     // the inputs it reads in order with that queue)
-    bool on = g_vk.present_queue != g_vk.queue && (forced == 1 || (forced == -1 && g_present_groups)) && !dlssg_loaded();
+    // (and with ReShade: its effects, drawn in its vkQueuePresentKHR, read WSword's depth image in order with the queue)
+    bool on = g_vk.present_queue != g_vk.queue && (forced == 1 || (forced == -1 && g_present_groups)) && !dlssg_loaded() &&
+              !reshade_loaded();
     if (on && !g_pres_thread_on) {
         pthread_t t;
         g_pres_thread_on = pthread_create(&t, NULL, present_thread, NULL) == 0;
@@ -1860,6 +1874,8 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b);
 // into images as the window shows the game's image (vx..vh, pv: vk_present_draw's), with the camera, into *out
 bool vk_dlssg_have_inputs(void);
 bool vk_dlssg_prepare(VkCommandBuffer cb, float vx, float vy, float vw, float vh, const float pv[8], WsSlFrame *out);
+VkImageView vk_reshade_depth(float vx, float vy, float vw, float vh, const float pv[8]);  // (WSword: exec.c)
+extern volatile int g_rs_want;
 static uint64_t gen_frames;
 static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame after a generated one saved)
 
@@ -2252,6 +2268,11 @@ static void present_locked(NvnTexture *t) {
             }
             frame_kind = PRES_AFTER_GEN, frame_pos = lsfg_show, frame_group = lsfg_show + 1;
         }
+        // (WSword) ReShade's depth for its effects at this present (exec.c), as the window shows the game's image
+        if (reshade_depth_active()) {
+            reshade_set_depth(vk_reshade_depth((float)vx, (float)vy, (float)vw, (float)vh, pv));
+            cb = vk_cmd();
+        }
         // (WSword) NVIDIA DLSS frame generation: its inputs as the window shows the game's image (exec.c), first
         WsSlFrame sf;
         bool sf_ok = dg && vk_dlssg_prepare(cb, (float)vx, (float)vy, (float)vw, (float)vh, pv, &sf);
@@ -2301,6 +2322,7 @@ static void present_locked(NvnTexture *t) {
     }
 presented:
     g_fg_want = fg_wanted();  // (for the next frame's draws)
+    g_rs_want = reshade_depth_active();  // (WSword: ReShade's depth - exec.c)
     extern void vk_prof_frame(uint64_t frame, uint64_t present_ns);
     vk_prof_frame(total_frames, SDL_GetTicksNS() - t0);
     extern void vk_list_stats_frame(void);

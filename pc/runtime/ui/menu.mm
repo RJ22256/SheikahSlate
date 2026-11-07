@@ -653,6 +653,7 @@ extern "C" float dlss_gpu_ms(void);
 extern "C" void dlssg_status(char *out, size_t n);    // (WSword: vulkan/dlssg.c, NVIDIA DLSS frame generation)
 extern "C" bool dlssg_gpu_ok(void);
 extern "C" bool dlssg_gpu_mfg(void);
+extern "C" void reshade_status(char *out, size_t n);  // (WSword: vulkan/reshade.c, the player's own ReShade)
 #endif
 // Video > Upscaler mode's names, by UPQ_*
 static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
@@ -1082,6 +1083,26 @@ static void tab_display(void) {
         opt_toggle("Performance mode", &g_settings.lsfg_perf, false,
                    "Lossless: Lossless Scaling's lighter passes - much less GPU time, the frames in between slightly less "
                    "accurate. Turn it on if the game's own frame rate drops with Lossless on.");
+    }
+    {   // (WSword) the player's own ReShade, loaded by WSword (vulkan/reshade.c): from the next start
+        opt_section("ReShade");
+        char st[600];
+        reshade_status(st, sizeof st);
+        static std::string d, dd;
+        d = std::string(tr("Your own ReShade, loaded by WSword - no installer. Add it on the start screen: Settings > Files > "
+                           "ReShade (ReShade64.dll, or ReShade's setup program). Its menu opens with the Home key; its "
+                           "shaders, presets and add-ons go in WSword's reshade folder. On or off applies from WSword's next "
+                           "start.")) + "\n\n" + st;
+        opt_toggle("ReShade", &g_settings.reshade, false, d.c_str());
+        static const char *const dn[] = {"The game's (WSword)", "ReShade's own detection"};
+        int dv = g_settings.reshade_own_depth ? 1 : 0;
+        dd = tr("The depth ReShade's effects see (ambient occlusion, depth of field, fog...). The game's: WSword gives them "
+                "the game's own 3D depth, lined up with the picture, ready for ReShade's default depth settings (the "
+                "distance in metres / 1000) - leave those as they are. ReShade's own detection: its Generic Depth add-on "
+                "looks for it among the game's draws (more CPU time, and it can pick the wrong one). From WSword's next "
+                "start.");
+        if (!g_settings.reshade) opt_disable_next();
+        if (opt_choice("ReShade depth", &dv, dn, 2, 0, dd.c_str(), false)) g_settings.reshade_own_depth = dv == 1;
     }
     tab_colour();
 #endif
