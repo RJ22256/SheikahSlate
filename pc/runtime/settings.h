@@ -76,6 +76,7 @@ typedef struct {
     // (WSword) NVIDIA DLSS frame generation (vulkan/dlssg.c, Streamline): frames made between two of the game's, 0 off,
     // 1 2x, 2 3x, 3 4x (3x and 4x: RTX 50). Instead of FSR 3's and Lossless's while on; from the next start of WSword.
     int dlssg;
+    char mods_off[512];  // (WSword) game mods turned off (runtime/mods.c: their folder names, separated by '|')
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;

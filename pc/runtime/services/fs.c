@@ -19,6 +19,7 @@
 #include "../ipc.h"
 #include "../language.h"
 #include "../romfs_image.h"
+#include "../mods.h"
 #include "archive.h"
 #include "fs_layout.h"
 
@@ -43,6 +44,10 @@ typedef struct { const char *path; uint64_t grow; } GrownFile;
 typedef struct {
     RomfsImage *img;         // (runtime/romfs_image.h; NULL: not opened)
     const char *ov_sub;      // where its files are in the overlay folder ("": the game's own)
+    char (*roots)[1100];     // (WSword) the folders whose files go over it, first one first: the overlay folder's, then
+    int nroots;              // the mods' (runtime/mods.h)
+    struct RootFile { char *rel; int root; } *rf;  // their files, by path (then by folder): overlay_file's lookup
+    int nrf, caprf;
     Patch patches[8];
     int npatches;
     Overlay *ov;
@@ -75,6 +80,9 @@ RT_ON_RESET(fs_reset) {
         for (int i = 0; i < m->npatches; i++) free(m->patches[i].data);  // (ov_meta and the extended table are among these)
         for (int i = 0; i < m->rom_nfiles; i++) free(m->rom_files[i].path);
         free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->voice_banks);
+        free(m->roots);
+        for (int i = 0; i < m->nrf; i++) free(m->rf[i].rel);
+        free(m->rf);
         romfs_image_close(m->img);
         *m = (RomImage){0};
     }
@@ -89,14 +97,67 @@ static const char *overlay_dir(void) {
     return e && *e ? e : NULL;
 }
 
-// Host path of the overlay's replacement for RomFS file `path` (relative, e.g. "Actor/ActorInfo.product.sbyml"); an
-// add-on content's files are in the folder's aoc/0010/
+// (WSword) The folders whose files go over R, first one first: the overlay folder's (an add-on content's files in its
+// aoc/0010/), then the mods' that are on (runtime/mods.h: theirs in romfs/, the DLC's in romfs/aoc/0010/ or a mod
+// named for the DLC's title). Made when the image is indexed.
+static void root_walk(const char *root, const char *rel, int idx) {
+    char dirp[1200];
+    snprintf(dirp, sizeof dirp, "%s%s", root, rel);
+    DIR *d = opendir(dirp);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        if (!rel[0] && R == &images[0] && !strcmp(e->d_name, "aoc")) continue;  // (the add-on contents' files)
+        char r2[1024], h2[1200];
+        snprintf(r2, sizeof r2, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
+        snprintf(h2, sizeof h2, "%s%s", root, r2);
+        struct stat sb;
+        if (stat(h2, &sb)) continue;
+        if (S_ISDIR(sb.st_mode)) { root_walk(root, r2, idx); continue; }
+        if (R->nrf == R->caprf) { R->caprf = R->caprf ? R->caprf * 2 : 256; R->rf = realloc(R->rf, sizeof *R->rf * (size_t)R->caprf); }
+        R->rf[R->nrf++] = (struct RootFile){strdup(r2), idx};
+    }
+    closedir(d);
+}
+
+static int rf_cmp(const void *a, const void *b) {
+    const struct RootFile *x = a, *y = b;
+    int c = strcmp(x->rel, y->rel);
+    return c ? c : x->root - y->root;
+}
+
+static void image_roots(void) {
+    enum { MAX = 1 + MODS_MAX };
+    R->roots = calloc(MAX, sizeof *R->roots);
+    R->nroots = 0;
+    if (overlay_dir()) snprintf(R->roots[R->nroots++], 1100, "%s/%s", overlay_dir(), R->ov_sub ? R->ov_sub : "");
+    int k = mods_roots(R != &images[0], R->roots + R->nroots, MAX - R->nroots);
+    for (int i = 0; i < k; i++) LOG("[mods] %s%s\n", R->roots[R->nroots + i], R != &images[0] ? " (the DLC's files)" : "");
+    R->nroots += k;
+    for (int i = 0; i < R->nroots; i++) {  // (each folder's files listed once: the lookups below search the list)
+        char root[1100];
+        snprintf(root, sizeof root, "%s", R->roots[i]);
+        size_t l = strlen(root);
+        if (l && root[l - 1] != '/') snprintf(root + l, sizeof root - l, "/");
+        root_walk(root, "", i);
+    }
+    if (R->nrf) qsort(R->rf, (size_t)R->nrf, sizeof *R->rf, rf_cmp);
+}
+
+// Host path of the replacement for RomFS file `path` (relative, e.g. "Actor/ActorInfo.product.sbyml"): the first of
+// R's folders (image_roots) that has it
 static bool overlay_file(const char *path, char *out, size_t cap) {
-    const char *dir = overlay_dir();
-    if (!dir) return false;
-    snprintf(out, cap, "%s/%s%s", dir, R->ov_sub ? R->ov_sub : "", path);
-    struct stat sb;
-    return stat(out, &sb) == 0 && S_ISREG(sb.st_mode);
+    int lo = 0, hi = R->nrf;  // (the path's first entry: the folder that comes first)
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (strcmp(R->rf[mid].rel, path) < 0) lo = mid + 1; else hi = mid;
+    }
+    if (lo == R->nrf || strcmp(R->rf[lo].rel, path)) return false;
+    const char *root = R->roots[R->rf[lo].root];
+    size_t l = strlen(root);
+    snprintf(out, cap, "%s%s%s", root, l && root[l - 1] != '/' ? "/" : "", path);
+    return true;
 }
 
 static int rom_cmp(const void *a, const void *b) {
@@ -182,16 +243,28 @@ static int64_t dir_lookup(const uint8_t *dm, uint64_t dsz, const char *path) {
 }
 
 static void add_new_files(const uint64_t *h, const uint8_t *dmeta, uint64_t dsz, uint64_t fsz) {
-    if (!overlay_dir()) return;
-    char root[1100];
-    snprintf(root, sizeof root, "%s/%s", overlay_dir(), R->ov_sub ? R->ov_sub : "");
-    char **known = malloc(sizeof *known * R->rom_nfiles);
-    for (int i = 0; i < R->rom_nfiles; i++) known[i] = R->rom_files[i].path;
-    qsort(known, R->rom_nfiles, sizeof *known, path_cmp);
+    if (!R->nroots) return;
     NewFile *nf = NULL;
     int n = 0, cap = 0;
-    walk_new(root, "", known, R->rom_nfiles, &nf, &n, &cap);
-    free(known);
+    // (each folder in turn, the first one first: a file a folder before it added is known by then - as copies of the
+    // paths, since walk_new moves nf as it grows)
+    for (int r = 0; r < R->nroots; r++) {
+        char **known = malloc(sizeof *known * (size_t)(R->rom_nfiles + n + 1)), **added = malloc(sizeof *added * (size_t)(n + 1));
+        int nk = 0;
+        for (int i = 0; i < R->rom_nfiles; i++) known[nk++] = R->rom_files[i].path;
+        for (int i = 0; i < n; i++) known[nk++] = added[i] = strdup(nf[i].rel);
+        qsort(known, (size_t)nk, sizeof *known, path_cmp);
+        char root[1100];
+        snprintf(root, sizeof root, "%s", R->roots[r]);
+        size_t l = strlen(root);
+        if (l && root[l - 1] == '/') root[l - 1] = 0;
+        int before = n;
+        walk_new(root, "", known, nk, &nf, &n, &cap);
+        for (int i = 0; i < before; i++) free(added[i]);
+        free(added);
+        free(known);
+        if (n > before) LOG("[mods] %s: %d files the game doesn't have\n", R->roots[r], n - before);
+    }
     if (!n) return;
     R->rom_files = realloc(R->rom_files, sizeof(RomFile) * (R->rom_nfiles + n));
     uint64_t hoff = h[5], hsz = h[6];
@@ -921,6 +994,7 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
 }
 
 static void rom_index(void) {
+    image_roots();
     uint64_t h[10];
     if (romfs_image_pread(R->img, h, sizeof h, 0) != (ssize_t)sizeof h) return;
     // header: size, dir hash (off,size), dir meta (off,size), file hash (off,size), file meta (off,size), data off

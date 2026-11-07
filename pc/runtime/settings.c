@@ -84,15 +84,15 @@ void settings_load(void) {
         pc_controls_env();
         return;
     }
-    char line[256];
+    char line[768];
     bool tip_key = false;
     int version = 1;
     char old_res[16] = "";
     while (fgets(line, sizeof line, f)) {
         char key[64];
-        char val[128];
+        char val[512];
         val[0] = 0;
-        if (sscanf(line, " %63[^= ] = %127[^\r\n]", key, val) < 1) continue;
+        if (sscanf(line, " %63[^= ] = %511[^\r\n]", key, val) < 1) continue;
         for (size_t n = strlen(val); n && (val[n - 1] == ' ' || val[n - 1] == '\t'); n--) val[n - 1] = 0;  // (a file
         // edited by hand: Notepad's CRLF line ends and stray spaces would make the names below not match)
         if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
@@ -150,6 +150,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "lossless_flow")) { int n = atoi(val); g_settings.lsfg_flow = n >= 25 && n <= 100 ? n : 0; }
         else if (!strcmp(key, "lossless_performance")) g_settings.lsfg_perf = atoi(val) != 0;
+        else if (!strcmp(key, "mods_off")) snprintf(g_settings.mods_off, sizeof g_settings.mods_off, "%s", val);
         else if (!strcmp(key, "dlss_frame_generation")) {  // (WSword: off | 2x | 3x | 4x)
             int n = atoi(val);
             g_settings.dlssg = n >= 2 && n <= 4 ? n - 1 : 0;
@@ -316,6 +317,7 @@ void settings_save(void) {
     fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
     if (g_settings.lsfg) fprintf(f, "lossless_frame_generation = %dx\n", g_settings.lsfg + 1);
     else fprintf(f, "lossless_frame_generation = off\n");
+    fprintf(f, "mods_off = %s\n", g_settings.mods_off);
     if (g_settings.dlssg) fprintf(f, "dlss_frame_generation = %dx\n", g_settings.dlssg + 1);
     else fprintf(f, "dlss_frame_generation = off\n");
     fprintf(f, "lossless_flow = %d\nlossless_performance = %d\napp_icon = %d\n", g_settings.lsfg_flow, g_settings.lsfg_perf,

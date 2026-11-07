@@ -16,7 +16,7 @@ The name shown in the windows, menus, messages and translations is WSword. Comme
 
 The `SAVAGEWIND_*` environment variables, `swgame.dll`, `swgen/` and the Linux and macOS names are Savage Wind's.
 
-**Version.** The version is `SAVAGEWIND_VERSION` in `runtime/ui/launcher.mm`: `0.3.4-pc.1`. `SW_BASE_VERSION` is the Savage Wind release it is built on, shown after the version on the configuration screen. The log's first line names both.
+**Version.** The version is `SAVAGEWIND_VERSION` in `runtime/ui/launcher.mm`: `0.3.5-pc.1`. `SW_BASE_VERSION` is the Savage Wind release it is built on, shown after the version on the configuration screen. The log's first line names both.
 
 **An older WSword's folder** (`runtime/paths.c` `wsword_older_root`):
 - **What it is.** 0.2.8-pc.x kept each game version in a folder of its own (`v182`, `v190`, with `game_version.txt` naming the one in use), on LAS Recomp's layout.
@@ -60,6 +60,10 @@ The `SAVAGEWIND_*` environment variables, `swgame.dll`, `swgen/` and the Linux a
 - **Reflex markers:** simulation end and render submit start at the present, render submit end before it, present start and end around it, then (outside the GPU lock) Reflex's sleep and the next frame's simulation start.
 - **Pacing:** `g_fg_active` is the multiplier while it makes frames (framepace.c: the game draws one in that many); off in the menus (mode off, the resources kept).
 - **Failures:** three `wssl_frame` failures in a row turn it off for the run. `SAVAGEWIND_NO_DLSSG=1` leaves Streamline out; `SAVAGEWIND_DLSSG_LOG=1`: Streamline's verbose log; `SAVAGEWIND_DLSSG_INPUTS_AT=<frame>`: its inputs saved as PNGs.
+
+**Mods** (0.3.5-pc.1, from WSword 0.2.8): `runtime/mods.c` / `mods.h`, `ui/mods_tab.mm` (Settings > Mods, page id 4) and `services/fs.c`.
+- `mods/<mod>/romfs/` in the data folder (the working directory), sorted by name; `settings.h` `mods_off` holds the ones turned off ('|' between names). A folder named for the DLC's title (`01007EF00011F001`) is the DLC's own; another mod's DLC files are its `romfs/aoc/0010/`.
+- `fs.c` `image_roots`: when an image is indexed (`rom_index`), its overlay roots are `SAVAGEWIND_ROMFS_OVERLAY` first, then the mods' (`mods_roots`). Each root is walked once into a sorted list (`RootFile`), so `overlay_file` is a binary search, not a stat per file; the first root with a file wins, and `add_new_files` adds each root's new files once.
 
 **Packaging** (`Makefile` dist): the Inter fonts and their OFL, `launcher-background.png` and the icons (`assets/`), lsfg-vk's licence and README, `wsword_dlss.dll` and the DLSS SDK's licence (`NVIDIA-DLSS-LICENSE.txt`), and Streamline's signed DLLs and licence in `streamline\`, when CI fetched and built them. No `nvngx*` file ships. `../docs/PC.md` ships as `WSword-PC-guide.md`, and Savage Wind's README as `SavageWind-README.md`.
 

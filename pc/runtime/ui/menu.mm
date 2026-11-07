@@ -17,6 +17,7 @@
 #include "gyro_drag.h"
 #include "option_rows.h"
 #include "saves_tab.h"
+#include "mods_tab.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "console.h"
@@ -1475,6 +1476,10 @@ static void settings_icon(ImDrawList *dl, int id, ImVec2 c, float r, ImU32 col, 
             dl->AddCircleFilled(ImVec2((x0 + x1) * 0.5f, c.y + side * r * 0.3f), r * 0.17f, col, 10);
         }
         break;
+    case 4:  // (WSword, Mods: two stacked boxes, the top one offset)
+        dl->AddRect(ImVec2(c.x - r * 0.9f, c.y - r * 0.1f), ImVec2(c.x + r * 0.5f, c.y + r * 0.85f), col, r * 0.12f, 0, t);
+        dl->AddRect(ImVec2(c.x - r * 0.5f, c.y - r * 0.85f), ImVec2(c.x + r * 0.9f, c.y + r * 0.1f), col, r * 0.12f, 0, t);
+        break;
     case 9:
         dl->AddRect(ImVec2(c.x - r * 0.9f, c.y - r), ImVec2(c.x + r * 0.2f, c.y + r), col, 0, 0, t);
         dl->AddLine(ImVec2(c.x - r * 0.2f, c.y), ImVec2(c.x + r, c.y), col, t);
@@ -1521,8 +1526,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Files", -1, true};
     // (ids 4-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {0, 1, 8, 2, 3, 9};  // Video, Audio, Controls, Language, Saves, Quit
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "Mods", "", "", "", "Controls", "Quit"};
+    static const int order[] = {0, 1, 8, 2, 4, 3, 9};  // Video, Audio, Controls, Language, Mods (WSword), Saves, Quit
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
@@ -1641,6 +1646,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     case 1: tab_audio(); break;
     case 2: tab_language(in_game); break;
     case 3: saves_tab_draw(); break;
+    case 4: mods_tab_draw(ImGui::GetFontSize() / 34, in_game); break;
     case 8: tab_about(); break;
     case 9: tab_quit(scale, in_game); break;
     }

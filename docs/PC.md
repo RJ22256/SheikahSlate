@@ -66,7 +66,7 @@ Saves are in `save\` in the data folder: next to `WSword.exe`, or in its `v190` 
 
 ## In the game
 
-- **F1** opens WSword's **Settings** over the game, in the Glass Slate look (on a controller: **Back + Start**, or the guide button). F1 again, or Back, closes it. Its pages: Video, Audio, Controls, Language and Quit.
+- **F1** opens WSword's **Settings** over the game, in the Glass Slate look (on a controller: **Back + Start**, or the guide button). F1 again, or Back, closes it. Its pages: Video, Audio, Controls, Language, Mods and Quit.
   - Video: Mode, frame rate (30, 60, 90, 120 or no limit, the game at the right speed), resolution, the upscaler (AMD FSR or NVIDIA DLSS), VSync, draw distance, colour grading.
   - Frame generation: AMD FSR 3, or Lossless 2x / 3x / 4x (below).
   - Controls: keys, mouse, motion.
@@ -138,6 +138,19 @@ NVIDIA's frame generation on **NVIDIA RTX 40** graphics cards and newer: **2x** 
 - To leave it out completely, choose another Frame generation and restart.
 - The `streamline` folder in the zip holds NVIDIA's Streamline (its signed `sl.*.dll` files and licence). NVIDIA, RTX, DLSS and Reflex are NVIDIA's trademarks; WSword isn't made by or affiliated with NVIDIA.
 
+## Mods
+
+Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they are: each is a folder with a `romfs` folder inside. They must be made for your game version (1.9.0 or 1.8.2).
+
+1. Settings > **Mods** (on the start screen, or F1 in the game) > **Import a mod folder**, and pick the mod's own folder (extracted from its ZIP / RAR / 7z, the one with `romfs` inside). WSword copies it into the `mods` folder in its data folder. Or put mod folders there yourself: **Open the mods folder**.
+2. Every mod there is on; the Mods page turns each one on or off. Its description is its own note (a `.txt` in its folder, such as README.txt).
+3. A change applies when the game starts again (in the game: Quit > Return to the start screen, then Play).
+
+- **Order:** where two mods have the same file, the one first in the list (by name) wins.
+- **DLC files:** a mod's `romfs\aoc\0010`, or a mod folder named `01007EF00011F001` (as BCML and Relics of the Past ship them), whose `romfs` is the DLC's own. They need the DLC set up (Settings > Files); the Mods page says so if it isn't.
+- Mods change files only: mods that patch the game's code (exefs, `.pchtxt` / `.ips`) don't apply.
+- `WSword.log` lists the mods in use (its `[mods]` lines).
+
 ## What's different from 0.2.8-pc.x
 
 - **Much faster:** this is Savage Wind's engine.
@@ -145,6 +158,7 @@ NVIDIA's frame generation on **NVIDIA RTX 40** graphics cards and newer: **2x** 
 - **Back from 0.2.8 (0.3.2-pc.1):** Settings over the game on F1.
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
+- **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
 - **Game versions:** 1.8.2 and 1.9.0. 1.0.0 and 1.6.0 aren't supported.
 - **New:**
   - Savage Wind's settings in the game's own Options;
