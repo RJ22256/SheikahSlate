@@ -51,7 +51,8 @@ typedef struct {
     VkImageView depth_view;
     float pc[8];
 } RtsCompose;
-bool rts_run(VkCommandBuffer cb, RtsCompose *out);
+// scene_depth: the full-resolution depth the world camera (the one given as the mask's) drew into this frame
+bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c3), RtsCompose *out);
 // The GPU has hardware ray tracing (the device was made with it)
 bool rts_available(void);
 // Settings > Video: its state in words

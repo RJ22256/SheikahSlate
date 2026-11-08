@@ -192,6 +192,7 @@ Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
+- **New in 0.3.10-pc.1:** ray-traced shadows fixed (they had been missing).
 - **New in 0.3.9-pc.1:** ray-traced shadows of trees, bushes and grass too, and no shadows lost.
 - **New in 0.3.8-pc.1:** ray-traced shadows (experimental), Settings > Video.
 - **New in 0.3.7-pc.1:** the ray tracing report (Ctrl+F9).

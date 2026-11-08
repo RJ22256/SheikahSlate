@@ -1128,6 +1128,7 @@ bool g_rt_report;
 volatile int g_rt_report_request;
 static bool rtr_save_pass;
 static int rtr_pass_no;
+static TexBackend *fg_world_depth(const float *world_c3);  // (WSword: the ray-traced shadows' scene depth)
 static void debug_save_channels(TexBackend *b, const char *path);
 static int pass_dbg_n, pass_dbg_draws;
 
@@ -1640,7 +1641,7 @@ static void vk_end_pass_at(int line) {
     if (rts_mask_pending()) {  // (WSword) the sun shadow mask's pass: its red channel from the rays (rtshadow.c)
         RtsCompose rc;
         VkCommandBuffer xcb = vk_cmd();
-        if (rts_run(xcb, &rc)) {
+        if (rts_run(xcb, fg_world_depth, &rc)) {
             VkImageView srcs[3] = {post_view(rc.vis), post_view(rc.copy), rc.depth_view};
             post_pass_pc(xcb, "rts_mask.frag", srcs, 3, rc.mask, rc.pc, 32, false);
             vk_full_barrier(xcb);
@@ -8319,6 +8320,18 @@ static struct {
     uint64_t frame_id, last_ns;
 } fg;
 
+// (WSword) The ray-traced shadows' scene depth (rtshadow.c): the full-resolution depth the world camera drew into
+// this frame (its view-projection, c3 12-27, the one the mask's pass was given), the candidate with the most draws.
+// (The mask pass's own depth attachment is not the scene's depth.)
+static TexBackend *fg_world_depth(const float *world_c3) {
+    int best = -1;
+    for (int i = 0; i < fg.ncand && i < 4; i++)
+        if (fg.cand[i].depth && !memcmp(fg.cand[i].m + 12, world_c3 + 12, 16 * sizeof(float)) &&
+            (best < 0 || fg.cand[i].draws > fg.cand[best].draws))
+            best = i;
+    return best >= 0 ? vk_tex(fg.cand[best].depth, true) : NULL;
+}
+
 // Its own images (with storage use, which post_image's lack): 0 the HUD-less copy, 1 motion vectors, 2 the
 // interpolated frame; (WSword) NVIDIA DLSS frame generation's inputs as the window shows the game's image: 3 the
 // HUD-less image, 4 depth, 5 motion vectors (vk_dlssg_prepare)
@@ -8387,7 +8400,7 @@ static struct {
 } rs_in;
 
 static void fg_draw(Prog *pr, CmdRec *r) {
-    if (!g_fg_want && !g_rs_want && !g_rt_report) return;
+    if (!g_fg_want && !g_rs_want && !g_rt_report && !rts_on()) return;
     if (st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SCENE) {
         Range u = st.ubuf[0][0];
         const float *f = (const float *)(uintptr_t)u.addr;

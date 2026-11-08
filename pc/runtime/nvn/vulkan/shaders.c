@@ -1271,7 +1271,7 @@ static const char *builtin_src(const char *name, int *stage) {
     }
     // (WSword) The ray-traced sun shadows' compose pass (rtshadow.c, exec.c vk_end_pass): the sun shadow mask's red
     // channel from the rays (t0: .r the share of rays lit, .g through alpha-tested foliage - the game's own mask, t1,
-    // decides those), filtered over 3x3 pixels of about the same distance (t2: the half-resolution depth; a.y, a.z the
+    // decides those), filtered over 3x3 pixels of about the same distance (t2: the scene's full-resolution depth; a.y, a.z the
     // projection's A, B: the distance B / (z + A); a.w OpenGL's depth range); the other channels as the game wrote them.
     // a.x 1: the rays alone (testing, SAVAGEWIND_RTS_VIEW); b.x 1: a caster wasn't traced this frame - the game's
     // shadow kept as well (the darker of the two), so nothing it casts goes missing.
@@ -1287,13 +1287,15 @@ static const char *builtin_src(const char *name, int *stage) {
                "void main() {\n"
                "  ivec2 p = ivec2(gl_FragCoord.xy), sz = textureSize(t0, 0);\n"
                "  vec4 m = texelFetch(t1, p, 0);\n"
-               "  float d0 = dist(texelFetch(t2, p, 0).r);\n"
+               "  ivec2 dz = textureSize(t2, 0);\n"
+               "  float d0 = dist(texelFetch(t2, min(ivec2((vec2(p) + 0.5) / vec2(sz) * vec2(dz)), dz - 1), 0).r);\n"
                "  vec2 acc = vec2(0.0);\n"
                "  float ws = 0.0;\n"
                "  for (int y = -1; y <= 1; y++)\n"
                "    for (int x = -1; x <= 1; x++) {\n"
                "      ivec2 q = clamp(p + ivec2(x, y), ivec2(0), sz - 1);\n"
-               "      float w = max(0.0, 1.0 - abs(dist(texelFetch(t2, q, 0).r) - d0) / (0.02 * abs(d0) + 0.05));\n"
+               "      ivec2 qd = min(ivec2((vec2(q) + 0.5) / vec2(sz) * vec2(dz)), dz - 1);\n"
+               "      float w = max(0.0, 1.0 - abs(dist(texelFetch(t2, qd, 0).r) - d0) / (0.02 * abs(d0) + 0.05));\n"
                "      w *= (x == 0 && y == 0) ? 2.0 : 1.0;\n"
                "      acc += texelFetch(t0, q, 0).rg * w;\n"
                "      ws += w;\n"

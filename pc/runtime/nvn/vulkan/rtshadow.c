@@ -177,9 +177,13 @@ static const char trace_src[] =
     "  float toward = da - db;\n"  // (depth change 25 cm toward the light: its sign is the depth's direction)
     "  return (da - dm) * sign(toward) >= -abs(toward);\n"
     "}\n"
+    "float depth_at(ivec2 px, ivec2 sz) {\n"  // (the full-resolution depth, at the mask pixel's centre)
+    "  ivec2 dz = textureSize(dep, 0);\n"
+    "  return texelFetch(dep, min(ivec2((vec2(px) + 0.5) / vec2(sz) * vec2(dz)), dz - 1), 0).r;\n"
+    "}\n"
     "vec3 world(ivec2 px, ivec2 sz) {\n"
     "  px = clamp(px, ivec2(0), sz - 1);\n"
-    "  float d = texelFetch(dep, px, 0).r;\n"
+    "  float d = depth_at(px, sz);\n"
     "  vec2 uv = (vec2(px) + 0.5) / vec2(sz);\n"
     "  vec4 c = vec4(uv.x * 2.0 - 1.0, (uv.y * 2.0 - 1.0) * u.p.x, u.p.y > 0.5 ? d * 2.0 - 1.0 : d, 1.0);\n"
     "  vec4 w = c * u.inv_vp;\n"
@@ -188,7 +192,7 @@ static const char trace_src[] =
     "void main() {\n"
     "  ivec2 sz = imageSize(vis), px = ivec2(gl_GlobalInvocationID.xy);\n"
     "  if (px.x >= sz.x || px.y >= sz.y) return;\n"
-    "  float d = texelFetch(dep, px, 0).r;\n"
+    "  float d = depth_at(px, sz);\n"
     "  if (d >= 0.999999) { imageStore(vis, px, vec4(0.0, 1.0, 0.0, 0.0)); return; }\n"
     "  vec3 P = world(px, sz);\n"
     "  vec3 pr = world(px + ivec2(1, 0), sz), pl = world(px - ivec2(1, 0), sz);\n"
@@ -448,7 +452,7 @@ void rts_capture_end(VkCommandBuffer cb) { rec_call(xfb_end_run, &cb, sizeof cb)
 // ---------------------------------------------------------------- the mask
 
 void rts_mask_seen(TexBackend *mask, TexBackend *depth, const float *world_c3, uint64_t c3_size) {
-    if (!rts_on() || C.frame != renderer_present_count() || !C.nseg || !mask || !depth || !world_c3 || c3_size < 58 * 4) return;
+    if (!rts_on() || C.frame != renderer_present_count() || !C.nseg || !mask || !world_c3 || c3_size < 58 * 4) return;
     // the world camera: a perspective projection (row 3: 0 0 -1 0) with a far plane (c3 57) past 1 km
     const float *f = world_c3;
     if (f[40] != 0 || f[41] != 0 || f[42] != -1 || f[43] != 0 || !(f[57] > 1000)) return;
@@ -581,12 +585,17 @@ static void run_rt(const void *p) {
     free(b);
 }
 
-bool rts_run(VkCommandBuffer cb, RtsCompose *out) {
+bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c3), RtsCompose *out) {
     C.pending = false;
     reap();
     if (!rts_on() || C.frame != renderer_present_count() || !C.nseg || C.overflow) return false;
-    TexBackend *mask = C.mask, *depth = C.depth;
-    if (!mask->image || !depth->image || mask->width != depth->width || mask->height != depth->height) return false;
+    TexBackend *mask = C.mask, *depth = scene_depth(C.world);
+    static int no_depth;
+    if (!depth || !depth->image) {
+        if (no_depth++ < 3) LOG("[rts] no scene depth of the world camera this frame: the game's shadows\n");
+        return false;
+    }
+    if (!mask->image) return false;
     uint32_t w = mask->width, h = mask->height;
     if (!own_image(&R.vis, w, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT) ||
         !own_image(&R.copy, w, h, mask->format, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
