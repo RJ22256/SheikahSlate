@@ -216,6 +216,7 @@ static void console_paste(void) {
 }
 
 static void notice_show(const char *text);  // (WSword: a hotkey's short notice, below)
+static void capture_start(void);            // (Ctrl+F8, below)
 #ifndef __APPLE__
 extern "C" bool rts_available(void);
 #endif
@@ -291,6 +292,12 @@ bool menu_handle_event(const SDL_Event *e) {
                 notice_show("Ray-Tracing: not available on this graphics card");
             }
 #endif
+            return true;
+        }
+        // (WSword 0.3.17) Ctrl+F8: a performance capture - 15 seconds of the CPU's time, sampled (runtime/sampler.c,
+        // Windows) into build\samples.txt for tools/profile_samples.py: where a CPU-bound frame's time goes
+        if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F8 && (e->key.mod & SDL_KMOD_CTRL) && !typing) {
+            capture_start();
             return true;
         }
         if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F10 && !typing) {  // performance overlay: off, FPS, full
@@ -1263,12 +1270,41 @@ RT_ON_RESET(menu_reset) {
 
 // (WSword) A short notice at the top of the screen for a hotkey's change (F6: Ray-Tracing), 2 seconds
 static std::atomic<uint64_t> g_notice_until{0};
-static char g_notice[96];
-static void notice_show(const char *text) {
+static char g_notice[128];
+static void notice_show_for(const char *text, uint64_t ms) {
     snprintf(g_notice, sizeof g_notice, "%s", text);
-    g_notice_until.store(SDL_GetTicks() + 2000);
+    g_notice_until.store(SDL_GetTicks() + ms);
 }
-static bool notice_on(void) { return SDL_GetTicks() < g_notice_until.load(); }
+static void notice_show(const char *text) { notice_show_for(text, 2000); }
+// (0.3.17) Ctrl+F8's capture: its notice while it records, then where it went
+extern "C" const char *sampler_status(void);
+extern "C" const char *sampler_request(double seconds, unsigned interval_us);
+static bool g_capture_watch;
+static void capture_start(void) {
+    if (g_capture_watch) return;  // (one at a time)
+    const char *err = sampler_request(15, 1000);
+    if (err) {
+        notice_show_for("Performance capture: couldn't start (Windows only)", 4000);
+        LOG("[sample] Ctrl+F8: %s\n", err);
+        return;
+    }
+    LOG("[sample] Ctrl+F8: performance capture, 15 s\n");
+    g_capture_watch = true;
+    notice_show_for("Performance capture: recording for 15 seconds - keep playing", 16000);
+}
+static bool notice_on(void) {
+    if (g_capture_watch) {
+        const char *st = sampler_status();
+        if (!strcmp(st, "done")) {
+            g_capture_watch = false;
+            notice_show_for("Performance capture saved: build\\samples.txt - send it with WSword.log", 8000);
+        } else if (!strncmp(st, "failed", 6)) {
+            g_capture_watch = false;
+            notice_show_for("Performance capture failed: WSword.log says why", 6000);
+        }
+    }
+    return SDL_GetTicks() < g_notice_until.load();
+}
 static void notice_draw(ImGuiIO &io, float scale) {
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 24 * scale), 0, ImVec2(0.5f, 0));
     ImGui::SetNextWindowBgAlpha(0.7f);

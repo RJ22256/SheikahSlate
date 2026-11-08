@@ -1,4 +1,4 @@
-**WSword for PC (Windows 10/11, 64-bit)**, still built on **[Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp) 0.4.1-alpha.4** (MIT). This update raises the frame rate's ceiling and removes Path tracing.
+**WSword for PC (Windows 10/11, 64-bit)**, still built on **[Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp) 0.4.1-alpha.4** (MIT). This update raises the frame rate's ceiling, adds a one-key performance capture, and removes Path tracing.
 
 No game files are included. You need your own dump of *Breath of the Wild* **1.9.0** (recommended) or 1.8.2.
 
@@ -7,6 +7,10 @@ No game files are included. You need your own dump of *Breath of the Wild* **1.9
 With Video > Frame rate set to **Off**, the game stopped at 300 fps. It now goes up to **1000 fps**, and the game keeps its normal speed all the way up there - the time of day, physics and controls all follow the real time.
 
 It doesn't go past 1000: the game's clocks lose precision with very short frames, so with no ceiling at all the time of day and the game's speed would start to drift. (For testing, `SAVAGEWIND_FPS_CEILING=<n>` sets another ceiling, 60 to 4000.)
+
+### Ctrl+F8: performance capture
+
+If the GPU isn't busy (the performance overlay's GPU % well under 90) the game is waiting on the CPU, and graphics settings won't raise the frame rate. Press **Ctrl+F8** in the game where it runs slow and keep playing for 15 seconds: WSword records where the CPU's time goes and saves it as `build\samples.txt` in your WSword folder. Send that file with `WSword.log` to find what to speed up.
 
 ### Path tracing removed
 
