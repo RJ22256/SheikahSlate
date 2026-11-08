@@ -160,15 +160,15 @@ WSword loads your own ReShade itself, with no installer. ReShade isn't included 
 - To leave it out, turn Settings > Video > ReShade off and restart.
 - ReShade is crosire's ([reshade.me](https://reshade.me)). WSword isn't made by or affiliated with ReShade. The bridge's ReShade part uses ReShade's add-on API headers (BSD-3-Clause, `ReShade-API-LICENSE.md`).
 
-## Ray tracing (in development)
+## Ray-traced shadows (experimental)
 
-Ray-traced sun shadows are being built for WSword. To build them right, WSword needs to know how the game draws its shadows on your PC. You can help with a report:
+On graphics cards with hardware ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and newer, Intel Arc): Settings > Video > **Ray-traced shadows**. It turns on and off in the game.
 
-1. In the game, stand somewhere in sunlight with shadows around you (trees, buildings, Link's own).
-2. Press **Ctrl+F9**. The game pauses for a moment while WSword writes the report.
-3. Send `WSword.log` (next to `WSword.exe`) and the `build\rt-report` folder (in the data folder: next to `WSword.exe`, or in its `v190` / `v182` folder).
-
-The report has only the game's drawing data and a picture of that frame: nothing personal.
+- **What it does:** the sun's shadows are traced from the same objects the game draws into its shadow maps. They're sharp where things touch and soften with distance, without the maps' blur, blockiness and shimmer.
+- **Leaves:** tree leaves and other cut-out foliage keep the game's own shadows (their cut-outs are in the game's maps, not in the traced shapes). Grass close to the ground lets the rays through.
+- **Range:** as far as the game's own shadows reach. Past that, and indoors where the game draws no sun shadows, nothing changes.
+- **Cost:** a few milliseconds of GPU time. The first minute with it on, the game compiles a variant of each shadow-casting shader: expect some stutter while it does.
+- **Experimental:** it's the first version, made without seeing the game. If shadows look wrong (missing, misplaced, striped, flickering), press **Ctrl+F9** in that spot and send `WSword.log` and the `build\rt-report` folder (in the data folder: next to `WSword.exe`, or in its `v190` / `v182` folder), with a screenshot.
 
 ## Mods
 
@@ -191,7 +191,8 @@ Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
-- **New in 0.3.7-pc.1:** the ray tracing report (Ctrl+F9), the first step toward ray-traced shadows.
+- **New in 0.3.8-pc.1:** ray-traced shadows (experimental), Settings > Video.
+- **New in 0.3.7-pc.1:** the ray tracing report (Ctrl+F9).
 - **New in 0.3.6-pc.1:** your own ReShade, loaded by WSword (Settings > Video > ReShade), with the game's depth for its effects.
 - **Game versions:** 1.8.2 and 1.9.0. 1.0.0 and 1.6.0 aren't supported.
 - **New:**

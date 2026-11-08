@@ -340,7 +340,7 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[48];
+    const char *ext[56];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
@@ -458,6 +458,12 @@ static void create_device(void) {
         if (nd > 0) LOG("[dlss] device extensions: %d%s\n", nd, dlss_ok ? "" : " - not all there: DLSS off");
     }
     dlss_device_ready(dlss_ok);
+    // (WSword) ray tracing for the ray-traced sun shadows (rtshadow.c): acceleration structures, ray queries, transform
+    // feedback (the shadow casters' triangles) and push descriptors, where the GPU has all of them (on whether the
+    // setting is on or not: it turns on and off in the game). SAVAGEWIND_NO_RT=1: never.
+    bool rt = !getenv("SAVAGEWIND_NO_RT") && has_ext(ep, ne, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+              has_ext(ep, ne, VK_KHR_RAY_QUERY_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) &&
+              has_ext(ep, ne, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -637,6 +643,37 @@ static void create_device(void) {
         ext[n_ext++] = VK_KHR_PRESENT_WAIT_EXTENSION_NAME;
     }
     g_vk.present_wait = pwait;
+    // (WSword) ray tracing (above): the features, when the driver has them all
+    VkPhysicalDeviceTransformFeedbackFeaturesEXT xfb_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+    VkPhysicalDeviceRayQueryFeaturesKHR rq_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR, .pNext = &xfb_have};
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR as_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, .pNext = &rq_have};
+    if (rt) {
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &as_have};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        rt = as_have.accelerationStructure && rq_have.rayQuery && xfb_have.transformFeedback && f12_have.bufferDeviceAddress &&
+             h->vertexPipelineStoresAndAtomics;
+    }
+    VkPhysicalDeviceTransformFeedbackFeaturesEXT xfb_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT,
+                                                           .transformFeedback = VK_TRUE, .pNext = f.pNext};
+    VkPhysicalDeviceRayQueryFeaturesKHR rq_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR, .rayQuery = VK_TRUE,
+                                                 .pNext = &xfb_on};
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR as_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, .accelerationStructure = VK_TRUE, .pNext = &rq_on};
+    if (rt) {
+        f.pNext = &as_on;
+        f12.bufferDeviceAddress = VK_TRUE;
+        static const char *const rt_ext[] = {VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, VK_KHR_RAY_QUERY_EXTENSION_NAME,
+                                             VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME,
+                                             VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
+        for (size_t k = 0; k < sizeof rt_ext / sizeof *rt_ext; k++) {  // (DLSS's list may have some of them already)
+            bool dup = false;
+            for (uint32_t i = 0; i < n_ext && !dup; i++) dup = !strcmp(ext[i], rt_ext[k]);
+            if (!dup) ext[n_ext++] = rt_ext[k];
+        }
+    }
+    g_vk.rt = rt;
+    LOG("[vk] ray tracing %s\n", rt ? "on (ray-traced shadows available)" : "not available");
     float prio[2] = {1.0f, 1.0f};
     // One queue: frames are presented on the game's own. A second one that presented (present thread below) went
     // wrong with others' code on it: NVIDIA's GPUs before Turing faulted writing to GPU address 0 within the first
@@ -2399,6 +2436,8 @@ presented:
         extern volatile int g_rt_report_request;
         extern const char *rt_version(void);
         if (g_rt_report) {
+            extern void rts_report(void);
+            rts_report();  // (rtshadow.c: this frame's capture)
             g_rt_report = false;
             LOG("[rtr] report done: WSword.log and the build\\rt-report folder in the data folder\n");
         }

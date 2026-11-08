@@ -1269,6 +1269,39 @@ static const char *builtin_src(const char *name, int *stage) {
                "layout(location = 0) out vec4 o;\n"
                "void main() { o = vec4(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).xy, 0.0, 1.0); }\n";
     }
+    // (WSword) The ray-traced sun shadows' compose pass (rtshadow.c, exec.c vk_end_pass): the sun shadow mask's red
+    // channel from the rays (t0: .r the share of rays lit, .g through alpha-tested foliage - the game's own mask, t1,
+    // decides those), filtered over 3x3 pixels of about the same distance (t2: the half-resolution depth; a.y, a.z the
+    // projection's A, B: the distance B / (z + A); a.w OpenGL's depth range); the other channels as the game wrote them.
+    // a.x 1: the rays alone (testing, SAVAGEWIND_RTS_VIEW).
+    if (!strcmp(name, "rts_mask.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D t1;\n"
+               "layout(set = 0, binding = 2) uniform sampler2D t2;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "float dist(float d) { float z = pc.a.w > 0.5 ? d * 2.0 - 1.0 : d; return pc.a.z / (z + pc.a.y); }\n"
+               "void main() {\n"
+               "  ivec2 p = ivec2(gl_FragCoord.xy), sz = textureSize(t0, 0);\n"
+               "  vec4 m = texelFetch(t1, p, 0);\n"
+               "  float d0 = dist(texelFetch(t2, p, 0).r);\n"
+               "  vec2 acc = vec2(0.0);\n"
+               "  float ws = 0.0;\n"
+               "  for (int y = -1; y <= 1; y++)\n"
+               "    for (int x = -1; x <= 1; x++) {\n"
+               "      ivec2 q = clamp(p + ivec2(x, y), ivec2(0), sz - 1);\n"
+               "      float w = max(0.0, 1.0 - abs(dist(texelFetch(t2, q, 0).r) - d0) / (0.02 * abs(d0) + 0.05));\n"
+               "      w *= (x == 0 && y == 0) ? 2.0 : 1.0;\n"
+               "      acc += texelFetch(t0, q, 0).rg * w;\n"
+               "      ws += w;\n"
+               "    }\n"
+               "  vec2 v = ws > 1e-4 ? acc / ws : texelFetch(t0, p, 0).rg;\n"
+               "  float f = pc.a.x > 0.5 ? v.x + v.y : v.x + v.y * m.r;\n"
+               "  o = vec4(clamp(f, 0.0, 1.0), m.gba);\n"
+               "}\n";
+    }
     // (WSword) ReShade's depth (exec.c vk_reshade_depth): each pixel of the window, within the game's rectangle there
     // (c.xy its corner, a.zw its size) from the scene depth's texel the present's mapping takes it from (a.x the flip,
     // b the uv crop), its distance from the camera (the projection's c.z, c.w; a.y: OpenGL's depth range) encoded so

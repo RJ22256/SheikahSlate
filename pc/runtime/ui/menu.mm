@@ -654,6 +654,8 @@ extern "C" void dlssg_status(char *out, size_t n);    // (WSword: vulkan/dlssg.c
 extern "C" bool dlssg_gpu_ok(void);
 extern "C" bool dlssg_gpu_mfg(void);
 extern "C" void reshade_status(char *out, size_t n);  // (WSword: vulkan/reshade.c, the player's own ReShade)
+extern "C" void rts_status(char *out, size_t n);  // (WSword: vulkan/rtshadow.c, ray-traced sun shadows)
+extern "C" bool rts_available(void);
 #endif
 // Video > Upscaler mode's names, by UPQ_*
 static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
@@ -1035,6 +1037,17 @@ static void tab_display(void) {
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
 #ifndef __APPLE__
+    {   // (WSword) ray-traced sun shadows (vulkan/rtshadow.c): GPUs with hardware ray tracing
+        char st[300];
+        rts_status(st, sizeof st);
+        static std::string d;
+        d = std::string(tr("The sun's shadows traced with your graphics card's ray tracing (NVIDIA RTX, AMD Radeon RX 6000 "
+                           "and newer, Intel Arc), from the same objects the game's shadow maps have: sharp where things "
+                           "touch, softening with distance, without the maps' blur and shimmer. Leaves and grass keep the "
+                           "game's own shadows. Costs GPU time (a few milliseconds).")) + "\n\n" + tr(st);
+        if (!rts_available()) opt_disable_next();
+        opt_toggle("Ray-traced shadows", &g_settings.rt_shadows, false, d.c_str());
+    }
     {   // Frame generation: AMD FSR 3 (vulkan/framegen.cpp), or (WSword) Lossless Scaling's from the player's own
         // Lossless.dll (vulkan/device.c lsfg_prepare). The frame rate counts the presented frames (framepace.c).
         opt_section("Frame generation");

@@ -55,6 +55,9 @@ typedef struct {
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
     uint8_t point_size;     // vertex, GLSL: the draw is a point list; a shader that writes no point size writes 1.0
                             // (NVN's default size; without maintenance5 Vulkan leaves it undefined)
+    uint8_t xfb;            // (WSword) vertex, GLSL: the game's clip position also to transform feedback buffer 0 (16-byte
+                            // vertices) for the ray-traced sun shadows (vulkan/rtshadow.c) (in the padding: the key's size
+                            // and layout are unchanged, 0 in every other key)
     uint32_t shared_size;   // compute: shared memory bytes (from the program's control section)
 } ShaderKey;
 

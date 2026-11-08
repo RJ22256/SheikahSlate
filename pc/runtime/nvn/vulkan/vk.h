@@ -55,6 +55,8 @@ typedef struct {
     bool amd_proprietary;      // the driver is AMD's own (Windows; textures.c's cube-compatible rule, #59)
     bool present_wait;         // VK_KHR_present_id + present_wait on (SAVAGEWIND_LOG_PRESENT: when frames are shown)
     bool fp16;                 // shaderFloat16 + 16-bit storage on (the FSR 3 upscaler's 16-bit shaders: fsr3.cpp)
+    bool rt;                   // (WSword) ray tracing on: acceleration structures, ray queries, transform feedback, push
+                               // descriptors and buffer addresses (rtshadow.c's ray-traced sun shadows)
     // window
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;

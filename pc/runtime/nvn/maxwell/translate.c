@@ -2296,6 +2296,12 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "invariant gl_Position;\nprecise gl_Position;\n");
         for (int i = 0; i < 32; i++)
             if (c->out_attr_mask & (1u << i)) sp(&s, "layout(location = %d) out vec4 v%d;\n", i, i);
+        if (key && key->xfb) {  // (WSword) the clip position for the ray-traced sun shadows (rtshadow.c): an output of
+            // its own (no fragment shader reads it), the highest location no varying uses
+            int loc = 29;
+            while (loc > 0 && (c->out_attr_mask & (1u << loc))) loc--;
+            sp(&s, "layout(location = %d, xfb_buffer = 0, xfb_offset = 0, xfb_stride = 16) out vec4 rt_clip;\n", loc);
+        }
         if (mvec) {  // the history: the previous frame's copies of the game's constant buffers (mvec.c), at pb[cb - 3]
             sp(&s, "layout(std430, set = 0, binding = 63) readonly buffer MvHist { uvec4 ph[]; };\n");
             // (std430: uint arrays 4 bytes apart, as mvec.c packs them; a push constant block is std140 by default)
@@ -2345,6 +2351,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     glsl_body(c, &s, body.buf ? body.buf : "", any_branch, dbg);
     free(body.buf);
     if (stage == STAGE_VERTEX) {
+        if (key && key->xfb) sp(&s, "  rt_clip = gl_Position;\n");  // (the game's own, before the remaps below)
         if (key && key->flip_y) sp(&s, "  gl_Position.y = -gl_Position.y;\n");
         if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5f;\n");
         if (mvec) {

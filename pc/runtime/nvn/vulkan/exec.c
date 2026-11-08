@@ -18,6 +18,7 @@
 #include "fsr3.h"
 #include "dlss.h"
 #include "dlssg.h"
+#include "rtshadow.h"
 #include "mvec.h"
 #include "../output_scale.h"
 #include "record.h"
@@ -1090,6 +1091,8 @@ static int pass_mvec = -1;
 static uint64_t mvec_cleared = ~0ull;
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f);
 static VkImageView post_view(TexBackend *d);
+static void post_pass_pc(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const float *pc,
+                         uint32_t pc_bytes, bool clear);
 // The motion target for a pass writing `depth` (minw x minh: the pass's size): the internal-resolution scene depth's
 // size (the largest RS_SCENE depth of the last frame, or of this one when larger: the scene shrinks when the upscaler
 // is turned on; its halves and levels get none), NULL for other passes
@@ -1634,6 +1637,20 @@ static void vk_end_pass_at(int line) {
     if (pass_nlinear) bar_other = true;  // (copies to memory)
     for (int i = 0; i < pass_nlinear; i++) readback_schedule(vk_cmd(), pass_linear[i], &pass_linear_view[i], pass_linear_has_view[i]);
     pass_nlinear = 0;
+    if (rts_mask_pending()) {  // (WSword) the sun shadow mask's pass: its red channel from the rays (rtshadow.c)
+        RtsCompose rc;
+        VkCommandBuffer xcb = vk_cmd();
+        if (rts_run(xcb, &rc)) {
+            VkImageView srcs[3] = {post_view(rc.vis), post_view(rc.copy), rc.depth_view};
+            post_pass_pc(xcb, "rts_mask.frag", srcs, 3, rc.mask, rc.pc, 32, false);
+            vk_full_barrier(xcb);
+            vk_dyn_forget();
+            if (g_rt_report) {
+                debug_save_channels(rc.vis, "build/rt-report/rts_rays.png");
+                LOG("[rtr] saved build/rt-report/rts_rays.png (r: lit, g: through foliage)\n");
+            }
+        }
+    }
     if (g_rt_report && rtr_save_pass) {  // (the ray tracing report) a pass that reads the sun's shadow maps: its targets
         rtr_save_pass = false;
         for (int i = 0; i < pass_dbg_n; i++) {
@@ -6625,6 +6642,38 @@ static void draw_(CmdRec *r, bool indexed) {
         Prog *mp = get_program(st.program, &mvk, &mfk);
         if (mp && atomic_load(&mp->state) == 1) pr = mp, mvec_masked();  // (else built for the next frames)
     }
+    // ---- (WSword) ray-traced sun shadows (rtshadow.c): a triangle list into the sun's shadow cascades runs its vertex
+    // shader's capture variant (ShaderKey xfb: the clip position to transform feedback too), once that is built
+    Prog *rts_plain = pr;
+    bool rts_cap = false;
+    if (r->x[0] == 4 && st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SHADOW && rts_on()) {
+        ShaderKey xk = {0}, xf = {0};
+        xk.glsl = xf.glsl = 1;
+        xk.flip_y = xf.flip_y = origin == 0;
+        xk.depth_minus_one = dmode == 0;
+        xk.point_size = points;
+        xk.xfb = 1;
+        for (int i = 0; i < st.nattrib; i++) xk.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
+        for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) xf.rt_kind[i] = (uint8_t)rt_kind(rt_format(i));
+        Prog *xp = get_program(st.program, &xk, &xf);
+        if (xp && atomic_load(&xp->state) == 1) pr = xp, rts_cap = true;  // (else built for the next frames)
+    }
+    // ---- (WSword) a draw of the deferred sun shadow mask: full-screen, sampling the cascades with depth compares,
+    // writing a target's red channel - the mask (the target), its depth and the world camera (fragment c3) noted
+    if (r->x[2] <= 6 && st.rt.ncolor && rts_on()) {
+        bool cmp = false;
+        for (int i = 0; i < pr->fi->ntex && !cmp; i++) {
+            NvnTexture *t = pr->fi->tex[i].shadow ? shader_texture_object(1, &pr->fi->tex[i]) : NULL;
+            cmp = t && vk_texture_scale_group(t) == RS_SHADOW;
+        }
+        for (int i = 0; cmp && i < st.rt.ncolor && i < 8; i++)
+            if (st.rt.color[i] && ((pr->fi->out_mask >> (i * 4)) & 1) && ((st.channel_mask >> (i * 4)) & 1)) {
+                Range u = st.ubuf[1][0];
+                rts_mask_seen(vk_tex(st.rt.color[i], true), st.rt.depth ? vk_tex(st.rt.depth, true) : NULL,
+                              (const float *)(uintptr_t)u.addr, u.size);
+                break;
+            }
+    }
     if (st.rt.depth && !depth_read_only()) pass_ds_written = true;
     for (int i = 0; i < st.rt.ncolor && i < 8; i++)
         if (st.rt.color[i] && draw_writes_color(pr, i)) {
@@ -6642,6 +6691,7 @@ static void draw_(CmdRec *r, bool indexed) {
 
     uint64_t prof_tk_ = profd ? SDL_GetTicksNS() : 0;
     if (profd) prof_pre += prof_tk_ - prof_tp_;
+rts_repipe:;
     // ---- pipeline
     static struct { uint64_t gen; Prog *pr; uint8_t cls, fb; } km;
     Pipe *pp;
@@ -6725,6 +6775,11 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 have_pipe:
     if (atomic_load(&pp->state) == 0 && (one_shot_target() || draw_must_happen())) wait_built(&pp->state);
+    if (atomic_load(&pp->state) != 1 && rts_cap) {  // (WSword) the capture variant's pipeline not built yet: the plain one
+        rts_cap = false;
+        pr = rts_plain;
+        goto rts_repipe;
+    }
     if (atomic_load(&pp->state) != 1) {
         if (st.rt.ncolor && vk_trace_tex(st.rt.color[0]))
             vk_trace_event(st.rt.color[0], 3, NULL, 0, "draw skipped: pipeline %s", pp->state ? "failed" : "compiling");
@@ -7076,8 +7131,13 @@ have_pipe:
             oq = (int)i;
         }
     }
+    // (WSword) a shadow caster's vertices to the ray-traced shadows' capture (rtshadow.c)
+    bool rts_x = rts_cap && topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST &&
+                 rts_capture_begin(cb, (const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size, pr->fi->uses_discard,
+                                   (use_index ? icount : count) * inst);
     if (!use_index) rec_CmdDraw(cb, count, inst, first, base_inst);
     else rec_CmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
+    if (rts_x) rts_capture_end(cb);
     if (oq >= 0) rec_CmdEndQuery(cb, oq_pool, (uint32_t)oq);
     stat_draws++;
     chunk_draws++;
@@ -7715,8 +7775,9 @@ static VkPipelineLayout post_layout;
 static VkDescriptorSetLayout post_set_layout;
 
 static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
-    static struct { const char *fs; VkFormat f; VkPipeline p; } cache[16];
-    for (int i = 0; i < 16; i++) if (cache[i].p && cache[i].fs == fs && cache[i].f == fmt) return cache[i].p;
+    // (WSword: 48 - the post shaders and their target formats had outgrown 16, past which one was made each time)
+    static struct { const char *fs; VkFormat f; VkPipeline p; } cache[48];
+    for (int i = 0; i < 48; i++) if (cache[i].p && cache[i].fs == fs && cache[i].f == fmt) return cache[i].p;
     if (!post_layout) {
         VkDescriptorSetLayoutBinding b[3];
         for (uint32_t i = 0; i < 3; i++)
@@ -7755,7 +7816,7 @@ static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = post_layout};
     VkPipeline p;
     VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
-    for (int i = 0; i < 16; i++) if (!cache[i].p) { cache[i].fs = fs; cache[i].f = fmt; cache[i].p = p; break; }
+    for (int i = 0; i < 48; i++) if (!cache[i].p) { cache[i].fs = fs; cache[i].f = fmt; cache[i].p = p; break; }
     return p;
 }
 
