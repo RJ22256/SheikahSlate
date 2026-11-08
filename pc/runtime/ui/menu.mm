@@ -214,6 +214,10 @@ static void console_paste(void) {
     SDL_free(clip);
 }
 
+static void notice_show(const char *text);  // (WSword: a hotkey's short notice, below)
+#ifndef __APPLE__
+extern "C" bool rts_available(void);
+#endif
 bool menu_handle_event(const SDL_Event *e) {
     static bool back_down, start_down;
     if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST || e->type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
@@ -274,6 +278,18 @@ bool menu_handle_event(const SDL_Event *e) {
                 return true;
             }
             if (!typing) set_open(!g_open.load());  // (Esc with the menu open goes to ImGui below: it cancels a field)
+            return true;
+        }
+        if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F6 && !typing) {  // (WSword) Ray-Tracing on / off
+#ifndef __APPLE__
+            if (rts_available()) {
+                g_settings.rt_shadows = !g_settings.rt_shadows;
+                settings_save();
+                notice_show(g_settings.rt_shadows ? "Ray-Tracing: On" : "Ray-Tracing: Off");
+            } else {
+                notice_show("Ray-Tracing: not available on this graphics card");
+            }
+#endif
             return true;
         }
         if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F10 && !typing) {  // performance overlay: off, FPS, full
@@ -1045,7 +1061,7 @@ static void tab_display(void) {
                            "game's own objects: the sun's shadows traced - sharp where things touch, softening with "
                            "distance, without the maps' blur and shimmer - and ambient occlusion: the shade in corners, "
                            "under rocks and around Link where the sky's light can't reach. Costs GPU time (a few "
-                           "milliseconds).")) + "\n\n" + tr(st);
+                           "milliseconds). F6 in the game turns it on and off.")) + "\n\n" + tr(st);
         if (!rts_available()) opt_disable_next();
         opt_toggle("Ray-Tracing", &g_settings.rt_shadows, false, d.c_str());
     }
@@ -1237,6 +1253,23 @@ RT_ON_RESET(menu_reset) {
     pthread_mutex_lock(&q_lock);
     q_events.clear();
     pthread_mutex_unlock(&q_lock);
+}
+
+// (WSword) A short notice at the top of the screen for a hotkey's change (F6: Ray-Tracing), 2 seconds
+static std::atomic<uint64_t> g_notice_until{0};
+static char g_notice[96];
+static void notice_show(const char *text) {
+    snprintf(g_notice, sizeof g_notice, "%s", text);
+    g_notice_until.store(SDL_GetTicks() + 2000);
+}
+static bool notice_on(void) { return SDL_GetTicks() < g_notice_until.load(); }
+static void notice_draw(ImGuiIO &io, float scale) {
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 24 * scale), 0, ImVec2(0.5f, 0));
+    ImGui::SetNextWindowBgAlpha(0.7f);
+    ImGui::Begin("##notice", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                       ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::TextUnformatted(tr(g_notice));
+    ImGui::End();
 }
 
 // Performance overlay (F10), in the style of MangoHud: the game's frame rate and frame times, and the machine's load
@@ -1720,7 +1753,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF;
+           g_settings.perf_overlay != PERF_OFF || notice_on();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -1803,6 +1836,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if (notice_on()) notice_draw(io, scale);
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 
     if (open) {

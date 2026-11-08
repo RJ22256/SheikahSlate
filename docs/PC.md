@@ -164,7 +164,7 @@ WSword loads your own ReShade itself, with no installer. ReShade isn't included 
 
 ## Ray-Tracing (experimental)
 
-On graphics cards with hardware ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and newer, Intel Arc): Settings > Video > **Ray-Tracing** (called Ray-traced shadows before 0.3.14-pc.1; your setting carries over). It turns on and off in the game. It traces the sun's shadows and ambient occlusion.
+On graphics cards with hardware ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and newer, Intel Arc): Settings > Video > **Ray-Tracing** (called Ray-traced shadows before 0.3.14-pc.1; your setting carries over). It turns on and off in the game, and **F6** turns it on and off while you play (a notice at the top says which). It traces the sun's shadows and ambient occlusion.
 
 - **Ambient occlusion** (new in 0.3.14-pc.1): short rays from each surface find where the sky's light is closed off - corners, under rocks and overhangs, where things meet the ground, around Link - and shade it there. It's put on the game's finished picture before the HUD (so ReShade and frame generation see it), and as far as the game's shadows reach. Grass and leaves don't take part in it. `SAVAGEWIND_RT_AO=0`: none.
 
