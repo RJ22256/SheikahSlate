@@ -374,6 +374,9 @@ dist:
 	    cp third_party/reshade/LICENSE.md "$(DIST)/ReShade-API-LICENSE.md"; fi  # (NVIDIA DLSS's bridge: tools/dlss_bridge, built by MSVC; its ReShade add-on part: ReShade's API headers, BSD-3-Clause)
 	if [ -d build/streamline ]; then mkdir -p "$(DIST)/streamline" && \
 	    cp build/streamline/* "$(DIST)/streamline/"; fi  # (NVIDIA DLSS frame generation: Streamline's DLLs and licence, CI's)
+	if [ -f build/wsword_nr.dll ]; then cp build/wsword_nr.dll "$(DIST)/" && cp -R build/nr "$(DIST)/nr" && \
+	    cp build/open-dlss/LICENSE "$(DIST)/OpenDLSS-LICENSE.txt" && cp build/open-dlss/NOTICE "$(DIST)/OpenDLSS-NOTICE.txt"; fi  # (neural rendering, beta: tools/nr_bridge, built by MSVC; OpenDLSS-NR, MIT - no model: the player's own)
+	! ls "$(DIST)" | grep -i nr-model  # (no model)
 	! ls "$(DIST)" | grep -i nvngx  # (no nvngx_dlss.dll: the player's own)
 	! ls "$(DIST)/streamline" 2>/dev/null | grep -i nvngx  # (no nvngx_dlssg.dll either)
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
