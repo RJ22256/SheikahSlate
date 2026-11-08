@@ -81,7 +81,7 @@ typedef struct {
     // detection, its Generic Depth add-on)
     bool reshade;
     bool reshade_own_depth;
-    // (WSword) ray-traced sun shadows (vulkan/rtshadow.c): GPUs with hardware ray tracing
+    // (WSword) Ray-Tracing (vulkan/rtshadow.c): the sun's shadows and ambient occlusion, GPUs with hardware ray tracing
     bool rt_shadows;
     char mods_off[512];  // (WSword) game mods turned off (runtime/mods.c: their folder names, separated by '|')
     float volume;        // master volume, 1 = 100%

@@ -162,9 +162,11 @@ WSword loads your own ReShade itself, with no installer. ReShade isn't included 
 - To leave it out, turn Settings > Video > ReShade off and restart.
 - ReShade is crosire's ([reshade.me](https://reshade.me)). WSword isn't made by or affiliated with ReShade. The bridge's ReShade part uses ReShade's add-on API headers (BSD-3-Clause, `ReShade-API-LICENSE.md`).
 
-## Ray-traced shadows (experimental)
+## Ray-Tracing (experimental)
 
-On graphics cards with hardware ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and newer, Intel Arc): Settings > Video > **Ray-traced shadows**. It turns on and off in the game.
+On graphics cards with hardware ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and newer, Intel Arc): Settings > Video > **Ray-Tracing** (called Ray-traced shadows before 0.3.14-pc.1; your setting carries over). It turns on and off in the game. It traces the sun's shadows and ambient occlusion.
+
+- **Ambient occlusion** (new in 0.3.14-pc.1): short rays from each surface find where the sky's light is closed off - corners, under rocks and overhangs, where things meet the ground, around Link - and shade it there. It's put on the game's finished picture before the HUD (so ReShade and frame generation see it), and as far as the game's shadows reach. Grass and leaves don't take part in it. `SAVAGEWIND_RT_AO=0`: none.
 
 - **What it does:** the sun's shadows are traced from the same objects the game draws into its shadow maps. They're sharp where things touch and soften with distance, without the maps' blur, blockiness and shimmer.
 - **Trees, bushes and grass:** traced too. Their leaves are cut-out textures: a ray is blocked where the leaf is solid, read from the game's own shadow map of the same spot, and goes on through its gaps. Grass right where a pixel stands lets the rays through.
@@ -194,6 +196,7 @@ Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
+- **New in 0.3.14-pc.1:** Settings > Video > **Ray-Tracing** (was Ray-traced shadows): ray-traced ambient occlusion with the shadows, and sharper, cleaner ray-traced shadows (the sun's real size, twice the rays).
 - **New in 0.3.13-pc.1:**
   - With frame generation on, ReShade's effects are drawn once a game frame, before the HUD, so frame generation adds frames with ReShade on too, and the HUD is no longer blurred or tinted by the effects.
   - A dump with the DLC merged into the game's RomFS gets its DLC (the title menu's Downloadable Content button, The Master Trials, The Champions' Ballad).

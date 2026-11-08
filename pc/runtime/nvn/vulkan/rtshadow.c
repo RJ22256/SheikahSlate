@@ -15,7 +15,8 @@ uint64_t renderer_present_count(void);
 #define MAX_CASC 8      // cascades (the game draws 3): one acceleration structure each, the instance mask its bit
 #define MAX_SEG 4096    // runs of caster draws (the same cascade, opaque or not, one after another)
 #define VERT 16         // bytes a captured vertex (vec4: the clip position, then the world position in place)
-#define RAYS 4          // per pixel, over the sun's disc
+#define RAYS 8          // per pixel, over the sun's disc (0.3.13: 8 - 4 left the penumbras grainy, the filter blurred them)
+#define AO_RAYS 6       // per pixel, ambient occlusion (0.3.13)
 
 typedef struct { VkBuffer buf; VkDeviceMemory mem; VkDeviceSize size; VkDeviceAddress addr; } RBuf;
 
@@ -161,6 +162,7 @@ static const char trace_src[] =
     "  vec4 p;\n"           // x: rows' direction (ysign); y: OpenGL depth (1); z: cascades; w: rays
     "  vec4 bias;\n"        // x: metres; y: per metre of distance; z: the rays' length; w: foliage nearer is passed
     "  vec4 cl[8];\n"      // x: each cascade's layer in the maps
+    "  vec4 aop;\n"        // x: ambient occlusion's rays' length (metres); y: its rays (0: none)
     "} u;\n"
     // A candidate hit on alpha-tested foliage at H blocks the ray where the game's own map of that cascade - drawn
     // with the leaves' cut-outs - has a surface at least as near the light as H there (within 25 cm): the cut-out was
@@ -193,7 +195,7 @@ static const char trace_src[] =
     "  ivec2 sz = imageSize(vis), px = ivec2(gl_GlobalInvocationID.xy);\n"
     "  if (px.x >= sz.x || px.y >= sz.y) return;\n"
     "  float d = depth_at(px, sz);\n"
-    "  if (d >= 0.999999) { imageStore(vis, px, vec4(0.0, 1.0, 0.0, 0.0)); return; }\n"
+    "  if (d >= 0.999999) { imageStore(vis, px, vec4(0.0, 1.0, 1.0, 0.0)); return; }\n"
     "  vec3 P = world(px, sz);\n"
     "  vec3 pr = world(px + ivec2(1, 0), sz), pl = world(px - ivec2(1, 0), sz);\n"
     "  vec3 pd = world(px + ivec2(0, 1), sz), pu = world(px - ivec2(0, 1), sz);\n"
@@ -208,7 +210,7 @@ static const char trace_src[] =
     "    vec4 q = vec4(P, 1.0) * u.casc[i];\n"
     "    if (q.w > 0.0 && abs(q.x) < q.w * 0.995 && abs(q.y) < q.w * 0.995) c = i;\n"
     "  }\n"
-    "  if (c < 0) { imageStore(vis, px, vec4(0.0, 1.0, 0.0, 0.0)); return; }\n"
+    "  if (c < 0) { imageStore(vis, px, vec4(0.0, 1.0, 1.0, 0.0)); return; }\n"
     "  vec3 L = normalize(u.sun.xyz);\n"
     "  float b = u.bias.x + length(V) * u.bias.y;\n"
     "  vec3 O = P + N * b + L * b;\n"
@@ -229,7 +231,27 @@ static const char trace_src[] =
     "      }\n"
     "    if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) lit += 1.0;\n"
     "  }\n"
-    "  imageStore(vis, px, vec4(lit / float(n), fol / float(n), 0.0, 0.0));\n"
+    // (0.3.13) Ambient occlusion: AO_RAYS short rays (u.aop.x metres long) over the
+    // hemisphere around the normal, cosine-weighted, against the same cascade's opaque geometry (foliage left out:
+    // its cut-outs are known only toward the sun); a hit near the surface occludes more than one at the rays' end.
+    // .b: the share of the sky the surface sees (1: open)
+    "  float occ = 0.0;\n"
+    "  int na = int(u.aop.y);\n"
+    "  vec3 TN = normalize(cross(abs(N.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), N));\n"
+    "  vec3 BN = cross(N, TN);\n"
+    "  vec3 OA = P + N * b;\n"
+    "  for (int k = 0; k < na; k++) {\n"
+    "    float e = (float(k) + 0.5) / float(na), ang = a0 + float(k) * 2.39996323;\n"
+    "    float s = sqrt(e), z = sqrt(max(0.0, 1.0 - e));\n"
+    "    vec3 D = normalize(TN * (cos(ang) * s) + BN * (sin(ang) * s) + N * z);\n"
+    "    rayQueryEXT q;\n"
+    "    rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsCullNoOpaqueEXT, 1u << c, OA, 0.0, D, u.aop.x);\n"
+    "    while (rayQueryProceedEXT(q)) {}\n"
+    "    if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT)\n"
+    "      occ += 1.0 - rayQueryGetIntersectionTEXT(q, true) / u.aop.x;\n"
+    "  }\n"
+    "  float ao = na > 0 ? 1.0 - occ / float(na) : 1.0;\n"
+    "  imageStore(vis, px, vec4(lit / float(n), fol / float(n), ao, 0.0));\n"
     "}\n";
 
 static VkPipeline compute_pipeline(const char *src, const char *name, VkPipelineLayout layout) {
@@ -505,7 +527,7 @@ typedef struct {
     VkAccelerationStructureBuildRangeInfoKHR trange;
     VkAccelerationStructureInstanceKHR inst[MAX_CASC];
     int ninst;
-    float ubo[192];
+    float ubo[196];
     VkImageView depth_view, vis_view, map_view;
     VkImage mask, copy;
     uint32_t w, h;
@@ -583,6 +605,21 @@ static void run_rt(const void *p) {
     barrier(cb, ALL, VK_ACCESS_2_MEMORY_WRITE_BIT, ALL, RW);
     free(b->geom);
     free(b);
+}
+
+// (0.3.13) Ambient occlusion with the shadows' rays (trace_src's .b), put on the composited scene (exec.c rt_ao_apply)
+static struct { uint64_t frame; VkImageView vis, depth; float pc[4]; } AO;
+static bool ao_wanted(void) {
+    static int ao = -1;  // (SAVAGEWIND_RT_AO=0: none)
+    if (ao < 0) ao = !(getenv("SAVAGEWIND_RT_AO") && !strcmp(getenv("SAVAGEWIND_RT_AO"), "0"));
+    return ao;
+}
+
+bool rts_ao(VkImageView *vis, VkImageView *depth, float pc[4]) {
+    if (!ao_wanted() || !rts_on() || AO.frame != renderer_present_count() || !AO.vis || !AO.depth) return false;
+    *vis = AO.vis, *depth = AO.depth;
+    memcpy(pc, AO.pc, sizeof AO.pc);
+    return true;
 }
 
 bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c3), RtsCompose *out) {
@@ -717,7 +754,8 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
     static float cone = -1, bias_m = -1, bias_d = -1;
     if (cone < 0) {  // (testing: SAVAGEWIND_RTS_CONE=<tan>, SAVAGEWIND_RTS_BIAS=<metres>,<per metre>)
         const char *e = getenv("SAVAGEWIND_RTS_CONE");
-        cone = e ? (float)atof(e) : 0.012f;
+        // (0.3.13: 0.005, about the sun's own disc - 0.012 softened the shadows well past the game's own)
+        cone = e ? (float)atof(e) : 0.005f;
         e = getenv("SAVAGEWIND_RTS_BIAS");
         if (!e || sscanf(e, "%f,%f", &bias_m, &bias_d) != 2) bias_m = 0.03f, bias_d = 0.0025f;
     }
@@ -730,6 +768,10 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
     // (alpha-tested casters within 30 cm of the surface - the grass the pixel stands in - let the rays through)
     u[156] = bias_m, u[157] = bias_d, u[158] = 3000.0f, u[159] = 0.3f;
     for (int c = 0; c < MAX_CASC; c++) u[160 + c * 4] = c < C.ncasc ? (float)C.layer[c] : 0;
+    u[192] = 1.5f, u[193] = ao_wanted() ? AO_RAYS : 0, u[194] = u[195] = 0;
+    // (b is the recorder thread's from here - run_rt frees it: what's needed of it after, read now)
+    VkImageView depth_view = b->depth_view, vis_view = b->vis_view;
+    float gl_depth = u[153];
     rec_call(run_rt, &b, sizeof b);
     C.last_tris = tris, C.last_casc = (uint32_t)C.ncasc, C.runs++;
     if (C.runs == 1 || C.runs % 3600 == 0)
@@ -737,13 +779,15 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
             "mask %ux%u, maps %ux%ux%u\n", (unsigned long long)C.frame, C.ndraws, C.nfol, C.missed, tris, C.ncasc, C.layer[0],
             C.layer[1], C.layer[2], w, h, C.map->width, C.map->height, C.map->layers);
     // the compose pass (exec.c): the rays' result, the game's mask, the depth
-    out->mask = mask, out->vis = &R.vis, out->copy = &R.copy, out->depth_view = b->depth_view;
+    out->mask = mask, out->vis = &R.vis, out->copy = &R.copy, out->depth_view = depth_view;
     memset(out->pc, 0, sizeof out->pc);
     static int view = -1;  // (testing: SAVAGEWIND_RTS_VIEW=1: the rays alone, the foliage lit)
     if (view < 0) view = getenv("SAVAGEWIND_RTS_VIEW") ? atoi(getenv("SAVAGEWIND_RTS_VIEW")) : 0;
     out->pc[0] = (float)view;
-    out->pc[1] = C.world[38], out->pc[2] = C.world[39], out->pc[3] = u[153];  // (the distance: B / (z + A))
+    out->pc[1] = C.world[38], out->pc[2] = C.world[39], out->pc[3] = gl_depth;  // (the distance: B / (z + A))
     out->pc[4] = C.missed ? 1.0f : 0.0f;  // (casters not traced this frame: the game's shadows kept as well)
+    AO.frame = C.frame, AO.vis = vis_view, AO.depth = depth_view;
+    AO.pc[0] = 0.85f, AO.pc[1] = C.world[38], AO.pc[2] = C.world[39], AO.pc[3] = gl_depth;  // (strength; the distance)
     return true;
 }
 
@@ -754,7 +798,8 @@ void rts_status(char *out, size_t n) {
     else if (!g_settings.rt_shadows) snprintf(out, n, "Off.");
     else if (R.tried && !R.ok) snprintf(out, n, "Not running: %s.", R.why);
     else if (!C.runs) snprintf(out, n, "On - waiting for the game's sun shadows (outdoors, in daylight).");
-    else snprintf(out, n, "On: %u triangles from %u cascades in the last frame traced.", C.last_tris, C.last_casc);
+    else snprintf(out, n, "On: shadows%s, %u triangles from %u cascades in the last frame traced.",
+                  ao_wanted() ? " and ambient occlusion" : "", C.last_tris, C.last_casc);
 }
 
 void rts_report(void) {

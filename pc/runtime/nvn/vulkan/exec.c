@@ -8337,7 +8337,7 @@ static TexBackend *fg_world_depth(const float *world_c3) {
 // interpolated frame; (WSword) NVIDIA DLSS frame generation's inputs as the window shows the game's image: 3 the
 // HUD-less image, 4 depth, 5 motion vectors (vk_dlssg_prepare)
 static TexBackend *fg_image(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage) {
-    static TexBackend img[7];  // (6: ReShade before the HUD, rs_pre_apply)
+    static TexBackend img[8];  // (6: ReShade before the HUD, rs_pre_apply; 7: ray-traced AO, rt_ao_apply)
     TexBackend *d = &img[i];
     if (d->image && (d->width != w || d->height != h || d->format != f)) {
         vk_views_forget(d);
@@ -8389,7 +8389,11 @@ static void fg_copy_hudless(void) {
 static void rs_pre_apply(void);
 static bool rs_pending;  // (the scene composited this frame: ReShade's effects on it before the next draw - the HUD)
 
+static void rt_ao_apply(void);
+static bool ao_pending;  // (0.3.13: the scene composited this frame - ray-traced ambient occlusion on it first)
+
 static void fg_before_draw(void) {
+    if (ao_pending) rt_ao_apply();
     if (rs_pending) rs_pre_apply();
     if (fg.copy_pending) fg_copy_hudless();
 }
@@ -8437,6 +8441,7 @@ static void fg_draw(Prog *pr, CmdRec *r) {
         fg.scene = t;
         fg.copy_pending = g_fg_want != 0;  // (after this draw: fg_before_draw)
         rs_pending = g_rs_pre != 0;
+        ao_pending = rts_on();
     }
 }
 
@@ -8535,7 +8540,8 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
     TexBackend *ob = fg.out_rt ? vk_tex(fg.out_rt, true) : NULL;
     bool same = ob && ob->width == b->width && ob->height == b->height && fg.present_format == unorm_of(b->format);
     fg.present_format = unorm_of(b->format);
-    if (rs_pending) rs_pre_apply();  // (nothing drawn after the composite)
+    if (ao_pending) rt_ao_apply();  // (nothing drawn after the composite)
+    if (rs_pending) rs_pre_apply();
     if (fg.copy_pending) fg_copy_hudless();
     uint64_t now = SDL_GetTicksNS();
     float frame_ms = fg.last_ns ? (float)((now - fg.last_ns) / 1e6) : 16.7f;
@@ -8721,7 +8727,7 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
     }
     fg.have_prev = ok;
     fg.ncand = 0;
-    fg.hudless_ok = fg.copy_pending = rs_pending = false;
+    fg.hudless_ok = fg.copy_pending = rs_pending = ao_pending = false;
     fg.out_rt = fg.scene = NULL;
     return out;
 }
@@ -9239,6 +9245,33 @@ static void rs_pre_run(const void *p) {
         static int told;
         if (!told++) LOG("[reshade] its effects before the HUD: no effect runtime yet (at the present until there is)\n");
     }
+}
+
+// (WSword 0.3.13) Ray-traced ambient occlusion (rtshadow.c: the shadows' rays' .b this frame) on the composited
+// scene (fg.out_rt), before the HUD, ReShade and frame generation: a copy of the scene, then the scene drawn again
+// from it darkened where the rays found the surface closed in (rt_ao.frag). It darkens the sun's light there as
+// well as the sky's (the game's lighting is done by then): the strength keeps it to 85%.
+static void rt_ao_apply(void) {
+    ao_pending = false;
+    VkImageView vis, dep;
+    float apc[4];
+    if (!rts_ao(&vis, &dep, apc)) return;
+    TexBackend *s = fg.out_rt ? vk_tex(fg.out_rt, true) : NULL;
+    if (!s || !s->image || s->aspect != VK_IMAGE_ASPECT_COLOR_BIT || s->layers != 1 || s->samples != 1) return;
+    vk_end_pass();
+    VkCommandBuffer cb = vk_cmd();
+    if (g_gpuprof_frame) gp_mark(cb, "ray-traced ambient occlusion");
+    TexBackend *t = fg_image(7, s->width, s->height, s->format, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    VkImageCopy ic = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                      .extent = {s->width, s->height, 1}};
+    vk_full_barrier(cb);
+    rec_CmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, t->image, VK_IMAGE_LAYOUT_GENERAL, 1, &ic);
+    vk_full_barrier(cb);
+    VkImageView srcs[3] = {post_view(t), vis, dep};
+    float pc[8] = {apc[0], apc[1], apc[2], apc[3], 0, 0, 0, 0};
+    post_pass(cb, "rt_ao.frag", srcs, 3, s, pc, false);
+    vk_full_barrier(cb);
+    vk_dyn_forget();
 }
 
 static void rs_pre_apply(void) {

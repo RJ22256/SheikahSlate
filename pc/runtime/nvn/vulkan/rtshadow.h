@@ -1,4 +1,4 @@
-// (WSword) Ray-traced sun shadows (rtshadow.c): Settings > Video > Ray-traced shadows, on GPUs with hardware ray
+// (WSword) Ray-traced sun shadows and ambient occlusion (rtshadow.c): Settings > Video > Ray-Tracing, on GPUs with hardware ray
 // tracing (g_vk.rt: acceleration structures, ray queries, transform feedback, push descriptors).
 //
 // What the game does (the ray tracing report, Ctrl+F9, of 0.3.7-pc.1 on an RTX 4070 SUPER): each frame it draws the
@@ -53,6 +53,9 @@ typedef struct {
 } RtsCompose;
 // scene_depth: the full-resolution depth the world camera (the one given as the mask's) drew into this frame
 bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c3), RtsCompose *out);
+// (0.3.13) This frame's ambient occlusion (the rays' result's .b, at the mask's size) and the scene depth beside it:
+// false when there is none this frame. pc: [0] the strength, [1..3] the distance (rts_mask.frag's dist)
+bool rts_ao(VkImageView *vis, VkImageView *depth, float pc[4]);
 // The GPU has hardware ray tracing (the device was made with it)
 bool rts_available(void);
 // Settings > Video: its state in words

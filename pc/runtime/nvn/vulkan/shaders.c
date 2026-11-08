@@ -1465,6 +1465,41 @@ static const char *builtin_src(const char *name, int *stage) {
                "  if (pc.b.w > 1.5) o = vec2(inbox ? 1.0 : 0.0, inbox && z >= pc.lk.x && z <= pc.lk.y ? 1.0 : 0.0);  // (debug)\n"
                "}\n";
     }
+    // (WSword 0.3.13) Ray-traced ambient occlusion on the composited scene (exec.c rt_ao_apply): t0 the scene (a copy),
+    // t1 the rays' result (.b the sky the surface sees; .g 1: no cascade there - none), t2 the scene depth; a 5 x 5
+    // depth-aware filter of it at this pixel's place, then the scene darkened by it (pc.a.x the strength; pc.a.yzw the
+    // distance as rts_mask.frag's dist)
+    if (!strcmp(name, "rt_ao.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D t1;\n"
+               "layout(set = 0, binding = 2) uniform sampler2D t2;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "float dist(float d) { float z = pc.a.w > 0.5 ? d * 2.0 - 1.0 : d; return pc.a.z / (z + pc.a.y); }\n"
+               "void main() {\n"
+               "  ivec2 op = ivec2(gl_FragCoord.xy), osz = textureSize(t0, 0);\n"
+               "  vec4 c = texelFetch(t0, op, 0);\n"
+               "  vec2 uv = (vec2(op) + 0.5) / vec2(osz);\n"
+               "  ivec2 sz = textureSize(t1, 0), dz = textureSize(t2, 0);\n"
+               "  ivec2 p = min(ivec2(uv * vec2(sz)), sz - 1);\n"
+               "  float d0 = dist(texelFetch(t2, min(ivec2(uv * vec2(dz)), dz - 1), 0).r);\n"
+               "  float acc = 0.0, ws = 0.0;\n"
+               "  for (int y = -2; y <= 2; y++)\n"
+               "    for (int x = -2; x <= 2; x++) {\n"
+               "      ivec2 q = clamp(p + ivec2(x, y), ivec2(0), sz - 1);\n"
+               "      vec4 v = texelFetch(t1, q, 0);\n"
+               "      ivec2 qd = min(ivec2((vec2(q) + 0.5) / vec2(sz) * vec2(dz)), dz - 1);\n"
+               "      float w = max(0.0, 1.0 - abs(dist(texelFetch(t2, qd, 0).r) - d0) / (0.02 * abs(d0) + 0.05));\n"
+               "      w *= exp(-0.25 * float(x * x + y * y));\n"
+               "      acc += (v.g > 0.5 ? 1.0 : v.b) * w;\n"
+               "      ws += w;\n"
+               "    }\n"
+               "  float ao = ws > 1e-4 ? acc / ws : 1.0;\n"
+               "  o = vec4(c.rgb * mix(1.0, ao, pc.a.x), c.a);\n"
+               "}\n";
+    }
     if (!strcmp(name, "clear.vert")) {
         *stage = STAGE_VERTEX;
         return "#version 450\n"

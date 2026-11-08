@@ -1041,12 +1041,13 @@ static void tab_display(void) {
         char st[300];
         rts_status(st, sizeof st);
         static std::string d;
-        d = std::string(tr("The sun's shadows traced with your graphics card's ray tracing (NVIDIA RTX, AMD Radeon RX 6000 "
-                           "and newer, Intel Arc), from the same objects the game's shadow maps have: sharp where things "
-                           "touch, softening with distance, without the maps' blur and shimmer. Leaves and grass keep the "
-                           "game's own shadows. Costs GPU time (a few milliseconds).")) + "\n\n" + tr(st);
+        d = std::string(tr("Your graphics card's ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and newer, Intel Arc) on the "
+                           "game's own objects: the sun's shadows traced - sharp where things touch, softening with "
+                           "distance, without the maps' blur and shimmer - and ambient occlusion: the shade in corners, "
+                           "under rocks and around Link where the sky's light can't reach. Costs GPU time (a few "
+                           "milliseconds).")) + "\n\n" + tr(st);
         if (!rts_available()) opt_disable_next();
-        opt_toggle("Ray-traced shadows", &g_settings.rt_shadows, false, d.c_str());
+        opt_toggle("Ray-Tracing", &g_settings.rt_shadows, false, d.c_str());
     }
     {   // Frame generation: AMD FSR 3 (vulkan/framegen.cpp), or (WSword) Lossless Scaling's from the player's own
         // Lossless.dll (vulkan/device.c lsfg_prepare). The frame rate counts the presented frames (framepace.c).

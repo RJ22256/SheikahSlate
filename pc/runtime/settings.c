@@ -152,7 +152,7 @@ void settings_load(void) {
         else if (!strcmp(key, "lossless_performance")) g_settings.lsfg_perf = atoi(val) != 0;
         else if (!strcmp(key, "reshade")) g_settings.reshade = !strcmp(val, "on");
         else if (!strcmp(key, "reshade_depth")) g_settings.reshade_own_depth = !strcmp(val, "reshade");
-        else if (!strcmp(key, "ray_traced_shadows")) g_settings.rt_shadows = !strcmp(val, "on");
+        else if (!strcmp(key, "ray_tracing") || !strcmp(key, "ray_traced_shadows")) g_settings.rt_shadows = !strcmp(val, "on");
         else if (!strcmp(key, "mods_off")) snprintf(g_settings.mods_off, sizeof g_settings.mods_off, "%s", val);
         else if (!strcmp(key, "dlss_frame_generation")) {  // (WSword: off | 2x | 3x | 4x)
             int n = atoi(val);
@@ -323,7 +323,7 @@ void settings_save(void) {
     fprintf(f, "mods_off = %s\n", g_settings.mods_off);
     fprintf(f, "reshade = %s\nreshade_depth = %s\n", g_settings.reshade ? "on" : "off",
             g_settings.reshade_own_depth ? "reshade" : "wsword");
-    fprintf(f, "ray_traced_shadows = %s\n", g_settings.rt_shadows ? "on" : "off");
+    fprintf(f, "ray_tracing = %s\n", g_settings.rt_shadows ? "on" : "off");  // (WSword 0.3.13; ray_traced_shadows before)
     if (g_settings.dlssg) fprintf(f, "dlss_frame_generation = %dx\n", g_settings.dlssg + 1);
     else fprintf(f, "dlss_frame_generation = off\n");
     fprintf(f, "lossless_flow = %d\nlossless_performance = %d\napp_icon = %d\n", g_settings.lsfg_flow, g_settings.lsfg_perf,
