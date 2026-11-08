@@ -17,6 +17,9 @@ uint64_t renderer_present_count(void);
 #define VERT 16         // bytes a captured vertex (vec4: the clip position, then the world position in place)
 #define RAYS 8          // per pixel, over the sun's disc (0.3.13: 8 - 4 left the penumbras grainy, the filter blurred them)
 #define AO_RAYS 6       // per pixel, ambient occlusion (0.3.13)
+#define PT_RAYS 6       // per pixel, path tracing's bounce light (0.3.16)
+#define PT_LEN 16.0f    // its rays' length, metres
+#define UBO_FLOATS 216  // trace_src's / pt_src's U
 
 typedef struct { VkBuffer buf; VkDeviceMemory mem; VkDeviceSize size; VkDeviceAddress addr; } RBuf;
 
@@ -42,6 +45,12 @@ static struct {
     RBuf blas_buf[MAX_CASC], tlas_buf, scratch, inst, ubo;
     VkAccelerationStructureKHR blas[MAX_CASC], tlas;
     TexBackend vis, copy;  // the rays' result (RGBA8, .r lit, .g through foliage) and a copy of the game's mask
+    // (0.3.16) path tracing's bounce light: made the first time it's on
+    bool pt_tried, pt_ok;
+    VkDescriptorSetLayout pt_set;
+    VkPipelineLayout pt_layout;
+    VkPipeline pt;
+    TexBackend gi;         // its result (RGBA16F at the mask's size: .rgb the light bounced to the pixel, .a the AO)
 } R;
 
 static struct {  // this frame's capture
@@ -163,6 +172,8 @@ static const char trace_src[] =
     "  vec4 bias;\n"        // x: metres; y: per metre of distance; z: the rays' length; w: foliage nearer is passed
     "  vec4 cl[8];\n"      // x: each cascade's layer in the maps
     "  vec4 aop;\n"        // x: ambient occlusion's rays' length (metres); y: its rays (0: none)
+    "  mat4 vp;\n"         // (0.3.16) the world camera's: the world to its clip (pt_src)
+    "  vec4 ptp;\n"        // x: path tracing's rays' length; y: its rays
     "} u;\n"
     // A candidate hit on alpha-tested foliage at H blocks the ray where the game's own map of that cascade - drawn
     // with the leaves' cut-outs - has a surface at least as near the light as H there (within 25 cm): the cut-out was
@@ -252,6 +263,94 @@ static const char trace_src[] =
     "  }\n"
     "  float ao = na > 0 ? 1.0 - occ / float(na) : 1.0;\n"
     "  imageStore(vis, px, vec4(lit / float(n), fol / float(n), ao, 0.0));\n"
+    "}\n";
+
+// (0.3.16) Path tracing's bounce light, at the composited scene (before the HUD): for each pixel of the rays' result's
+// size, PT_RAYS rays over the hemisphere around its normal (cosine-weighted) against its cascade's opaque geometry, as
+// far as PT_LEN. Where one meets a surface the camera sees - the scene's depth there is that surface - the light it
+// gives back is the scene's colour there (the game lit it: sun, sky, its own lights, the ray-traced shadows); a ray
+// to the sky brings nothing (the game's own ambient light is the sky's); a ray to a surface out of view or hidden
+// isn't counted. .rgb: the mean light of the rays counted; .a: the ambient occlusion (the rays' result's, resolved).
+static const char pt_src[] =
+    "#version 460\n"
+    "#extension GL_EXT_ray_query : require\n"
+    "layout(local_size_x = 8, local_size_y = 8) in;\n"
+    "layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;\n"
+    "layout(set = 0, binding = 1) uniform sampler2D dep;\n"
+    "layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D gi;\n"
+    "layout(set = 0, binding = 3, std140) uniform U {\n"
+    "  mat4 inv_vp; mat4 casc[8]; vec4 sun; vec4 cam; vec4 p; vec4 bias; vec4 cl[8]; vec4 aop; mat4 vp; vec4 ptp;\n"
+    "} u;\n"
+    "layout(set = 0, binding = 4) uniform sampler2D col;\n"   // the composited scene (linear filtering off: nearest)
+    "layout(set = 0, binding = 5) uniform sampler2D vis;\n"   // the rays' result (.g: no cascade; .b: the AO)
+    "float depth_uv(vec2 uv) {\n"
+    "  ivec2 dz = textureSize(dep, 0);\n"
+    "  return texelFetch(dep, clamp(ivec2(uv * vec2(dz)), ivec2(0), dz - 1), 0).r;\n"
+    "}\n"
+    "vec3 world_uv(vec2 uv, float d) {\n"
+    "  vec4 c = vec4(uv.x * 2.0 - 1.0, (uv.y * 2.0 - 1.0) * u.p.x, u.p.y > 0.5 ? d * 2.0 - 1.0 : d, 1.0);\n"
+    "  vec4 w = c * u.inv_vp;\n"
+    "  return w.xyz / w.w;\n"
+    "}\n"
+    "vec3 world(ivec2 px, ivec2 sz) {\n"
+    "  px = clamp(px, ivec2(0), sz - 1);\n"
+    "  vec2 uv = (vec2(px) + 0.5) / vec2(sz);\n"
+    "  return world_uv(uv, depth_uv(uv));\n"
+    "}\n"
+    "void main() {\n"
+    "  ivec2 sz = imageSize(gi), px = ivec2(gl_GlobalInvocationID.xy);\n"
+    "  if (px.x >= sz.x || px.y >= sz.y) return;\n"
+    "  vec4 v = texelFetch(vis, min(px, textureSize(vis, 0) - 1), 0);\n"
+    "  float ao = v.g > 0.5 ? 1.0 : v.b;\n"
+    "  vec2 uv0 = (vec2(px) + 0.5) / vec2(sz);\n"
+    "  float d = depth_uv(uv0);\n"
+    "  if (d >= 0.999999) { imageStore(gi, px, vec4(0.0, 0.0, 0.0, 1.0)); return; }\n"
+    "  vec3 P = world_uv(uv0, d);\n"
+    "  vec3 pr = world(px + ivec2(1, 0), sz), pl = world(px - ivec2(1, 0), sz);\n"
+    "  vec3 pd = world(px + ivec2(0, 1), sz), pu = world(px - ivec2(0, 1), sz);\n"
+    "  vec3 dx = length(pr - P) < length(P - pl) ? pr - P : P - pl;\n"
+    "  vec3 dy = length(pd - P) < length(P - pu) ? pd - P : P - pu;\n"
+    "  vec3 V = u.cam.xyz - P;\n"
+    "  vec3 N = cross(dx, dy);\n"
+    "  N = dot(N, N) > 1e-20 ? normalize(N) : normalize(V);\n"
+    "  if (dot(N, V) < 0.0) N = -N;\n"
+    "  int c = -1;\n"
+    "  for (int i = 0; i < int(u.p.z) && c < 0; i++) {\n"
+    "    vec4 q = vec4(P, 1.0) * u.casc[i];\n"
+    "    if (q.w > 0.0 && abs(q.x) < q.w * 0.995 && abs(q.y) < q.w * 0.995) c = i;\n"
+    "  }\n"
+    "  if (c < 0) { imageStore(gi, px, vec4(0.0, 0.0, 0.0, ao)); return; }\n"
+    "  float b = u.bias.x + length(V) * u.bias.y;\n"
+    "  vec3 O = P + N * b;\n"
+    "  vec3 T = normalize(cross(abs(N.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), N));\n"
+    "  vec3 B = cross(N, T);\n"
+    "  float a0 = 6.2831853 * fract(52.9829189 * fract(dot(vec2(px), vec2(0.06711056, 0.00583715))));\n"
+    "  int n = int(u.ptp.y);\n"
+    "  vec3 acc = vec3(0.0);\n"
+    "  float counted = 0.0;\n"
+    "  for (int k = 0; k < n; k++) {\n"
+    "    float e = (float(k) + 0.5) / float(n), ang = a0 + float(k) * 2.39996323;\n"
+    "    float s = sqrt(e), z = sqrt(max(0.0, 1.0 - e));\n"
+    "    vec3 D = normalize(T * (cos(ang) * s) + B * (sin(ang) * s) + N * z);\n"
+    "    rayQueryEXT q;\n"
+    "    rayQueryInitializeEXT(q, tlas, gl_RayFlagsCullNoOpaqueEXT, 1u << c, O, 0.0, D, u.ptp.x);\n"
+    "    while (rayQueryProceedEXT(q)) {}\n"
+    "    if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) { counted += 1.0; continue; }\n"
+    "    float t = rayQueryGetIntersectionTEXT(q, true);\n"
+    "    vec3 H = O + D * t;\n"
+    "    vec4 hc = vec4(H, 1.0) * u.vp;\n"
+    "    if (hc.w <= 1e-4) continue;\n"
+    "    vec2 huv = vec2(hc.x / hc.w * 0.5 + 0.5, hc.y / hc.w * u.p.x * 0.5 + 0.5);\n"
+    "    if (any(lessThan(huv, vec2(0.0))) || any(greaterThan(huv, vec2(1.0)))) continue;\n"
+    "    float hd = depth_uv(huv);\n"
+    "    if (hd >= 0.999999) continue;\n"
+    "    vec3 S = world_uv(huv, hd);\n"
+    "    if (length(S - H) > 0.05 * length(H - u.cam.xyz) + 0.3) continue;\n"  // (hidden behind something else)
+    "    vec3 L = min(textureLod(col, huv, 0.0).rgb, vec3(4.0));\n"
+    "    acc += L;\n"
+    "    counted += 1.0;\n"
+    "  }\n"
+    "  imageStore(gi, px, vec4(counted > 0.0 ? acc / counted : vec3(0.0), ao));\n"
     "}\n";
 
 static VkPipeline compute_pipeline(const char *src, const char *name, VkPipelineLayout layout) {
@@ -527,7 +626,7 @@ typedef struct {
     VkAccelerationStructureBuildRangeInfoKHR trange;
     VkAccelerationStructureInstanceKHR inst[MAX_CASC];
     int ninst;
-    float ubo[196];
+    float ubo[UBO_FLOATS];
     VkImageView depth_view, vis_view, map_view;
     VkImage mask, copy;
     uint32_t w, h;
@@ -608,7 +707,7 @@ static void run_rt(const void *p) {
 }
 
 // (0.3.13) Ambient occlusion with the shadows' rays (trace_src's .b), put on the composited scene (exec.c rt_ao_apply)
-static struct { uint64_t frame; VkImageView vis, depth; float pc[4]; } AO;
+static struct { uint64_t frame; VkImageView vis, depth; float pc[4]; VkAccelerationStructureKHR tlas; VkBuffer ubo; } AO;
 static bool ao_wanted(void) {
     static int ao = -1;  // (SAVAGEWIND_RT_AO=0: none)
     if (ao < 0) ao = !(getenv("SAVAGEWIND_RT_AO") && !strcmp(getenv("SAVAGEWIND_RT_AO"), "0"));
@@ -769,6 +868,8 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
     u[156] = bias_m, u[157] = bias_d, u[158] = 3000.0f, u[159] = 0.3f;
     for (int c = 0; c < MAX_CASC; c++) u[160 + c * 4] = c < C.ncasc ? (float)C.layer[c] : 0;
     u[192] = 1.5f, u[193] = ao_wanted() ? AO_RAYS : 0, u[194] = u[195] = 0;
+    for (int i = 0; i < 16; i++) u[196 + i] = C.world[12 + i];  // (0.3.16: the world camera's own, for path tracing)
+    u[212] = PT_LEN, u[213] = PT_RAYS, u[214] = u[215] = 0;
     // (b is the recorder thread's from here - run_rt frees it: what's needed of it after, read now)
     VkImageView depth_view = b->depth_view, vis_view = b->vis_view;
     float gl_depth = u[153];
@@ -787,7 +888,97 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
     out->pc[1] = C.world[38], out->pc[2] = C.world[39], out->pc[3] = gl_depth;  // (the distance: B / (z + A))
     out->pc[4] = C.missed ? 1.0f : 0.0f;  // (casters not traced this frame: the game's shadows kept as well)
     AO.frame = C.frame, AO.vis = vis_view, AO.depth = depth_view;
+    AO.tlas = R.tlas, AO.ubo = R.ubo.buf;
     AO.pc[0] = 0.85f, AO.pc[1] = C.world[38], AO.pc[2] = C.world[39], AO.pc[3] = gl_depth;  // (strength; the distance)
+    return true;
+}
+
+// ---------------------------------------------------------------- (0.3.16) path tracing's bounce light
+
+static bool pt_setup(void) {
+    if (R.pt_tried) return R.pt_ok;
+    R.pt_tried = true;
+    VkDescriptorSetLayoutBinding tb[6] = {
+        {0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+    VkDescriptorSetLayoutCreateInfo tl = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                          .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR, .bindingCount = 6,
+                                          .pBindings = tb};
+    if (vkCreateDescriptorSetLayout(g_vk.dev, &tl, NULL, &R.pt_set) != VK_SUCCESS) return false;
+    VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                     .pSetLayouts = &R.pt_set};
+    if (vkCreatePipelineLayout(g_vk.dev, &pl, NULL, &R.pt_layout) != VK_SUCCESS) return false;
+    R.pt = compute_pipeline(pt_src, "rts_pt.comp", R.pt_layout);
+    if (!R.pt) {
+        LOG("[rts] path tracing's shader failed to compile: Ray-Tracing without it\n");
+        return false;
+    }
+    LOG("[rts] path tracing ready (%d rays a pixel, %.0f m)\n", PT_RAYS, PT_LEN);
+    return R.pt_ok = true;
+}
+
+static float pt_strength(void) {
+    static float k = -1;  // (testing: SAVAGEWIND_PT_GI=<strength>, 0: none)
+    if (k < 0) k = getenv("SAVAGEWIND_PT_GI") ? (float)atof(getenv("SAVAGEWIND_PT_GI")) : 0.8f;
+    return k;
+}
+
+bool rts_pt_on(void) { return g_settings.path_tracing && rts_on() && pt_strength() > 0 && !(R.pt_tried && !R.pt_ok); }
+
+typedef struct {
+    VkCommandBuffer cb;
+    VkAccelerationStructureKHR tlas;
+    VkBuffer ubo;
+    VkImageView depth, gi, color, vis;
+    uint32_t w, h;
+} PtBlock;
+
+static void run_pt(const void *p) {
+    const PtBlock *b = (const PtBlock *)p;
+    barrier(b->cb, ALL, VK_ACCESS_2_MEMORY_WRITE_BIT, ALL, RW);
+    vkCmdBindPipeline(b->cb, VK_PIPELINE_BIND_POINT_COMPUTE, R.pt);
+    VkWriteDescriptorSetAccelerationStructureKHR wa = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+                                                       .accelerationStructureCount = 1, .pAccelerationStructures = &b->tlas};
+    VkDescriptorImageInfo di = {R.nearest, b->depth, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo gi = {VK_NULL_HANDLE, b->gi, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorBufferInfo ui = {b->ubo, 0, UBO_FLOATS * 4};
+    VkDescriptorImageInfo ci = {R.nearest, b->color, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo vi = {R.nearest, b->vis, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w[6] = {
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = &wa, .dstBinding = 0, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &di},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 2, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &gi},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 3, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &ui},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 4, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ci},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 5, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &vi}};
+    R.push_set(b->cb, VK_PIPELINE_BIND_POINT_COMPUTE, R.pt_layout, 0, 6, w);
+    vkCmdDispatch(b->cb, (b->w + 7) / 8, (b->h + 7) / 8, 1);
+    barrier(b->cb, ALL, VK_ACCESS_2_MEMORY_WRITE_BIT, ALL, RW);
+}
+
+bool rts_pt(VkCommandBuffer cb, VkImageView color, VkImageView *gi, float *strength) {
+    if (!rts_pt_on() || AO.frame != renderer_present_count() || !AO.vis || !AO.depth || !AO.tlas || !R.vis.image) return false;
+    if (!pt_setup()) return false;
+    if (!own_image(&R.gi, R.vis.width, R.vis.height, VK_FORMAT_R16G16B16A16_SFLOAT,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+        return false;
+    static const VkComponentMapping id = {0};
+    PtBlock b = {.cb = cb, .tlas = AO.tlas, .ubo = AO.ubo, .depth = AO.depth, .color = color, .vis = AO.vis,
+                 .w = R.gi.width, .h = R.gi.height};
+    b.gi = vk_image_view(&R.gi, VK_IMAGE_VIEW_TYPE_2D, R.gi.format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    rec_call(run_pt, &b, sizeof b);
+    *gi = b.gi;
+    *strength = pt_strength();
     return true;
 }
 
@@ -798,8 +989,10 @@ void rts_status(char *out, size_t n) {
     else if (!g_settings.rt_shadows) snprintf(out, n, "Off.");
     else if (R.tried && !R.ok) snprintf(out, n, "Not running: %s.", R.why);
     else if (!C.runs) snprintf(out, n, "On - waiting for the game's sun shadows (outdoors, in daylight).");
-    else snprintf(out, n, "On: shadows%s, %u triangles from %u cascades in the last frame traced.",
-                  ao_wanted() ? " and ambient occlusion" : "", C.last_tris, C.last_casc);
+    else snprintf(out, n, "On: shadows%s%s, %u triangles from %u cascades in the last frame traced.",
+                  ao_wanted() ? ", ambient occlusion" : "",
+                  !g_settings.path_tracing ? "" : R.pt_tried && !R.pt_ok ? " (path tracing failed to start)" : " and path-traced bounce light",
+                  C.last_tris, C.last_casc);
 }
 
 void rts_report(void) {

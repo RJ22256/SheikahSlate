@@ -83,6 +83,7 @@ typedef struct {
     bool reshade_own_depth;
     // (WSword) Ray-Tracing (vulkan/rtshadow.c): the sun's shadows and ambient occlusion, GPUs with hardware ray tracing
     bool rt_shadows;
+    bool path_tracing;  // (WSword 0.3.16) with Ray-Tracing: the bounce light traced (nvn/vulkan/rtshadow.c rts_pt)
     char mods_off[512];  // (WSword) game mods turned off (runtime/mods.c: their folder names, separated by '|')
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect

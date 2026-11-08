@@ -167,6 +167,7 @@ WSword loads your own ReShade itself, with no installer. ReShade isn't included 
 On graphics cards with hardware ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and newer, Intel Arc): Settings > Video > **Ray-Tracing** (called Ray-traced shadows before 0.3.14-pc.1; your setting carries over). It turns on and off in the game, and **F6** turns it on and off while you play (a notice at the top says which). It traces the sun's shadows and ambient occlusion.
 
 - **Ambient occlusion** (new in 0.3.14-pc.1): short rays from each surface find where the sky's light is closed off - corners, under rocks and overhangs, where things meet the ground, around Link - and shade it there. It's put on the game's finished picture before the HUD (so ReShade and frame generation see it), and as far as the game's shadows reach. Grass and leaves don't take part in it. `SAVAGEWIND_RT_AO=0`: none.
+- **Path tracing** (new in 0.3.16-pc.1, under Ray-Tracing, off by default): light bounced between surfaces. From each surface, rays go out over the half of the sky it faces; where one meets another surface that's on screen, that surface's light comes back in its colour - sunlit ground lightening the shade next to it, a coloured wall tinting what's close. It only knows the light of what's on screen, and works where Ray-Tracing does. A few milliseconds more of GPU time. `SAVAGEWIND_PT_GI=<strength>` (0.8 by default; 0: none).
 
 - **What it does:** the sun's shadows are traced from the same objects the game draws into its shadow maps. They're sharp where things touch and soften with distance, without the maps' blur, blockiness and shimmer.
 - **Trees, bushes and grass:** traced too. Their leaves are cut-out textures: a ray is blocked where the leaf is solid, read from the game's own shadow map of the same spot, and goes on through its gaps. Grass right where a pixel stands lets the rays through.
@@ -196,6 +197,7 @@ Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
+- **New in 0.3.16-pc.1:** Settings > Video > Ray-Tracing > **Path tracing**: light bouncing between surfaces, traced (experimental).
 - **New in 0.3.15-pc.1:** the Glass Slate 2 look: WSword Configuration's home with a page rail, your newest saves and what's on; Ray-Tracing first on Settings > Video, with its F6; quick toggles in the in-game menu (F1); the first setup's steps.
 - **New in 0.3.14-pc.1:** Settings > Video > **Ray-Tracing** (was Ray-traced shadows): ray-traced ambient occlusion with the shadows, and sharper, cleaner ray-traced shadows (the sun's real size, twice the rays).
 - **New in 0.3.13-pc.1:**

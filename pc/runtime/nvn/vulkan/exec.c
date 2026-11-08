@@ -9269,7 +9269,13 @@ static void rt_ao_apply(void) {
     vk_full_barrier(cb);
     VkImageView srcs[3] = {post_view(t), vis, dep};
     float pc[8] = {apc[0], apc[1], apc[2], apc[3], 0, 0, 0, 0};
-    post_pass(cb, "rt_ao.frag", srcs, 3, s, pc, false);
+    // (0.3.16) path tracing: the bounce light traced from the scene just copied, then put on it with the AO
+    VkImageView gi;
+    float k;
+    bool pt = rts_pt(cb, srcs[0], &gi, &k);
+    if (pt) srcs[1] = gi, pc[4] = k;
+    if (g_gpuprof_frame && pt) gp_mark(cb, "path-traced bounce light");
+    post_pass(cb, pt ? "rt_pt.frag" : "rt_ao.frag", srcs, 3, s, pc, false);
     vk_full_barrier(cb);
     vk_dyn_forget();
 }

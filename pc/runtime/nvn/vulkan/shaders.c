@@ -1500,6 +1500,47 @@ static const char *builtin_src(const char *name, int *stage) {
                "  o = vec4(c.rgb * mix(1.0, ao, pc.a.x), c.a);\n"
                "}\n";
     }
+    // (0.3.16) Path tracing (rtshadow.c pt_src): t1's .rgb the light bounced to each pixel, .a its AO - both filtered
+    // over 5 x 5 of t1's pixels where the depth is alike (as rt_ao.frag) - and the bounce lit by the surface's own
+    // colour: the scene's, its brightness taken out (the lit colour's hue and a share of its strength; dark ones stay
+    // darker), times the strength pc.b.x.
+    if (!strcmp(name, "rt_pt.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D t1;\n"
+               "layout(set = 0, binding = 2) uniform sampler2D t2;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "float dist(float d) { float z = pc.a.w > 0.5 ? d * 2.0 - 1.0 : d; return pc.a.z / (z + pc.a.y); }\n"
+               "void main() {\n"
+               "  ivec2 op = ivec2(gl_FragCoord.xy), osz = textureSize(t0, 0);\n"
+               "  vec4 c = texelFetch(t0, op, 0);\n"
+               "  vec2 uv = (vec2(op) + 0.5) / vec2(osz);\n"
+               "  ivec2 sz = textureSize(t1, 0), dz = textureSize(t2, 0);\n"
+               "  ivec2 p = min(ivec2(uv * vec2(sz)), sz - 1);\n"
+               "  float dr = texelFetch(t2, min(ivec2(uv * vec2(dz)), dz - 1), 0).r;\n"
+               "  if (dr >= 0.999999) { o = c; return; }\n"
+               "  float d0 = dist(dr);\n"
+               "  vec4 acc = vec4(0.0);\n"
+               "  float ws = 0.0;\n"
+               "  for (int y = -2; y <= 2; y++)\n"
+               "    for (int x = -2; x <= 2; x++) {\n"
+               "      ivec2 q = clamp(p + ivec2(x, y), ivec2(0), sz - 1);\n"
+               "      vec4 v = texelFetch(t1, q, 0);\n"
+               "      ivec2 qd = min(ivec2((vec2(q) + 0.5) / vec2(sz) * vec2(dz)), dz - 1);\n"
+               "      float w = max(0.0, 1.0 - abs(dist(texelFetch(t2, qd, 0).r) - d0) / (0.02 * abs(d0) + 0.05));\n"
+               "      w *= exp(-0.18 * float(x * x + y * y));\n"
+               "      acc += v * w;\n"
+               "      ws += w;\n"
+               "    }\n"
+               "  vec4 g = ws > 1e-4 ? acc / ws : vec4(0.0, 0.0, 0.0, 1.0);\n"
+               "  vec3 lit = c.rgb * mix(1.0, g.a, pc.a.x);\n"
+               "  float m = max(c.r, max(c.g, c.b));\n"
+               "  vec3 albedo = 0.75 * c.rgb / max(m, 0.4);\n"
+               "  o = vec4(lit + albedo * g.rgb * pc.b.x * mix(1.0, g.a, 0.5), c.a);\n"
+               "}\n";
+    }
     if (!strcmp(name, "clear.vert")) {
         *stage = STAGE_VERTEX;
         return "#version 450\n"
