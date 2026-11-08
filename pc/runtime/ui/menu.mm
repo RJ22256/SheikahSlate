@@ -18,6 +18,7 @@
 #include "option_rows.h"
 #include "saves_tab.h"
 #include "mods_tab.h"
+#include "../mods.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "console.h"
@@ -744,6 +745,23 @@ static void tab_colour(void) {
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
+#ifndef __APPLE__
+    // (0.3.15, Glass Slate 2) Ray-Tracing first on the page, as a card: the switch and its F6
+    {   // (WSword) ray-traced sun shadows (vulkan/rtshadow.c): GPUs with hardware ray tracing
+        char st[300];
+        rts_status(st, sizeof st);
+        static std::string d;
+        d = std::string(tr("Your graphics card's ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and newer, Intel Arc) on the "
+                           "game's own objects: the sun's shadows traced - sharp where things touch, softening with "
+                           "distance, without the maps' blur and shimmer - and ambient occlusion: the shade in corners, "
+                           "under rocks and around Link where the sky's light can't reach. Costs GPU time (a few "
+                           "milliseconds). F6 in the game turns it on and off.")) + "\n\n" + tr(st);
+        if (!rts_available()) opt_disable_next();
+        opt_hero_next(rts_available() ? "Ray-traced sun shadows and ambient occlusion on the game's own objects."
+                                      : "Needs a graphics card with hardware ray tracing.", "F6");
+        opt_toggle("Ray-Tracing", &g_settings.rt_shadows, false, d.c_str());
+    }
+#endif
     {   // (WSword) Mode: the start screen card's sets of the options below (settings.c mode_into); Custom when they
         // match none - shown, never picked
         opt_section("Mode");
@@ -1053,18 +1071,6 @@ static void tab_display(void) {
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
 #ifndef __APPLE__
-    {   // (WSword) ray-traced sun shadows (vulkan/rtshadow.c): GPUs with hardware ray tracing
-        char st[300];
-        rts_status(st, sizeof st);
-        static std::string d;
-        d = std::string(tr("Your graphics card's ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and newer, Intel Arc) on the "
-                           "game's own objects: the sun's shadows traced - sharp where things touch, softening with "
-                           "distance, without the maps' blur and shimmer - and ambient occlusion: the shade in corners, "
-                           "under rocks and around Link where the sky's light can't reach. Costs GPU time (a few "
-                           "milliseconds). F6 in the game turns it on and off.")) + "\n\n" + tr(st);
-        if (!rts_available()) opt_disable_next();
-        opt_toggle("Ray-Tracing", &g_settings.rt_shadows, false, d.c_str());
-    }
     {   // Frame generation: AMD FSR 3 (vulkan/framegen.cpp), or (WSword) Lossless Scaling's from the player's own
         // Lossless.dll (vulkan/device.c lsfg_prepare). The frame rate counts the presented frames (framepace.c).
         opt_section("Frame generation");
@@ -1587,6 +1593,75 @@ static bool glass_button(const char *label, ImVec2 size, float scale) {
 static bool g_settings_back;  // (the start screen's Settings: BACK on the rail - launcher.mm closes the page)
 bool menu_settings_back_requested() { bool back = g_settings_back; g_settings_back = false; return back; }
 
+// (WSword 0.3.15, Glass Slate 2) In the game, beside the page's title: quick toggles - Ray-Tracing (F6), frame
+// generation (off / the last one on), ReShade (from the next start), the performance overlay (F10's three steps) -
+// pills, lit when on, right-aligned in [a, b]; the ones that don't fit are left out (Settings' pages have them all)
+static void quick_toggles(ImDrawList *dl, ImVec2 a, ImVec2 b, float scale) {
+    struct Q { const char *id; std::string text; bool on, enabled; int what; };
+    std::vector<Q> q;
+#ifndef __APPLE__
+    q.push_back({"##qrt", tr("Ray-Tracing"), g_settings.rt_shadows && rts_available(), rts_available(), 0});
+    int fv = g_settings.dlssg > 0 ? 4 + g_settings.dlssg : g_settings.lsfg > 0 ? 1 + g_settings.lsfg : g_settings.frame_gen ? 1 : 0;
+    static int fg_last = 1;  // (the frame generation turned back on: the last one on this session, else AMD FSR 3)
+    if (fv) fg_last = fv;
+    static const char *const fgs[] = {"Frame gen", "FSR 3", "Lossless 2x", "Lossless 3x", "Lossless 4x", "DLSS 2x", "DLSS 3x", "DLSS 4x"};
+    q.push_back({"##qfg", fv ? std::string(tr(fgs[fv < 8 ? fv : 0])) + (fv >= 5 ? std::string(" \xc2\xb7 ") + tr("restart") : "")
+                             : std::string(tr("Frame gen")),
+                 fv != 0, true, 1});
+    static int rs_start = -1;  // (ReShade loads at WSword's start: a change shows "next start")
+    if (rs_start < 0) rs_start = g_settings.reshade;
+    q.push_back({"##qrs", std::string("ReShade") + ((int)g_settings.reshade != rs_start ? std::string(" \xc2\xb7 ") + tr("next start") : ""),
+                 g_settings.reshade, true, 2});
+#endif
+    static const char *const po[] = {"FPS counter", "FPS counter", "Full overlay"};
+    q.push_back({"##qpo", tr(po[g_settings.perf_overlay % 3]), g_settings.perf_overlay != 0, true, 3});
+    float fs = ImGui::GetFontSize() * 0.66f, h = fminf(44 * scale, (b.y - a.y) * 0.8f), gap = 8 * scale, cy = (a.y + b.y) * 0.5f;
+    float x = b.x;
+    for (int i = (int)q.size() - 1; i >= 0; i--) {
+        float w = ImGui::CalcTextSize(q[i].text.c_str()).x * 0.66f + 30 * scale;
+        if (x - w < a.x) break;
+        x -= w;
+        ImGui::SetCursorScreenPos(ImVec2(x, cy - h * 0.5f));
+        ImGui::BeginDisabled(!q[i].enabled);
+        ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+        bool clicked = ImGui::InvisibleButton(q[i].id, ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+        ImGui::PopStyleColor();
+        bool hot = q[i].enabled && ((ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible) || ImGui::IsItemHovered());
+        ImGui::EndDisabled();
+        ImVec2 p0(x, cy - h * 0.5f), p1(x + w, cy + h * 0.5f);
+        dl->AddRectFilled(p0, p1, q[i].on ? IM_COL32(94, 230, 245, 255) : IM_COL32(20, 40, 66, 255), h * 0.5f);
+        if (!q[i].on) dl->AddRect(p0, p1, IM_COL32(94, 230, 245, q[i].enabled ? 90 : 35), h * 0.5f, 0, 1.2f * scale);
+        if (hot) dl->AddRect(ImVec2(p0.x - 3 * scale, p0.y - 3 * scale), ImVec2(p1.x + 3 * scale, p1.y + 3 * scale),
+                             IM_COL32(234, 242, 250, 255), h * 0.5f + 3 * scale, 0, 1.6f * scale);
+        ImU32 fg = !q[i].enabled ? IM_COL32(110, 125, 140, 255) : q[i].on ? IM_COL32(6, 36, 48, 255) : IM_COL32(207, 227, 241, 255);
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(x + 15 * scale, cy - fs * 0.6f), fg, q[i].text.c_str());
+        if (clicked && q[i].enabled) {
+            switch (q[i].what) {
+#ifndef __APPLE__
+            case 0:
+                g_settings.rt_shadows = !g_settings.rt_shadows;
+                break;
+            case 1: {
+                int nv = fv ? 0 : fg_last;
+                g_settings.frame_gen = nv == 1;
+                g_settings.lsfg = nv >= 2 && nv <= 4 ? nv - 1 : 0;
+                g_settings.dlssg = nv >= 5 ? nv - 4 : 0;
+                break;
+            }
+            case 2:
+                g_settings.reshade = !g_settings.reshade;
+                break;
+#endif
+            case 3:
+                g_settings.perf_overlay = (g_settings.perf_overlay + 1) % 3;
+                break;
+            }
+            settings_save();
+        }
+        x -= gap;
+    }
+}
+
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     // (id: the page; -1 = Files, the start screen's first)
     struct Tab { const char *name; int id; bool on; };
@@ -1677,6 +1752,31 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             float isz = 16 * scale, cy = a.y + th * 0.5f;
             settings_icon(dl, t.id, ImVec2(a.x + 24 * scale + isz, cy), isz, icol, scale);
             dl->AddText(ImVec2(a.x + 24 * scale + isz * 2 + 20 * scale, cy - fs * 0.5f), col, tr(t.name));
+            {   // (0.3.15, Glass Slate 2) a badge at the tile's right: what's on there
+                char badge[32] = "";
+                bool lit = false;
+#ifndef __APPLE__
+                if (t.id == 0 && g_settings.rt_shadows && rts_available()) snprintf(badge, sizeof badge, "RT"), lit = true;
+#endif
+                if (t.id == 4) {
+                    static int on = -1, all = 0;
+                    static double at = -10;
+                    if (ImGui::GetTime() - at > 1) {
+                        at = ImGui::GetTime();
+                        ModInfo mi[MODS_MAX];
+                        all = mods_list(mi, MODS_MAX), on = 0;
+                        for (int k = 0; k < all; k++) on += mi[k].on;
+                    }
+                    if (all > 0) snprintf(badge, sizeof badge, "%d/%d", on, all);
+                }
+                if (badge[0]) {
+                    float bfs = fs * 0.62f, bw = ImGui::CalcTextSize(badge).x * 0.62f + 16 * scale, bh = bfs * 1.6f;
+                    ImVec2 b0(b.x - 16 * scale - bw, cy - bh * 0.5f), b1(b.x - 16 * scale, cy + bh * 0.5f);
+                    dl->AddRectFilled(b0, b1, lit ? cyan : IM_COL32(30, 50, 67, 255), bh * 0.5f);
+                    dl->AddText(ImGui::GetFont(), bfs, ImVec2(b0.x + 8 * scale, cy - bfs * 0.6f),
+                                lit ? IM_COL32(6, 36, 48, 255) : IM_COL32(201, 214, 226, 255), badge);
+                }
+            }
             ImGui::PopID();
         }
         float bh = 62 * scale, y_back = ImGui::GetWindowHeight() - bh - 2 * scale;  // (BACK at the rail's foot)
@@ -1699,6 +1799,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         float ts = g_font_big->FontSize * ImGui::GetIO().FontGlobalScale * 0.8f, hh = fmaxf(62 * scale, ts * 1.25f);
         float cw = ImGui::GetContentRegionAvail().x;
         dl->AddText(g_font_big, ts, ImVec2(p.x + 4 * scale, p.y + (hh - ts * 1.1f) * 0.5f), ink, tr(open_name));
+        if (in_game) quick_toggles(dl, ImVec2(p.x + 4 * scale + g_font_big->CalcTextSizeA(ts, FLT_MAX, 0, tr(open_name)).x + 24 * scale, p.y),
+                                   ImVec2(p.x + cw, p.y + hh), scale);
         ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + hh + 12 * scale));
         dl->AddLine(ImVec2(p.x, p.y + hh + 6 * scale), ImVec2(p.x + cw, p.y + hh + 6 * scale), rule, 1.2f * scale);
         ImGui::Dummy(ImVec2(cw, 6 * scale));

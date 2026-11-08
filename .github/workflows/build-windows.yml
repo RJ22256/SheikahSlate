@@ -160,7 +160,7 @@ jobs:
                 find "$D" -iname 'botwgame*'; find "$D" -iname 'Lossless*.dll'; find "$D" -iname 'splash*'; find "$D" -iname 'nvngx*'; find "$D" -iname 'ReShade*.dll')
           [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
           for f in WSword.exe WSword.dll.a "WSword Configuration.exe" LICENSE.txt WSword-PC-guide.md swgen/swgen.exe zig/zig.exe \
-                   Inter-Medium.otf Inter-Bold.otf launcher-background.png app-icon-forest.png lsfg-vk-LICENSE.md \
+                   Inter-Medium.otf Inter-Bold.otf ChakraPetch-Bold.ttf ChakraPetch-OFL.txt launcher-background.png app-icon-forest.png lsfg-vk-LICENSE.md \
                    wsword_dlss.dll NVIDIA-DLSS-LICENSE.txt streamline/sl.interposer.dll streamline/sl.dlss_g.dll \
                    streamline/sl.common.dll streamline/sl.reflex.dll streamline/sl.pcl.dll; do
             [ -e "$D/$f" ] || { echo "::error::missing: $f"; exit 1; }

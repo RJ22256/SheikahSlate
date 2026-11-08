@@ -47,6 +47,10 @@ static bool g_focus_req, g_take_first;  // (opt_focus_first: requested / this pa
 void opt_focus_first(bool on) { g_focus_req = on; }
 static bool g_held;  // the last row's left / right has been held a while (steppers go faster)
 void opt_indent(int step) { g_indent = g_indent + step < 0 ? 0 : g_indent + step; }
+// (WSword 0.3.15, Glass Slate 2) the next toggle as a hero card: taller, its line under the name, a switch, a key chip
+static bool g_hero, g_hero_on;
+static const char *g_hero_sub, *g_hero_key;
+void opt_hero_next(const char *sub, const char *key) { g_hero = true, g_hero_sub = sub, g_hero_key = key; }
 
 void opt_begin(const char *id, float scale) {
     g_scale = scale;
@@ -96,10 +100,12 @@ static int row(const char *label, const std::string &value, bool changed, const 
     (void)upper;
     ImGui::PushID(label);
     const char *name = tr(label);
+    bool hero = g_hero;
+    g_hero = false;
     if (g_indent) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + g_indent * 28 * g_scale);  // (an option of the row above)
     ImVec2 p = ImGui::GetCursorScreenPos();
     float s = g_scale, fs = ImGui::GetFontSize();
-    float w = ImGui::GetContentRegionAvail().x, h = fmaxf(fs * 2.4f, 62 * s);
+    float w = ImGui::GetContentRegionAvail().x, h = hero ? fmaxf(fs * 4.2f, 124 * s) : fmaxf(fs * 2.4f, 62 * s);
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // (the row's own frame shows the selection)
     bool clicked = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
@@ -157,6 +163,40 @@ static int row(const char *label, const std::string &value, bool changed, const 
     if (g_name_first.empty()) g_desc_first = desc ? desc : "", g_name_first = name;
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
+    if (hero) {  // (opt_hero_next) a card: the name large, its line under it, the switch and the key on the right
+        ImVec2 a(p.x + 2, p.y + 4 * s), b(p.x + w, p.y + h - 10 * s);
+        float r = 16 * s, sw = 66 * s, sh = 36 * s, sx = p.x + w - pad - sw, scy = (a.y + b.y) * 0.5f;
+        dl->AddRectFilled(a, b, off ? IM_COL32(16, 36, 52, 150) : IM_COL32(14, 44, 64, 235), r);
+        dl->AddRectFilled(ImVec2(a.x, a.y), ImVec2(a.x + 5 * s, b.y), off ? IM_COL32(94, 230, 245, 70) : kCyan, r,
+                          ImDrawFlags_RoundCornersLeft);
+        dl->AddRect(a, b, sel ? IM_COL32(94, 230, 245, off ? 120 : 245) : IM_COL32(94, 230, 245, off ? 40 : 90), r, 0,
+                    (sel ? 2.2f : 1.3f) * s);
+        float tx = a.x + pad + 8 * s, room = sx - tx - 20 * s, big = fs * 1.2f, small = fs * 0.7f;
+        float ty0 = a.y + (b.y - a.y - big * 1.15f - small * 1.3f * 2) * 0.5f;
+        dl->AddText(ImGui::GetFont(), big, ImVec2(tx, ty0), off ? IM_COL32(110, 125, 140, 255) : IM_COL32(243, 247, 250, 255), name);
+        if (g_hero_sub)
+            dl->AddText(ImGui::GetFont(), small, ImVec2(tx, ty0 + big * 1.18f), IM_COL32(170, 190, 207, 255), tr(g_hero_sub), NULL,
+                        room);
+        bool on = g_hero_on && !off;
+        dl->AddRectFilled(ImVec2(sx, scy - sh * 0.5f), ImVec2(sx + sw, scy + sh * 0.5f),
+                          on ? kCyan : IM_COL32(30, 50, 67, 255), sh * 0.5f);
+        float kr = sh * 0.5f - 4 * s, kx = on ? sx + sw - 4 * s - kr : sx + 4 * s + kr;
+        dl->AddCircleFilled(ImVec2(kx, scy), kr, off ? IM_COL32(140, 155, 170, 255) : IM_COL32(243, 247, 250, 255), 24);
+        if (g_hero_key && *g_hero_key) {  // the key that flips it in the game: a keycap left of the switch
+            float kfs = fs * 0.66f, kw = ImGui::CalcTextSize(g_hero_key).x * 0.66f + 18 * s, kh = kfs * 1.7f;
+            float kx0 = sx - 14 * s - kw;
+            dl->AddRect(ImVec2(kx0, scy - kh * 0.5f), ImVec2(kx0 + kw, scy + kh * 0.5f), IM_COL32(170, 190, 207, 160), 6 * s, 0,
+                        1.4f * s);
+            dl->AddText(ImGui::GetFont(), kfs, ImVec2(kx0 + 9 * s, scy - kfs * 0.6f), IM_COL32(201, 214, 226, 255), g_hero_key);
+        }
+        if (!g_two_panes && foc && desc && *desc) {
+            ImGui::PushTextWrapPos(0);
+            ImGui::TextColored(ImVec4(0.73f, 0.80f, 0.86f, 1), "%s", desc);
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::PopID();
+        return step;
+    }
     const ImU32 rule = IM_COL32(28, 53, 80, off ? 120 : 255);
     ImVec2 b(p.x + w, p.y + h - 3 * s);
     if (sel) {
@@ -207,6 +247,7 @@ static int row(const char *label, const std::string &value, bool changed, const 
 }
 
 bool opt_toggle(const char *label, bool *v, bool def, const char *desc) {
+    g_hero_on = *v;
     if (!row(label, tr(*v ? "On" : "Off"), *v != def, desc)) return false;  // (any step flips it)
     *v = !*v;
     return true;

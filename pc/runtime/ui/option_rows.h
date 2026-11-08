@@ -44,6 +44,9 @@ bool opt_text_editing(const char *label);
 void opt_disable_next(void);
 // rows after this sit one step in (+1) or back out (-1): options that belong to the row above
 void opt_indent(int step);
+// (WSword 0.3.15) the next opt_toggle drawn as a hero card: sub a line under its name, key a keycap beside its switch
+// (the hotkey that flips it in the game; NULL: none)
+void opt_hero_next(const char *sub, const char *key);
 void opt_end(void);
 // A picture shown above the description while the row just drawn is hovered / selected (the Saves tab's save
 // pictures). Call it right after the row, every frame it is drawn; tex is the backend's ImTextureID.

@@ -365,6 +365,7 @@ dist:
 	cp third_party/fonts/NotoSansThai/OFL.txt "$(DIST)/NotoSansThai-OFL.txt"
 	cp third_party/fonts/Inter/Inter-Bold.otf third_party/fonts/Inter/Inter-Medium.otf "$(DIST)/"  # (WSword's Glass Slate look, OFL)
 	cp third_party/fonts/Inter/OFL.txt "$(DIST)/Inter-OFL.txt"
+	cp third_party/fonts/ChakraPetch/ChakraPetch-Bold.ttf "$(DIST)/" && cp third_party/fonts/ChakraPetch/OFL.txt "$(DIST)/ChakraPetch-OFL.txt"  # (Glass Slate 2's headings, OFL)
 	cp assets/launcher-background.png assets/app-icon-slate.png assets/app-icon-midnight.png assets/app-icon-dawn.png \
 	    assets/app-icon-ancient.png assets/app-icon-forest.png "$(DIST)/"  # (WSword's own art: the start screen, Settings > Files > Look)
 	cp third_party/lsfg-vk/LICENSE.md "$(DIST)/lsfg-vk-LICENSE.md"  # (Lossless frame generation's backend, GPL-3.0: runtime/nvn/vulkan/lsfg.cpp)

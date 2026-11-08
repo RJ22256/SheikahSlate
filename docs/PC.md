@@ -196,6 +196,7 @@ Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
+- **New in 0.3.15-pc.1:** the Glass Slate 2 look: WSword Configuration's home with a page rail, your newest saves and what's on; Ray-Tracing first on Settings > Video, with its F6; quick toggles in the in-game menu (F1); the first setup's steps.
 - **New in 0.3.14-pc.1:** Settings > Video > **Ray-Tracing** (was Ray-traced shadows): ray-traced ambient occlusion with the shadows, and sharper, cleaner ray-traced shadows (the sun's real size, twice the rays).
 - **New in 0.3.13-pc.1:**
   - With frame generation on, ReShade's effects are drawn once a game frame, before the HUD, so frame generation adds frames with ReShade on too, and the HUD is no longer blurred or tinted by the effects.

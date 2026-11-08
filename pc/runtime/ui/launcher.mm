@@ -34,6 +34,8 @@
 #include "saves_tab.h"
 #include "splash.h"
 #include "imageload.h"
+#include "services/save_convert.h"
+#include "mods.h"
 #include <errno.h>
 #include <float.h>
 #include <time.h>
@@ -80,6 +82,11 @@ void vk_imgui_texture_free(uint64_t tex);
 #endif
 #include "nvn/vulkan/lsfg.h"  // (WSword: lsfg_check_dll - Settings > Files > Lossless Scaling)
 const char *vk_lsfg_dll_path(void);  // (vulkan/device.c: lsfg/Lossless.dll next to WSword.exe, or in the data folder)
+#ifdef __APPLE__
+static bool rts_available(void) { return false; }
+#else
+bool rts_available(void);            // (vulkan/rtshadow.c: ray queries there - the home's Ray-Tracing chip)
+#endif
 const char *vk_gpu_name(void);       // (vulkan/device.c: the GPU and driver as they name themselves)
 const char *dlss_dll_path(void);     // (vulkan/dlss.c: nvngx_dlss.dll next to WSword.exe; is one there, why DLSS isn't offered)
 bool dlss_dll_present(void);
@@ -117,7 +124,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
 // (WSword PC: its own version, and the Savage Wind Recomp release it is built on - SW_BASE_VERSION)
-#define SAVAGEWIND_VERSION "0.3.14-pc.1"
+#define SAVAGEWIND_VERSION "0.3.15-pc.1"
 #define SW_BASE_VERSION "0.4.1-alpha.4"
 #define SW_BASE_LINE " \xc2\xb7 Savage Wind Recomp " SW_BASE_VERSION  // (after the version, lower right)
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
@@ -723,7 +730,7 @@ static void remove_fonts() {
 
 // ------------------------------------------------------------------ screen
 static ImFont *g_font_title, *g_font_menu, *g_font_small;
-static ImFont *g_glass_bold, *g_glass_text;  // (WSword's Glass Slate start screen: Inter Bold / Medium, OFL - third_party/fonts/Inter)
+static ImFont *g_glass_bold, *g_glass_text, *g_glass_head;  // (WSword's Glass Slate start screen: Inter Bold / Medium, OFL - third_party/fonts/Inter)
 static ImFont *g_set_text, *g_set_big;       // (its Settings and game files pages: Inter at the menu fonts' letter height)
 enum Page { MAIN, SETTINGS, SETUP };  // SETTINGS: the in-game menu's tabs (runtime/ui/menu.mm)
 static int g_refocus = MAIN;  // back on the main page: select the item of the page we came from (controllers)
@@ -1103,7 +1110,7 @@ static void icon_textures_free(void) {
 // rate, frame generation, the battery on a laptop. At the lower right a card: the last save's time, Resume, and the
 // modes a click away (settings.c settings_apply_mode). Units of an 800-line window (u); every item reachable with a
 // controller (ImGui's navigation), PLAY focused first.
-enum GlassAction { GA_NONE, GA_PLAY, GA_SAVES, GA_SETTINGS, GA_SETUP, GA_QUIT };
+enum GlassAction { GA_NONE, GA_PLAY, GA_SAVES, GA_SETTINGS, GA_SETUP, GA_QUIT, GA_MODS };
 
 static std::string save_dir() { return saves_tab_dir(); }  // (ui/saves_tab.mm: the saves' folder)
 // The newest game_data.sav of the saves (save/save_0/<slot>/), as "2026-11-01 03:12"; "" without one. Every 2 s.
@@ -1181,6 +1188,18 @@ static void glass_icon(ImDrawList *dl, int kind, ImVec2 c, float r, ImU32 col, f
         dl->AddLine(ImVec2(c.x + r * 0.45f, c.y - r * 0.45f), ImVec2(c.x + r * 0.9f, c.y), col, w);
         dl->AddLine(ImVec2(c.x + r * 0.45f, c.y + r * 0.45f), ImVec2(c.x + r * 0.9f, c.y), col, w);
         break;
+    case GA_NONE: {  // (the rail's Home) a house: the roof, the walls
+        ImVec2 h[5] = {ImVec2(c.x - r * 0.8f, c.y - r * 0.05f), ImVec2(c.x, c.y - r * 0.85f), ImVec2(c.x + r * 0.8f, c.y - r * 0.05f),
+                       ImVec2(c.x + r * 0.8f, c.y + r * 0.85f), ImVec2(c.x - r * 0.8f, c.y + r * 0.85f)};
+        dl->AddPolyline(h, 5, col, ImDrawFlags_Closed, w);
+        break;
+    }
+    case GA_MODS:  // four blocks, one apart
+        dl->AddRect(ImVec2(c.x - r * 0.85f, c.y - r * 0.85f), ImVec2(c.x - r * 0.1f, c.y - r * 0.1f), col, r * 0.15f, 0, w);
+        dl->AddRect(ImVec2(c.x - r * 0.85f, c.y + r * 0.1f), ImVec2(c.x - r * 0.1f, c.y + r * 0.85f), col, r * 0.15f, 0, w);
+        dl->AddRect(ImVec2(c.x + r * 0.1f, c.y + r * 0.1f), ImVec2(c.x + r * 0.85f, c.y + r * 0.85f), col, r * 0.15f, 0, w);
+        dl->AddRectFilled(ImVec2(c.x + r * 0.2f, c.y - r * 0.95f), ImVec2(c.x + r * 0.95f, c.y - r * 0.2f), col, r * 0.15f);
+        break;
     }
 }
 
@@ -1197,6 +1216,7 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
     const ImU32 ink = IM_COL32(234, 242, 250, 255), muted = IM_COL32(159, 179, 200, 255), cyan = IM_COL32(94, 230, 245, 255),
                 line = IM_COL32(46, 110, 134, 255), field = IM_COL32(15, 30, 51, 255), edge = IM_COL32(35, 65, 95, 255),
                 label = IM_COL32(143, 217, 230, 255);
+    (void)line, (void)label;
     int action = GA_NONE;
     bool ready = status.empty();
     // a button: an invisible ImGui button (mouse, keyboard, controller) drawn as the design's - 0 the cyan PLAY, 1 a
@@ -1239,161 +1259,240 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
         return clicked && enabled;
     };
 
-    // ---- the panel
-    float pw = 392 * u, pad = 40 * u, bw = pw - pad - 40 * u;
-    dl->AddRectFilled(P(0, 0), P(pw, ds.y), IM_COL32(9, 19, 34, 228));
-    dl->AddLine(P(pw, 0), P(pw, ds.y), line, 1.5f * u);
-    float y = 52 * u, logo = 46 * u;
+    // ---- (WSword 0.3.15) Glass Slate 2: a rail of pages on the left, over the picture a hero - what's to continue,
+    // PLAY, what's on - and the newest saves; the modes at the top right
+    ImFont *fh = g_glass_head ? g_glass_head : fb;  // (Chakra Petch Bold, OFL: the headings)
+    {   // the picture darkened from the left, behind the rail and the hero
+        const float stops[][2] = {{0.0f, 240}, {0.30f, 200}, {0.62f, 38}, {1.0f, 140}};
+        for (int i = 0; i < 3; i++) {
+            ImU32 c0 = IM_COL32(7, 14, 22, (int)stops[i][1]), c1 = IM_COL32(7, 14, 22, (int)stops[i + 1][1]);
+            dl->AddRectFilledMultiColor(P(ds.x * stops[i][0], 0), P(ds.x * stops[i + 1][0], ds.y), c0, c1, c1, c0);
+        }
+    }
+    float rw = 232 * u, pad = 22 * u;
+    dl->AddRectFilled(P(0, 0), P(rw, ds.y), IM_COL32(9, 18, 28, 196));
+    dl->AddLine(P(rw, 0), P(rw, ds.y), IM_COL32(127, 227, 245, 46), 1.2f * u);
+    float y = 32 * u, logo = 40 * u;
     icon_textures();
     int ci = g_settings.app_icon >= 0 && g_settings.app_icon < RT_WINDOW_ICONS ? g_settings.app_icon : 0;
     float tx = pad;
     if (g_icon_tex[ci]) {
         dl->AddImageRounded((ImTextureID)g_icon_tex[ci], P(pad, y), P(pad + logo, y + logo), ImVec2(0, 0), ImVec2(1, 1),
-                            IM_COL32_WHITE, logo * 0.22f);
-        tx = pad + logo + 14 * u;
+                            IM_COL32_WHITE, logo * 0.25f);
+        tx = pad + logo + 12 * u;
     }
+    text(fh, 21 * u, tx, y + 1 * u, ink, "WSWORD");
     {
-        const char *name = "WSword";
-        float tsz = 36 * u, avail = pw - 20 * u - tx, w0 = tw(fb, tsz, name);
-        if (w0 > avail) tsz *= avail / w0;
-        text(fb, tsz, tx, y + (logo - tsz * 1.21f) * 0.5f, ink, name);
+        char sub[96];
+        snprintf(sub, sizeof sub, "%s  \xc2\xb7  PC", SAVAGEWIND_VERSION);
+        text(ft, 12 * u, tx, y + 25 * u, muted, sub);
     }
-    y += logo + 14 * u;
-    {
-        std::string gv = glass_game_version(ready);
-        char sub[256];
-        snprintf(sub, sizeof sub, "%s %s  \xc2\xb7  %s %s", tr("Game"), gv.empty() ? "-" : gv.c_str(), tr("App"),
-                 SAVAGEWIND_VERSION);
-        text(ft, 15 * u, pad, y, muted, sub);
-        char base[128];  // (and the Savage Wind Recomp release it's built on)
-        snprintf(base, sizeof base, tr("Built on %s"), "Savage Wind Recomp " SW_BASE_VERSION);
-        text(ft, 12.5f * u, pad, y + 21 * u, IM_COL32(120, 140, 160, 255), base);
-    }
-    y += 52 * u;
+    y += logo + 32 * u;
+    // a page of the rail: its icon and name; Home the one shown (the start screen itself)
+    auto rail = [&](const char *id, int kind, const char *lbl, bool sel, bool enabled, bool focus) {
+        float bx = pad - 6 * u, bwid = rw - 2 * pad + 12 * u, bh = 44 * u;
+        ImGui::SetCursorScreenPos(P(bx, y));
+        if (focus) ImGui::SetKeyboardFocusHere();
+        ImGui::BeginDisabled(!enabled);
+        ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+        bool clicked = ImGui::InvisibleButton(id, ImVec2(bwid, bh), ImGuiButtonFlags_EnableNav);
+        ImGui::PopStyleColor();
+        bool hot = enabled && (ImGui::IsItemFocused() || ImGui::IsItemHovered());
+        ImGui::EndDisabled();
+        if (sel || hot) dl->AddRectFilled(P(bx, y), P(bx + bwid, y + bh), sel ? IM_COL32(127, 227, 245, 36) : IM_COL32(255, 255, 255, 14), 10 * u);
+        if (sel) dl->AddRectFilled(P(bx, y + 8 * u), P(bx + 3 * u, y + bh - 8 * u), cyan, 2 * u);
+        if (hot && !sel) dl->AddRect(P(bx, y), P(bx + bwid, y + bh), cyan, 10 * u, 0, 1.6f * u);
+        ImU32 fg = !enabled ? IM_COL32(110, 125, 140, 255) : sel ? ink : IM_COL32(201, 214, 226, 255);
+        if (kind >= 0) glass_icon(dl, kind, P(bx + 24 * u, y + bh * 0.5f), 8 * u, fg, 1.7f * u);
+        text(ft, 15 * u, bx + 46 * u, y + (bh - 15 * u * 1.21f) * 0.5f, fg, lbl);
+        y += bh + 6 * u;
+        return clicked && enabled;
+    };
     static bool focused_once;
     bool first = !focused_once;
     focused_once = true;
-    if (button("##play", GA_PLAY, tr("PLAY"), pad, y, bw, 64 * u, 0, ready, first)) action = GA_PLAY;
-    y += 64 * u + 12 * u;
-    struct Item { const char *id; int kind; const char *lbl; bool enabled; int refocus; };
-    const Item items[] = {{"##saves", GA_SAVES, "Saves", true, -1},
-                          {"##settings", GA_SETTINGS, "Settings", true, SETTINGS},
-                          {"##setup", GA_SETUP, ready ? "Game files" : "Set up game files", !busy, SETUP},
-                          {"##quit", GA_QUIT, "Quit", true, -1}};
-    for (const Item &it : items) {
-        bool foc = g_refocus == it.refocus;
-        if (foc) g_refocus = MAIN;
-        if (button(it.id, it.kind, tr(it.lbl), pad, y, bw, 52 * u, 1, it.enabled, foc)) action = it.kind;
-        y += 52 * u + 10 * u;
+    rail("##home", GA_NONE, tr("Home"), true, true, false);
+    {
+        bool f = g_refocus == SETTINGS;  // (back from Settings: its page focused again)
+        if (rail("##saves", GA_SAVES, tr("Saves"), false, true, false)) action = GA_SAVES;
+        if (rail("##settings", GA_SETTINGS, tr("Settings"), false, true, f)) action = GA_SETTINGS;
+        if (f) g_refocus = MAIN;
+        if (rail("##mods", GA_MODS, tr("Mods"), false, true, false)) action = GA_MODS;
+        bool fs = g_refocus == SETUP;
+        if (fs) g_refocus = MAIN;
+        if (rail("##setup", GA_SETUP, tr(ready ? "Game files" : "Set up game files"), false, !busy, fs)) action = GA_SETUP;
     }
-    {   // under them: the game files, the GPU and its driver, where the settings are in game
-        float ly = ds.y - 40 * u - 3 * 24 * u;
-        if (ready) {
-            float cu = 15 * u;  // (a drawn check mark: the font may have no ✓)
-            ImU32 g = IM_COL32(120, 226, 140, 255);
-            dl->AddLine(P(pad + cu * 0.1f, ly + cu * 0.62f), P(pad + cu * 0.38f, ly + cu * 0.9f), g, cu * 0.14f);
-            dl->AddLine(P(pad + cu * 0.38f, ly + cu * 0.9f), P(pad + cu * 0.9f, ly + cu * 0.3f), g, cu * 0.14f);
-            text(ft, 15 * u, pad + cu * 1.3f, ly, g, tr("Game files ready."));
-        } else {
-            std::string msg = std::string("!  ") + trv(busy ? "Setting up the game files..." : status);
-            text(ft, 15 * u, pad, ly, IM_COL32(255, 184, 102, 255), msg.c_str(), bw + 40 * u);
-        }
+    {   // at the rail's foot: the game files and the GPU, then Quit
+        float qh = 44 * u, cy = ds.y - 24 * u - qh - 12 * u - 96 * u;
+        dl->AddRectFilled(P(pad - 6 * u, cy), P(rw - pad + 6 * u, cy + 96 * u), IM_COL32(255, 255, 255, 13), 12 * u);
+        dl->AddRect(P(pad - 6 * u, cy), P(rw - pad + 6 * u, cy + 96 * u), IM_COL32(255, 255, 255, 20), 12 * u, 0, 1 * u);
+        float ix = pad + 6 * u, iw = rw - 2 * pad - 12 * u;
+        text(ft, 12 * u, ix, cy + 12 * u, muted, tr("Game files"));
+        std::string gv = glass_game_version(ready);
+        std::string dlc = dlc_installed(g_root);
+        std::string state = busy ? std::string(tr("Setting up...")) :
+                            ready ? std::string(tr("Ready")) + (gv.empty() ? "" : "  \xc2\xb7  " + gv) + (dlc.empty() ? "" : " + DLC")
+                                  : std::string(trv(status));
+        text(ft, 14 * u, ix, cy + 30 * u, ready && !busy ? IM_COL32(150, 232, 165, 255) : IM_COL32(255, 184, 102, 255), state.c_str(), iw);
         std::string driver = vk_driver_desc();
         if (driver.size() > 48) driver.resize(48);
-        std::string gpu = std::string(vk_gpu_name()) + (driver.empty() ? "" : "  \xc2\xb7  " + driver);
-        text(ft, 14 * u, pad, ly + 24 * u, muted, gpu.c_str(), bw + 40 * u);
-        text(ft, 14 * u, pad, ly + 48 * u, muted, tr("In game: F1 opens Settings (Back + Start on a controller). F10: the FPS."), bw + 40 * u);
+        dl->PushClipRect(P(ix, cy), P(ix + iw, cy + 96 * u), true);  // (one line each: cut at the card's edge)
+        text(ft, 12 * u, ix, cy + 52 * u, muted, vk_gpu_name());
+        if (!driver.empty()) text(ft, 11 * u, ix, cy + 70 * u, muted, driver.c_str());
+        dl->PopClipRect();
+        y = ds.y - 24 * u - qh;
+        if (rail("##quit", GA_QUIT, tr("Quit"), false, true, false)) action = GA_QUIT;
     }
 
-    // ---- the chips at the top right: the refresh rate, frame generation, the battery
+    // ---- the modes at the top right (settings.c settings_apply_mode), and the display's rate / the battery
     {
-        std::vector<std::string> chips;
-        const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
-        char b[96];
-        if (dm && dm->refresh_rate > 1) snprintf(b, sizeof b, "%d Hz", (int)lroundf(dm->refresh_rate)), chips.push_back(b);
-        if (g_settings.dlssg > 0) {  // (WSword: NVIDIA DLSS frame generation, vulkan/dlssg.c)
-            snprintf(b, sizeof b, tr(dlssg_dll_present() ? "NVIDIA DLSS %dx" : "NVIDIA DLSS %dx: no nvngx_dlssg.dll"),
-                     g_settings.dlssg + 1);
-            chips.push_back(b);
-        } else if (g_settings.lsfg > 0) {
-            struct stat st;
-            bool dll = stat(vk_lsfg_dll_path(), &st) == 0;
-            snprintf(b, sizeof b, tr(dll ? "Lossless %dx" : "Lossless %dx: no Lossless.dll"), g_settings.lsfg + 1);
-            chips.push_back(b);
-        } else if (g_settings.frame_gen) {
-            chips.push_back(tr("AMD FSR 3 frame generation"));
-        }
-        int secs = -1, pct = -1;
-        SDL_PowerState ps = SDL_GetPowerInfo(&secs, &pct);
-        if ((ps == SDL_POWERSTATE_ON_BATTERY || ps == SDL_POWERSTATE_CHARGING) && pct >= 0) {
-            snprintf(b, sizeof b, ps == SDL_POWERSTATE_CHARGING ? tr("%d%%  \xc2\xb7  charging") : "%d%%", pct);
-            chips.push_back(b);
-        }
-        float x = ds.x - 28 * u, cy = 28 * u, h = 36 * u, fs = 14 * u;
-        for (int i = (int)chips.size() - 1; i >= 0; i--) {
-            float w = tw(ft, fs, chips[i].c_str()) + 28 * u;
-            x -= w;
-            dl->AddRectFilled(P(x, cy), P(x + w, cy + h), IM_COL32(10, 22, 40, 225), h * 0.5f);
-            dl->AddRect(P(x, cy), P(x + w, cy + h), IM_COL32(42, 74, 110, 255), h * 0.5f, 0, 1.2f * u);
-            text(ft, fs, x + 14 * u, cy + (h - fs * 1.21f) * 0.5f, IM_COL32(207, 227, 241, 255), chips[i].c_str());
-            x -= 10 * u;
-        }
-    }
-
-    // ---- the card: the last save, Resume, the modes
-    {
-        float cw = fminf(760 * u, ds.x - pw - 80 * u), ch = 300 * u;
-        float cx = ds.x - 40 * u - cw, cy = ds.y - 76 * u - ch;
-        dl->AddRectFilled(P(cx, cy), P(cx + cw, cy + ch), IM_COL32(10, 22, 40, 238), 22 * u);
-        dl->AddRect(P(cx, cy), P(cx + cw, cy + ch), line, 22 * u, 0, 1.5f * u);
-        float x = cx + 28 * u, yy = cy + 28 * u, inner = cw - 56 * u;
-        std::string last = glass_last_saved();
-        text(ft, 13 * u, x, yy, label, tr("CONTINUE"));
-        text(fb, 28 * u, x, yy + 20 * u, ink, tr(last.empty() ? "A new journey" : "Your journey"));
-        char sub[160];
-        if (last.empty()) snprintf(sub, sizeof sub, "%s", tr("No save yet: PLAY starts a new game."));
-        else snprintf(sub, sizeof sub, tr("Last saved %s"), last.c_str());
-        text(ft, 15 * u, x, yy + 58 * u, muted, sub, inner - 190 * u);
-        if (button("##resume", -1, tr(last.empty() ? "Start" : "Resume"), cx + cw - 28 * u - 170 * u, yy + 14 * u, 170 * u,
-                   52 * u, 2, ready, false))
-            action = GA_PLAY;
-        yy += 104 * u;
-        text(ft, 13 * u, x, yy, label, tr("MODE"));
-        yy += 22 * u;
-        // (settings.c mode_into)
         static const char *const names[MODE_COUNT] = {"Battery", "Performance", "Turbo", "Unlocked"};
-        static const char *const subs[MODE_COUNT] = {"30 fps  \xc2\xb7  light", "60 fps", "120 fps", "No limit"};
-        static const char *const blurbs[MODE_COUNT] = {
-            "For a laptop on its battery: 30 fps, the game drawn smaller and AMD FSR 1 onto the window.",
-            "60 fps at your window's full resolution: as the game was made to run.",
-            "120 fps at full resolution, for a 120 Hz monitor (or 60 with Lossless 2x on).",
-            "As fast as your PC goes, at full resolution: VSync still caps it at the monitor's rate."};
         int cur = settings_current_mode();
-        float gap = 10 * u, mw = (inner - (MODE_COUNT - 1) * gap) / MODE_COUNT, mh = 64 * u;
+        float h = 36 * u, fs = 13.5f * u, x = ds.x - 28 * u, cy = 28 * u;
+        float wsum = 0, wi[MODE_COUNT];
+        for (int i = 0; i < MODE_COUNT; i++) wi[i] = tw(ft, fs, tr(names[i])) + 26 * u, wsum += wi[i];
+        x -= wsum + 8 * u;
+        dl->AddRectFilled(P(x - 4 * u, cy - 4 * u), P(x + wsum + 4 * u + 8 * u - 8 * u, cy + h + 4 * u), IM_COL32(9, 18, 28, 200), 12 * u);
         for (int i = 0; i < MODE_COUNT; i++) {
-            float mx = x + i * (mw + gap);
-            ImGui::SetCursorScreenPos(P(mx, yy));
+            ImGui::SetCursorScreenPos(P(x, cy));
             ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
             ImGui::PushID(i);
-            bool clicked = ImGui::InvisibleButton("##mode", ImVec2(mw, mh), ImGuiButtonFlags_EnableNav);
+            bool clicked = ImGui::InvisibleButton("##mode", ImVec2(wi[i], h), ImGuiButtonFlags_EnableNav);
             ImGui::PopID();
             ImGui::PopStyleColor();
             bool hot = ImGui::IsItemFocused() || ImGui::IsItemHovered();
             bool sel = cur == i;
-            dl->AddRectFilled(P(mx, yy), P(mx + mw, yy + mh), sel ? IM_COL32(18, 51, 73, 255) : field, 12 * u);
-            dl->AddRect(P(mx, yy), P(mx + mw, yy + mh), sel ? cyan : edge, 12 * u, 0, (sel ? 2.2f : 1.2f) * u);
-            if (hot) dl->AddRect(P(mx - 3 * u, yy - 3 * u), P(mx + mw + 3 * u, yy + mh + 3 * u), ink, 15 * u, 0, 2 * u);
-            text(ft, 16 * u, mx + 14 * u, yy + 12 * u, ink, tr(names[i]), mw - 20 * u);
-            text(ft, 13 * u, mx + 14 * u, yy + 36 * u, muted, tr(subs[i]), mw - 20 * u);
-            if (clicked && !sel) {
-                settings_apply_mode(i);
-                settings_save();
-                cur = i;
+            if (sel) dl->AddRectFilled(P(x, cy), P(x + wi[i], cy + h), cyan, 9 * u);
+            else if (hot) dl->AddRectFilled(P(x, cy), P(x + wi[i], cy + h), IM_COL32(255, 255, 255, 22), 9 * u);
+            if (hot) dl->AddRect(P(x - 2 * u, cy - 2 * u), P(x + wi[i] + 2 * u, cy + h + 2 * u), ink, 10 * u, 0, 1.6f * u);
+            text(ft, fs, x + 13 * u, cy + (h - fs * 1.21f) * 0.5f, sel ? IM_COL32(6, 36, 48, 255) : IM_COL32(201, 214, 226, 255), tr(names[i]));
+            if (clicked && !sel) settings_apply_mode(i), settings_save();
+            x += wi[i];
+        }
+        char b[64] = "";
+        int secs = -1, pct = -1;
+        SDL_PowerState ps = SDL_GetPowerInfo(&secs, &pct);
+        const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
+        if ((ps == SDL_POWERSTATE_ON_BATTERY || ps == SDL_POWERSTATE_CHARGING) && pct >= 0)
+            snprintf(b, sizeof b, ps == SDL_POWERSTATE_CHARGING ? tr("%d%%  \xc2\xb7  charging") : "%d%%", pct);
+        else if (dm && dm->refresh_rate > 1) snprintf(b, sizeof b, "%d Hz", (int)lroundf(dm->refresh_rate));
+        if (b[0]) {
+            float w = tw(ft, fs, b) + 26 * u, bx = ds.x - 28 * u - wsum - 8 * u - 12 * u - w;
+            dl->AddRectFilled(P(bx, cy), P(bx + w, cy + h), IM_COL32(9, 18, 28, 200), h * 0.5f);
+            text(ft, fs, bx + 13 * u, cy + (h - fs * 1.21f) * 0.5f, IM_COL32(201, 214, 226, 255), b);
+        }
+    }
+
+    // ---- the hero: what's to continue, PLAY, what's on, the newest saves (bottom up)
+    {
+        float hx = rw + 64 * u, hw = fminf(ds.x - hx - 56 * u, 900 * u);
+        // the newest saves (save/save_0/<slot>: caption.sav's time and play time), every 2 s
+        struct Card { std::string name, when, played; };
+        static std::vector<Card> cards;
+        static double read_at = -10;
+        if (ImGui::GetTime() - read_at > 2) {
+            read_at = ImGui::GetTime();
+            cards.clear();
+            ScSlot *v = NULL;
+            int n = sc_list_slots((save_dir() + "/save_0").c_str(), &v);
+            std::vector<ScSlot> sl(v, v + n);
+            free(v);
+            std::sort(sl.begin(), sl.end(), [](const ScSlot &a, const ScSlot &b) { return a.saved > b.saved; });
+            for (size_t i = 0; i < sl.size() && i < 3; i++) {
+                Card c;
+                char buf[64];
+                c.name = std::string(tr("Save")) + " " + std::to_string(sl[i].number);
+                struct tm *tmv = localtime(&sl[i].saved);
+                if (tmv && strftime(buf, sizeof buf, "%Y-%m-%d %H:%M", tmv)) c.when = buf;
+                if (sl[i].play_seconds >= 0) {
+                    snprintf(buf, sizeof buf, "%lld h %02lld m", (long long)(sl[i].play_seconds / 3600),
+                             (long long)(sl[i].play_seconds / 60 % 60));
+                    c.played = buf;
+                }
+                cards.push_back(c);
             }
         }
-        yy += mh + 12 * u;
-        text(ft, 14 * u, x, yy, muted,
-             tr(cur >= 0 && cur < MODE_COUNT ? blurbs[cur] : "Custom: your own settings (Settings \xe2\x80\xba Video)."), inner);
+        float by = ds.y - 56 * u;
+        if (!cards.empty()) {
+            float ch = 84 * u, gap = 14 * u, cw = (hw - 2 * gap) / 3;
+            by -= ch;
+            for (size_t i = 0; i < cards.size(); i++) {
+                float cx = hx + i * (cw + gap);
+                ImGui::SetCursorScreenPos(P(cx, by));
+                ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+                ImGui::PushID((int)i + 100);
+                bool clicked = ImGui::InvisibleButton("##card", ImVec2(cw, ch), ImGuiButtonFlags_EnableNav);
+                ImGui::PopID();
+                ImGui::PopStyleColor();
+                bool hot = ImGui::IsItemFocused() || ImGui::IsItemHovered();
+                dl->AddRectFilled(P(cx, by), P(cx + cw, by + ch), IM_COL32(9, 18, 28, i == 0 ? 190 : 160), 14 * u);
+                dl->AddRect(P(cx, by), P(cx + cw, by + ch), hot ? cyan : i == 0 ? IM_COL32(127, 227, 245, 80) : IM_COL32(255, 255, 255, 26),
+                            14 * u, 0, (hot ? 2 : 1.2f) * u);
+                text(ft, 11.5f * u, cx + 16 * u, by + 14 * u, i == 0 ? cyan : muted, tr_upper(tr(i == 0 ? "Latest" : "Earlier")).c_str());
+                text(ft, 15 * u, cx + 16 * u, by + 32 * u, ink, cards[i].name.c_str());
+                std::string sub = cards[i].when + (cards[i].played.empty() ? "" : "  \xc2\xb7  " + cards[i].played);
+                text(ft, 12.5f * u, cx + 16 * u, by + 54 * u, muted, sub.c_str(), cw - 28 * u);
+                if (clicked) action = GA_SAVES;
+            }
+            by -= 22 * u;
+        }
+        // what's on: chips
+        {
+            std::vector<std::pair<std::string, bool>> chips;  // (text, lit: the cyan dot)
+            char b[128];
+            if (rts_available() && g_settings.rt_shadows) chips.push_back({tr("Ray-Tracing On"), true});
+            static const char *const upq[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
+            if (g_settings.upscaler == UPSCALE_DLSS) snprintf(b, sizeof b, "DLSS %s", tr(upq[g_settings.upscale_quality % UPQ_COUNT])), chips.push_back({b, false});
+            else if (g_settings.upscaler == UPSCALE_FSR3) snprintf(b, sizeof b, "FSR 3 %s", tr(upq[g_settings.upscale_quality % UPQ_COUNT])), chips.push_back({b, false});
+            else if (g_settings.upscaler == UPSCALE_FSR1) snprintf(b, sizeof b, "FSR 1 %s", tr(upq[g_settings.upscale_quality % UPQ_COUNT])), chips.push_back({b, false});
+            if (g_settings.dlssg > 0) {  // (WSword: NVIDIA DLSS frame generation, vulkan/dlssg.c)
+                snprintf(b, sizeof b, tr(dlssg_dll_present() ? "NVIDIA DLSS %dx" : "NVIDIA DLSS %dx: no nvngx_dlssg.dll"), g_settings.dlssg + 1);
+                chips.push_back({b, false});
+            } else if (g_settings.lsfg > 0) {
+                struct stat st;
+                bool dll = stat(vk_lsfg_dll_path(), &st) == 0;
+                snprintf(b, sizeof b, tr(dll ? "Lossless %dx" : "Lossless %dx: no Lossless.dll"), g_settings.lsfg + 1);
+                chips.push_back({b, false});
+            } else if (g_settings.frame_gen) chips.push_back({tr("AMD FSR 3 frame generation"), false});
+            if (g_settings.reshade) chips.push_back({"ReShade", false});
+            {
+                ModInfo mi[MODS_MAX];
+                int nm = mods_list(mi, MODS_MAX), on = 0;
+                for (int i = 0; i < nm; i++) on += mi[i].on;
+                if (nm) snprintf(b, sizeof b, tr(on == 1 ? "%d mod on" : "%d mods on"), on), chips.push_back({b, false});
+            }
+            float h = 30 * u, fs = 12.5f * u, x = hx;
+            by -= h;
+            for (auto &c : chips) {
+                float w = tw(ft, fs, c.first.c_str()) + 26 * u + (c.second ? 14 * u : 0);
+                if (x + w > hx + hw) break;
+                dl->AddRectFilled(P(x, by), P(x + w, by + h), IM_COL32(9, 18, 28, 175), h * 0.5f);
+                dl->AddRect(P(x, by), P(x + w, by + h), c.second ? IM_COL32(127, 227, 245, 100) : IM_COL32(255, 255, 255, 36), h * 0.5f, 0, 1 * u);
+                float tx2 = x + 13 * u;
+                if (c.second) dl->AddCircleFilled(P(tx2 + 3 * u, by + h * 0.5f), 3.5f * u, cyan), tx2 += 14 * u;
+                text(ft, fs, tx2, by + (h - fs * 1.21f) * 0.5f, ink, c.first.c_str());
+                x += w + 8 * u;
+            }
+            by -= 24 * u;
+        }
+        // PLAY and Choose a save
+        float bh = 58 * u;
+        by -= bh;
+        if (button("##play", GA_PLAY, tr("PLAY"), hx, by, 200 * u, bh, 0, ready, first)) action = GA_PLAY;
+        if (button("##choose", -1, tr("Choose a save"), hx + 214 * u, by, 180 * u, bh, 1, true, false)) action = GA_SAVES;
+        by -= 26 * u;
+        // what's to continue
+        std::string last = glass_last_saved();
+        std::string sub = last.empty() ? std::string(tr("No save yet: PLAY starts a new game."))
+                                       : std::string(tr("Last saved")) + "  " + last;
+        if (!ready || busy) sub = busy ? std::string(tr("Setting up the game files...")) : trv(status);
+        by -= 17 * u * 1.3f;
+        text(ft, 16 * u, hx, by, IM_COL32(211, 222, 232, 255), sub.c_str(), hw);
+        by -= 10 * u + 54 * u;
+        text(fh, 54 * u, hx, by, ink, "Breath of the Wild");
+        by -= 24 * u;
+        text(fh, 13 * u, hx, by, cyan, tr_upper(tr(last.empty() ? "Begin your journey" : "Continue your journey")).c_str());
+        text(ft, 12.5f * u, hx, ds.y - 30 * u, muted, tr("In game: F1 opens Settings, F6 turns Ray-Tracing on and off, F10 shows the FPS."), hw);
     }
     return action;
 }
@@ -1828,7 +1927,7 @@ static void launcher_fonts(void) {
         g_font_title = add(p, 92 * (fira ? 1.6f : 1), latin);
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
-    g_glass_bold = g_glass_text = g_set_text = g_set_big = NULL;
+    g_glass_bold = g_glass_text = g_glass_head = g_set_text = g_set_big = NULL;
     {   // (WSword) the Glass Slate look's: the start screen's, drawn at their sizes (a little under these); and Settings' -
         // the menu's letter height (Inter's letters are a little larger than Fira's at one size)
         char ib[1024], im[1024];
@@ -1839,6 +1938,10 @@ static void launcher_fonts(void) {
             g_set_text = add(im, 30 * 1.3f * 0.96f, ranges);
             g_set_big = add(ib, 52 * 1.3f * 0.96f, ranges);
         }
+        // (0.3.15) Glass Slate 2's headings: Chakra Petch Bold (OFL), else Inter Bold
+        char ch[1024];
+        if (!test && rt_resource("ChakraPetch-Bold.ttf", "third_party/fonts/ChakraPetch/ChakraPetch-Bold.ttf", ch, sizeof ch))
+            g_glass_head = add(ch, 72, ranges);
     }
 }
 
@@ -2092,11 +2195,12 @@ extern "C" void launcher_run(const char *root, int mode) {
                 if (a == GA_PLAY) {  // first PLAY ever: how to reach the settings in game, then the game
                     if (!g_settings.menu_tip_seen) ImGui::OpenPopup("##menutip");
                     else play = true;
-                } else if (a == GA_SAVES || a == GA_SETTINGS) {  // (Saves: Settings > Saves)
+                } else if (a == GA_SAVES || a == GA_SETTINGS || a == GA_MODS) {  // (Saves, Mods: Settings' pages)
                     static bool opened;
                     menu_tabs_focus(!opened);  // (first time this session: the first tab; later: the selected one)
                     opened = true;
                     if (a == GA_SAVES) g_tab_request_ext = 3;
+                    if (a == GA_MODS) g_tab_request_ext = 4;
                     page = SETTINGS;
                 } else if (a == GA_SETUP) {
                     page = SETUP;
@@ -2194,6 +2298,57 @@ extern "C" void launcher_run(const char *root, int mode) {
                 bool failed = g_job_failed;
                 pthread_mutex_unlock(&g_lock);
                 bool ready = status.empty() && !busy;  // (set up: the window offers to delete them, or set them up again)
+                if (!ready) {  // (0.3.15, Glass Slate 2) the first setup's four steps, and what's been found so far
+                    ImDrawList *dl = ImGui::GetWindowDrawList();
+                    float cw = ImGui::GetContentRegionAvail().x, gap = 12 * sc, sw = (cw - 3 * gap) / 4, fs = ImGui::GetFontSize() * 0.74f;
+                    ImVec2 p = ImGui::GetCursorScreenPos();
+                    float prog = busy ? extract_progress() : 0;
+                    const float fill[4] = {src.empty() && !busy ? 0.0f : 1.0f, busy ? 1.0f : 0.0f, busy ? fminf(1, fmaxf(0, prog)) : 0.0f, 0.0f};
+                    static const char *const steps[4] = {"Choose your files", "Check", "Build the game code", "Play"};
+                    for (int i = 0; i < 4; i++) {
+                        float x = p.x + i * (sw + gap);
+                        dl->AddRectFilled(ImVec2(x, p.y), ImVec2(x + sw, p.y + 4 * sc), IM_COL32(30, 50, 67, 255), 2 * sc);
+                        if (fill[i] > 0) dl->AddRectFilled(ImVec2(x, p.y), ImVec2(x + sw * fill[i], p.y + 4 * sc), IM_COL32(94, 230, 245, 255), 2 * sc);
+                        char t[96];
+                        snprintf(t, sizeof t, "%d \xc2\xb7 %s", i + 1, tr(steps[i]));
+                        dl->AddText(ImGui::GetFont(), fs, ImVec2(x, p.y + 12 * sc), fill[i] > 0 ? IM_COL32(234, 242, 250, 255) : IM_COL32(157, 178, 198, 255),
+                                    t, NULL, sw);
+                    }
+                    ImGui::Dummy(ImVec2(cw, 12 * sc + fs * 1.3f * 2 + 10 * sc));
+                    // what's there: the folder chosen, the DLC set up (green and ticked) - rows in the card
+                    std::string dlv = dlc_installed(g_root);
+                    struct Found { std::string text, right; bool ok; };
+                    std::vector<Found> found;
+                    if (!src.empty()) {
+                        size_t cut = src.find_last_of("/\\");
+                        found.push_back({tr("Game files folder chosen"), cut == std::string::npos ? src : src.substr(cut + 1), true});
+                    } else found.push_back({tr("Choose the folder with your own extracted game files"), "", false});
+                    if (!dlv.empty()) found.push_back({std::string(tr("Downloadable content set up")) + ": " + dlv, "", true});
+                    for (const Found &f : found) {
+                        ImVec2 a = ImGui::GetCursorScreenPos();
+                        float rh = fs * 2.6f;
+                        ImU32 tint = f.ok ? IM_COL32(111, 219, 138, 255) : IM_COL32(94, 230, 245, 255);
+                        dl->AddRectFilled(a, ImVec2(a.x + cw, a.y + rh), f.ok ? IM_COL32(111, 219, 138, 20) : IM_COL32(94, 230, 245, 18), 12 * sc);
+                        dl->AddRect(a, ImVec2(a.x + cw, a.y + rh), f.ok ? IM_COL32(111, 219, 138, 77) : IM_COL32(94, 230, 245, 77), 12 * sc, 0, 1.2f * sc);
+                        float ix = a.x + 18 * sc, cy = a.y + rh * 0.5f, r = fs * 0.42f;
+                        if (f.ok) {
+                            dl->AddLine(ImVec2(ix - r * 0.8f, cy), ImVec2(ix - r * 0.2f, cy + r * 0.6f), tint, 2.4f * sc);
+                            dl->AddLine(ImVec2(ix - r * 0.2f, cy + r * 0.6f), ImVec2(ix + r * 0.9f, cy - r * 0.6f), tint, 2.4f * sc);
+                        } else {
+                            dl->AddCircle(ImVec2(ix, cy), r, tint, 20, 2 * sc);
+                            dl->AddLine(ImVec2(ix, cy - r * 0.5f), ImVec2(ix, cy), tint, 2 * sc);
+                            dl->AddLine(ImVec2(ix, cy), ImVec2(ix + r * 0.4f, cy + r * 0.3f), tint, 2 * sc);
+                        }
+                        float rw2 = f.right.empty() ? 0 : ImGui::CalcTextSize(f.right.c_str()).x * 0.74f;
+                        dl->PushClipRect(a, ImVec2(a.x + cw - rw2 - 30 * sc, a.y + rh), true);
+                        dl->AddText(ImGui::GetFont(), fs, ImVec2(ix + 22 * sc, cy - fs * 0.6f), IM_COL32(234, 242, 250, 255), f.text.c_str());
+                        dl->PopClipRect();
+                        if (rw2 > 0)
+                            dl->AddText(ImGui::GetFont(), fs, ImVec2(a.x + cw - 16 * sc - rw2, cy - fs * 0.6f), IM_COL32(157, 178, 198, 255), f.right.c_str());
+                        ImGui::Dummy(ImVec2(cw, rh + 8 * sc));
+                    }
+                    ImGui::Dummy(ImVec2(0, 6 * sc));
+                }
                 // chosen: "Selected" with a green check (long paths ran over the label); the path is in the
                 // explanation, and choosing again opens the picker again
                 std::string src_v = tr(src.empty() ? "Choose..." : "Selected");
