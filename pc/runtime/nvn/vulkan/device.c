@@ -25,7 +25,6 @@
 #include "dlss.h"
 #include "dlssg.h"
 #include "reshade.h"
-#include "nr.h"
 
 // (WSword) The swapchain's functions, and the device's wait: vulkan-1's, or with NVIDIA DLSS frame generation
 // Streamline's proxies (dlssg.h; set in create_device)
@@ -351,7 +350,7 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[72];
+    const char *ext[56];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
@@ -475,12 +474,6 @@ static void create_device(void) {
     bool rt = !getenv("SAVAGEWIND_NO_RT") && has_ext(ep, ne, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
               has_ext(ep, ne, VK_KHR_RAY_QUERY_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) &&
               has_ext(ep, ne, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
-    // (WSword) neural rendering, beta (nr.c): the network's extensions, when its setting is on and its files are there
-    uint32_t nr_n = 0;
-    const char *const *nr_ext = nr_device_extensions(&nr_n);
-    bool nr = nr_n > 0;
-    for (uint32_t k = 0; k < nr_n && nr; k++)
-        if (!has_ext(ep, ne, nr_ext[k])) nr_device_unsupported(nr_ext[k]), nr = false;
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -691,68 +684,6 @@ static void create_device(void) {
     }
     g_vk.rt = rt;
     LOG("[vk] ray tracing %s\n", rt ? "on (ray-traced shadows available)" : "not available");
-    // (WSword) neural rendering, beta (nr.c): OpenDLSS-NR's features (its vk::DeviceRequirements) - FP8 cooperative
-    // matrices, shader clocks, SM built-ins, and core ones merged into WSword's own - when the driver has them all
-#if defined(VK_EXT_shader_float8) && defined(VK_NV_cooperative_matrix2)
-    VkPhysicalDeviceCooperativeMatrixFeaturesKHR cm_q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
-    VkPhysicalDeviceCooperativeMatrix2FeaturesNV cm2_q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV,
-                                                          .pNext = &cm_q};
-    VkPhysicalDeviceShaderFloat8FeaturesEXT f8_q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT,
-                                                    .pNext = &cm2_q};
-    VkPhysicalDeviceShaderClockFeaturesKHR clk_q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR,
-                                                    .pNext = &f8_q};
-    VkPhysicalDeviceShaderSMBuiltinsFeaturesNV sm_q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SM_BUILTINS_FEATURES_NV,
-                                                       .pNext = &clk_q};
-    if (nr) {
-        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &sm_q};
-        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
-        const char *miss = !cm_q.cooperativeMatrix ? "cooperative matrices"
-                         : !(cm2_q.cooperativeMatrixWorkgroupScope && cm2_q.cooperativeMatrixFlexibleDimensions &&
-                             cm2_q.cooperativeMatrixReductions && cm2_q.cooperativeMatrixConversions &&
-                             cm2_q.cooperativeMatrixPerElementOperations && cm2_q.cooperativeMatrixTensorAddressing &&
-                             cm2_q.cooperativeMatrixBlockLoads) ? "cooperative matrix 2 features"
-                         : !(f8_q.shaderFloat8 && f8_q.shaderFloat8CooperativeMatrix) ? "FP8 cooperative matrices"
-                         : !(clk_q.shaderSubgroupClock && clk_q.shaderDeviceClock) ? "shader clocks"
-                         : !sm_q.shaderSMBuiltins ? "SM built-ins"
-                         : !(f12_have.vulkanMemoryModel && f12_have.vulkanMemoryModelDeviceScope && f12_have.hostQueryReset &&
-                             f12_have.bufferDeviceAddress && f12_have.shaderInt8 && f12_have.storageBuffer8BitAccess &&
-                             f12_have.uniformAndStorageBuffer8BitAccess && g_vk.fp16) ? "Vulkan 1.2 features"
-                         : !(f13_have.subgroupSizeControl && f13_have.computeFullSubgroups && f13_have.synchronization2 &&
-                             f13_have.maintenance4) ? "Vulkan 1.3 features"
-                         : !h->shaderInt64 ? "64-bit integers in shaders" : NULL;
-        if (miss) nr_device_unsupported(miss), nr = false;
-    }
-    VkPhysicalDeviceCooperativeMatrixFeaturesKHR cm_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
-                                                          .cooperativeMatrix = VK_TRUE, .pNext = f.pNext};
-    VkPhysicalDeviceCooperativeMatrix2FeaturesNV cm2_on = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV, .cooperativeMatrixWorkgroupScope = VK_TRUE,
-        .cooperativeMatrixFlexibleDimensions = VK_TRUE, .cooperativeMatrixReductions = VK_TRUE,
-        .cooperativeMatrixConversions = VK_TRUE, .cooperativeMatrixPerElementOperations = VK_TRUE,
-        .cooperativeMatrixTensorAddressing = VK_TRUE, .cooperativeMatrixBlockLoads = VK_TRUE, .pNext = &cm_on};
-    VkPhysicalDeviceShaderFloat8FeaturesEXT f8_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT,
-                                                     .shaderFloat8 = VK_TRUE, .shaderFloat8CooperativeMatrix = VK_TRUE,
-                                                     .pNext = &cm2_on};
-    VkPhysicalDeviceShaderClockFeaturesKHR clk_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR,
-                                                     .shaderSubgroupClock = VK_TRUE, .shaderDeviceClock = VK_TRUE, .pNext = &f8_on};
-    VkPhysicalDeviceShaderSMBuiltinsFeaturesNV sm_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SM_BUILTINS_FEATURES_NV,
-                                                        .shaderSMBuiltins = VK_TRUE, .pNext = &clk_on};
-    if (nr) {
-        f.pNext = &sm_on;
-        f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = f12.hostQueryReset = f12.bufferDeviceAddress = VK_TRUE;
-        f12.shaderInt8 = f12.storageBuffer8BitAccess = f12.uniformAndStorageBuffer8BitAccess = f12.shaderFloat16 = VK_TRUE;
-        f11.storageBuffer16BitAccess = f11.uniformAndStorageBuffer16BitAccess = VK_TRUE;
-        f13.subgroupSizeControl = f13.computeFullSubgroups = f13.synchronization2 = f13.maintenance4 = VK_TRUE;
-        b->shaderInt16 = b->shaderInt64 = VK_TRUE;
-        for (uint32_t k = 0; k < nr_n; k++) {
-            bool dup = false;
-            for (uint32_t i = 0; i < n_ext && !dup; i++) dup = !strcmp(ext[i], nr_ext[k]);
-            if (!dup && n_ext < 72) ext[n_ext++] = nr_ext[k];
-        }
-        LOG("[nr] the network's %u device extensions and features on\n", nr_n);
-    }
-#else
-    if (nr) nr_device_unsupported("FP8 cooperative matrices in WSword's Vulkan headers"), nr = false;
-#endif
     float prio[2] = {1.0f, 1.0f};
     // One queue: frames are presented on the game's own. A second one that presented (present thread below) went
     // wrong with others' code on it: NVIDIA's GPUs before Turing faulted writing to GPU address 0 within the first
@@ -788,7 +719,6 @@ static void create_device(void) {
         dlssg_device_ready(g_vk.phys);
     }
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
-    if (nr) nr_device_made(g_vk.inst, g_vk.phys, g_vk.dev, g_vk.qfam, 0);  // (its setup on this queue, nothing else on it yet)
     g_vk.present_queue = g_vk.queue;
     if (qi.queueCount == 2) vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 1, &g_vk.present_queue);
 

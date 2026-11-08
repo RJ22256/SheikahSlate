@@ -142,54 +142,6 @@ jobs:
           Set-Content -Path build\dlss_build.bat -Value $bat -Encoding ascii
           cmd /c build\dlss_build.bat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      # (WSword) Neural rendering, beta: OpenDLSS-NR (https://github.com/aloshdenny/open-dlss, MIT) at a pinned
-      # commit, patched to run on WSword's frame (tools/nr_bridge/patch_open_dlss.py); its kernels (glslang 16.6.0, and
-      # the PTX its Python emitters write), its pass's two shaders and wsword_nr.dll (MSVC, C++20, volk). No model.
-      - name: wsword_nr.dll (OpenDLSS-NR, MSVC)
-        shell: pwsh
-        working-directory: pc
-        run: |
-          $sha = 'b9d4f7e8dc04a946a60207db73330177a586f1f1'
-          git init -q build/open-dlss
-          git -C build/open-dlss fetch -q --depth 1 https://github.com/aloshdenny/open-dlss.git $sha
-          git -C build/open-dlss checkout -q FETCH_HEAD
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $od = 'build/open-dlss'
-          New-Item -ItemType Directory -Force "$od/tools" | Out-Null
-          Invoke-WebRequest -Uri 'https://github.com/KhronosGroup/glslang/releases/download/16.6.0/glslang-16.6.0-windows-x86_64-release.zip' -OutFile build/glslang.zip
-          Expand-Archive -Force build/glslang.zip build/glslang-unzip
-          $g = Get-ChildItem build/glslang-unzip -Recurse -Filter glslang.exe | Select-Object -First 1
-          New-Item -ItemType Directory -Force "$od/tools/glslang/bin" | Out-Null
-          Copy-Item $g.FullName "$od/tools/glslang/bin/glslang.exe"
-          git clone -q --depth 1 --branch v1.4.363 https://github.com/KhronosGroup/Vulkan-Headers.git "$od/tools/Vulkan-Headers"
-          git clone -q --depth 1 --branch vulkan-sdk-1.4.357.0 https://github.com/zeux/volk.git "$od/tools/volk"
-          python tools/nr_bridge/patch_open_dlss.py $od
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "$od/scripts/build_shaders.ps1"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          New-Item -ItemType Directory -Force build/nr/kernels, build/nr/ptx, build/nr/pass | Out-Null
-          Copy-Item "$od/build/shaders/*.spv" build/nr/kernels/
-          Copy-Item "$od/build/ptx/*.ptx" build/nr/ptx/
-          foreach ($s in 'nr_preprocess', 'nr_composite') {
-            & "$od/tools/glslang/bin/glslang.exe" -V --target-env vulkan1.3 -I"$od/demo/shaders" "$od/demo/shaders/$s.comp" -o "build/nr/pass/$s.comp.spv"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-          Write-Output ("kernels: " + (Get-ChildItem build/nr/kernels).Count + ", PTX: " + (Get-ChildItem build/nr/ptx).Count)
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
-                  -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $src = 'tools\nr_bridge\wsword_nr.cpp build\open-dlss\demo\nr_pass.cpp build\open-dlss\src\vk_context.cpp ' +
-                 'build\open-dlss\src\kernels.cpp build\open-dlss\src\nr_graph.cpp build\open-dlss\src\nr_model.cpp ' +
-                 'build\open-dlss\src\reference.cpp build\open-dlss\tools\volk\volk.c'
-          $cl = 'cl /nologo /O2 /MT /EHsc /LD /std:c++20 /W3 /wd4244 /wd4267 /utf-8 /DNOMINMAX /DWIN32_LEAN_AND_MEAN ' +
-                '/D_CRT_SECURE_NO_WARNINGS /DVK_NO_PROTOTYPES /DVK_ENABLE_BETA_EXTENSIONS ' +
-                '/I build\open-dlss\tools\Vulkan-Headers\include /I build\open-dlss\tools\volk /I build\open-dlss\src ' +
-                '/I build\open-dlss\demo ' + $src + ' /Fe:build\wsword_nr.dll /Fo:build\nr-obj\ /link user32.lib'
-          New-Item -ItemType Directory -Force build\nr-obj | Out-Null
-          $bat = "@call `"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul`r`n$cl`r`nif errorlevel 1 exit /b 1`r`n" +
-                 "dumpbin /nologo /exports build\wsword_nr.dll`r`n"
-          Set-Content -Path build\nr_build.bat -Value $bat -Encoding ascii
-          cmd /c build\nr_build.bat
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Game code generator helper
         working-directory: pc
         run: make gen-helper GEN_PY="$(cygpath -u '${{ steps.py.outputs.python-path }}')"
@@ -209,7 +161,7 @@ jobs:
           [ -z "$bad" ] || { echo "::error::must not ship: $bad"; exit 1; }
           for f in WSword.exe WSword.dll.a "WSword Configuration.exe" LICENSE.txt WSword-PC-guide.md swgen/swgen.exe zig/zig.exe \
                    Inter-Medium.otf Inter-Bold.otf launcher-background.png app-icon-forest.png lsfg-vk-LICENSE.md \
-                   wsword_dlss.dll NVIDIA-DLSS-LICENSE.txt wsword_nr.dll nr/pass/nr_composite.comp.spv OpenDLSS-LICENSE.txt streamline/sl.interposer.dll streamline/sl.dlss_g.dll \
+                   wsword_dlss.dll NVIDIA-DLSS-LICENSE.txt streamline/sl.interposer.dll streamline/sl.dlss_g.dll \
                    streamline/sl.common.dll streamline/sl.reflex.dll streamline/sl.pcl.dll; do
             [ -e "$D/$f" ] || { echo "::error::missing: $f"; exit 1; }
           done

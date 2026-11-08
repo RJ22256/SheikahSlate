@@ -1465,23 +1465,6 @@ static const char *builtin_src(const char *name, int *stage) {
                "  if (pc.b.w > 1.5) o = vec2(inbox ? 1.0 : 0.0, inbox && z >= pc.lk.x && z <= pc.lk.y ? 1.0 : 0.0);  // (debug)\n"
                "}\n";
     }
-    // (WSword) neural rendering's motion (exec.c nr_apply): fg_mv.frag's camera motion (the depth's size, uv units,
-    // current -> previous) at the image's size, with whether that point was on screen in the previous frame (z: 1 -
-    // the network has a history there); pc.a.xy the image's size, pc.a.z 1: a cut, no history anywhere
-    if (!strcmp(name, "nr_motion.frag")) {
-        *stage = STAGE_FRAGMENT;
-        return "#version 450\n"
-               "layout(set = 0, binding = 0) uniform sampler2D m;\n"
-               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
-               "layout(location = 0) out vec4 o;\n"
-               "void main() {\n"
-               "  vec2 uv = gl_FragCoord.xy / pc.a.xy;\n"
-               "  vec2 v = texture(m, uv).xy;\n"
-               "  vec2 p = uv + v;\n"
-               "  bool on = pc.a.z < 0.5 && all(greaterThanEqual(p, vec2(0.0))) && all(lessThanEqual(p, vec2(1.0)));\n"
-               "  o = on ? vec4(v, 1.0, 0.0) : vec4(0.0);\n"
-               "}\n";
-    }
     if (!strcmp(name, "clear.vert")) {
         *stage = STAGE_VERTEX;
         return "#version 450\n"

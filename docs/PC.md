@@ -171,21 +171,6 @@ On graphics cards with hardware ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and 
 - **Cost:** a few milliseconds of GPU time. The first minute with it on, the game compiles a variant of each shadow-casting shader: expect some stutter while it does.
 - **Experimental:** it's the first version, made without seeing the game. If shadows look wrong (missing, misplaced, striped, flickering), press **Ctrl+F9** in that spot and send `WSword.log` and the `build\rt-report` folder (in the data folder: next to `WSword.exe`, or in its `v190` / `v182` folder), with a screenshot.
 
-## Neural rendering (beta)
-
-Settings > Video > **Neural rendering** runs **OpenDLSS-NR** ([aloshdenny/open-dlss](https://github.com/aloshdenny/open-dlss),
-MIT), an open reimplementation of a generative neural rendering network, on each frame before the HUD: it generates
-detail and adjusts tone and structure. The frame's resolution in and out: it doesn't upscale or add frames, and it
-costs GPU time (its author measured about 12.6 ms a frame at 2560 x 1440 on an RTX 4070 SUPER).
-
-- **You need** an NVIDIA RTX 40 or newer with a recent driver, and **your own model folder** - `manifest.json` and
-  its stage files - next to `WSword.exe` as `nr-model` (or `SAVAGEWIND_NR_MODEL=<folder>`). None comes with WSword,
-  and this guide doesn't say where to get one; you're responsible for the licence of any model you use.
-- **On** is the network's own look; **Natural** and **Cinematic** are its styles. **Strength** blends it with the
-  game's own frame.
-- It starts with WSword: turn it on, then restart. The Video page says whether it runs, and its GPU time.
-- The HUD, the HUD-less image frame generation uses and ReShade's effects all come after it.
-
 ## Mods
 
 Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they are: each is a folder with a `romfs` folder inside. They must be made for your game version (1.9.0 or 1.8.2).
@@ -207,10 +192,7 @@ Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
-- **New in 0.3.12-pc.1:** Neural rendering (beta): OpenDLSS-NR with your own model. NVIDIA DLSS frame generation's
-  second crash at start (when it makes the window's swapchain) is still being looked into: its crash report and all
-  of Streamline's messages now reach `WSword.log` (`SAVAGEWIND_DLSSG_LOG=1`).
-- **New in 0.3.11-pc.1:** NVIDIA DLSS frame generation's first crash at start fixed (Streamline's GPU list).
+- **New in 0.3.11-pc.1:** NVIDIA DLSS frame generation works (WSword closed at start with it on).
 - **New in 0.3.10-pc.1:** ray-traced shadows fixed (they had been missing).
 - **New in 0.3.9-pc.1:** ray-traced shadows of trees, bushes and grass too, and no shadows lost.
 - **New in 0.3.8-pc.1:** ray-traced shadows (experimental), Settings > Video.

@@ -83,10 +83,6 @@ typedef struct {
     bool reshade_own_depth;
     // (WSword) ray-traced sun shadows (vulkan/rtshadow.c): GPUs with hardware ray tracing
     bool rt_shadows;
-    // (WSword) neural rendering, OpenDLSS-NR (beta, vulkan/nr.c): 0 off, 1 on (the network's own look), 2 natural,
-    // 3 cinematic; from the next start. Its strength, 10..100 (%).
-    int neural;
-    int neural_strength;
     char mods_off[512];  // (WSword) game mods turned off (runtime/mods.c: their folder names, separated by '|')
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect

@@ -656,7 +656,6 @@ extern "C" bool dlssg_gpu_mfg(void);
 extern "C" void reshade_status(char *out, size_t n);  // (WSword: vulkan/reshade.c, the player's own ReShade)
 extern "C" void rts_status(char *out, size_t n);  // (WSword: vulkan/rtshadow.c, ray-traced sun shadows)
 extern "C" bool rts_available(void);
-extern "C" void nr_status(char *out, size_t n);   // (WSword: vulkan/nr.c, neural rendering - OpenDLSS-NR, beta)
 #endif
 // Video > Upscaler mode's names, by UPQ_*
 static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
@@ -1048,23 +1047,6 @@ static void tab_display(void) {
                            "game's own shadows. Costs GPU time (a few milliseconds).")) + "\n\n" + tr(st);
         if (!rts_available()) opt_disable_next();
         opt_toggle("Ray-traced shadows", &g_settings.rt_shadows, false, d.c_str());
-    }
-    {   // (WSword) neural rendering, beta (vulkan/nr.c): OpenDLSS-NR with the player's own model
-        char st[500];
-        nr_status(st, sizeof st);
-        static std::string d;
-        d = std::string(tr("Beta. OpenDLSS-NR, an open reimplementation of a generative neural rendering network, re-renders "
-                           "each frame before the HUD: detail generated, tone and structure adjusted. The same resolution "
-                           "in and out - it doesn't add frames or upscale - and it costs GPU time (about 12 ms at 1440p on an "
-                           "RTX 4070 SUPER). Needs an NVIDIA RTX 40 or newer, and your own model folder next to WSword.exe as "
-                           "nr-model (none comes with WSword). On: the network's own look; Natural and Cinematic: its styles. "
-                           "From the next start of WSword.")) + "\n\n" + tr(st);
-        static const char *nm[] = {"Off", "On", "Natural", "Cinematic"};
-        opt_choice("Neural rendering (beta)", &g_settings.neural, nm, 4, 0, d.c_str(), false);
-        if (!g_settings.neural_strength) g_settings.neural_strength = 100;
-        if (g_settings.neural)
-            opt_int("Neural rendering strength", &g_settings.neural_strength, 10, 100, 10, 100, "%d%%",
-                    tr("How much of the network's frame replaces the game's: 100% all of it."));
     }
     {   // Frame generation: AMD FSR 3 (vulkan/framegen.cpp), or (WSword) Lossless Scaling's from the player's own
         // Lossless.dll (vulkan/device.c lsfg_prepare). The frame rate counts the presented frames (framepace.c).
