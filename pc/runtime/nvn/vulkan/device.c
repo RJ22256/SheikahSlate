@@ -1274,7 +1274,7 @@ static void create_swapchain(void) {
         LOG("[dlssg] vkCreateSwapchainKHR through Streamline\n");
     }
     VK_CHECK(sc_fn.create(g_vk.dev, &ci, NULL, &g_vk.swapchain));
-    if (dlssg_loaded()) LOG("[dlssg] swapchain made\n");
+    if (dlssg_loaded()) LOG("[dlssg] swapchain made\n"), dlssg_start_ok();
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     hdr_release();
     if (old) sc_fn.destroy(g_vk.dev, old, NULL);

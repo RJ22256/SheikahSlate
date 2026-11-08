@@ -82,11 +82,41 @@ static void adopt_dll(void) {
     if (CopyFileW(a, b, TRUE)) LOG("[dlssg] nvngx_dlssg.dll next to WSword.exe copied into streamline\\\n");
 }
 
+// (WSword) A start that didn't get past NVIDIA's code: this file is made as Streamline starts and removed once the
+// window's swapchain is made through it (dlssg_start_ok). Found at the next start, WSword closed in there - frame
+// generation is turned off (and saved), so WSword starts again; choosing it again tries again.
+static const char *start_marker(void) {
+    static char p[1200];
+    if (!p[0]) snprintf(p, sizeof p, "%s/dlssg-starting", rt_data_root());
+    return p;
+}
+
+void dlssg_start_ok(void) {
+    static bool done;
+    if (done || !g.loaded) return;
+    done = true;
+    remove(start_marker());
+}
+
 bool dlssg_start(void) {
     if (g.tried) return g.loaded;
     g.tried = true;
-    if (g_settings.dlssg <= 0) return false;
+    if (g_settings.dlssg <= 0) { remove(start_marker()); return false; }
     if (getenv("SAVAGEWIND_NO_DLSSG")) { snprintf(g.why, sizeof g.why, "turned off (SAVAGEWIND_NO_DLSSG)"); return false; }
+    {
+        struct stat sb;
+        if (stat(start_marker(), &sb) == 0) {
+            remove(start_marker());
+            g_settings.dlssg = 0;
+            settings_save();
+            snprintf(g.why, sizeof g.why, "WSword closed while NVIDIA DLSS frame generation was starting last time, so it "
+                     "was turned off. Choose it again to try again (WSword.prev.log has what happened).");
+            LOG("[dlssg] not started: WSword closed while it was starting last time - turned off\n");
+            return false;
+        }
+        FILE *f = fopen(start_marker(), "wb");
+        if (f) fputs("NVIDIA DLSS frame generation starting\n", f), fclose(f);
+    }
     adopt_dll();
     if (!dlssg_dll_present()) {
         snprintf(g.why, sizeof g.why, "add your nvngx_dlssg.dll - start screen > Settings > Files > NVIDIA DLSS frame generation");
@@ -240,6 +270,7 @@ void dlssg_status(char *out, size_t n) {
 #else  // (no DLSS: Linux, macOS)
 bool dlssg_start(void) { return false; }
 bool dlssg_loaded(void) { return false; }
+void dlssg_start_ok(void) {}
 void dlssg_abandon(const char *why) { (void)why; }
 PFN_vkGetInstanceProcAddr dlssg_gipa(void) { return NULL; }
 PFN_vkGetDeviceProcAddr dlssg_gdpa(void) { return NULL; }

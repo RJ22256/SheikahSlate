@@ -1241,17 +1241,37 @@ static void aoc_dir(int index, char *out, size_t n) {
 
 uint64_t fs_aoc_base_id(void) { return (g_program_id & ~0xFFFull) + 0x1000; }
 
-bool fs_aoc_present(int index) {
-    if (index < 1 || index > AOC_MAX || !g_romfs_dir) return false;
+// (WSword) The DLC merged into the game's RomFS (romfs_has_dlc_merged: dumps made with a guide that copies the DLC's
+// RomFS over the game's) and none set up apart: the DLC's files are there, at the paths its own RomFS has them, so the
+// first add-on content is the game's RomFS itself - the game lists it, mounts it and finds its files as with one set
+// up apart (the title menu's Downloadable Content button, The Master Trials and The Champions' Ballad). Before, such a
+// dump played without its DLC. SAVAGEWIND_NO_MERGED_DLC=1: not.
+static bool aoc_merged(int index) {
+    static int merged = -1;
+    if (index != 1 || !g_romfs_dir || !images[0].img) return false;
+    if (merged < 0) {
+        merged = !getenv("SAVAGEWIND_NO_MERGED_DLC") && R == &images[0] && romfs_has_dlc_merged();
+        if (merged) LOG("[fs] the DLC is merged into the game's RomFS: add-on content 1 is the game's RomFS\n");
+    }
+    return merged;
+}
+
+static bool aoc_dir_there(int index) {
     char dir[1100];
     aoc_dir(index, dir, sizeof dir);
     struct stat sb;
     return stat(dir, &sb) == 0 && S_ISDIR(sb.st_mode);
 }
 
+bool fs_aoc_present(int index) {
+    if (index < 1 || index > AOC_MAX || !g_romfs_dir) return false;
+    return aoc_dir_there(index) || aoc_merged(index);
+}
+
 static Service *open_aoc_storage(int index) {
     char dir[1100];
     aoc_dir(index, dir, sizeof dir);
+    if (!aoc_dir_there(index) && aoc_merged(index)) snprintf(dir, sizeof dir, "%s", g_romfs_dir);
     Service *s = open_image(index, dir, "IStorage(aoc)");
     LOG("[fs] add-on content %d: %s%s\n", index, dir, s ? "" : " (missing)");
     extern void rt_title_menu_dlc(void);  // (runtime/ui/game_options.mm: the title menu's Downloadable Content button)

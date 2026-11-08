@@ -24,6 +24,8 @@ struct SDL_Window;
 bool dlssg_start(void);
 // Streamline is in: the instance, surface, device and swapchain go through its functions
 bool dlssg_loaded(void);
+// (WSword) Streamline got through the device and the swapchain: this start won't be taken for a crash in there
+void dlssg_start_ok(void);
 // Streamline's instance failed: left out for the run (the instance made without it)
 void dlssg_abandon(const char *why);
 PFN_vkGetInstanceProcAddr dlssg_gipa(void);
