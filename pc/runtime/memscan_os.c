@@ -51,6 +51,34 @@ bool ms_guarded(const void *p, size_t n, MsFn fn, void *ctx, size_t *ret) {
 #include <sys/uio.h>
 #endif
 
+#if defined(__PROSPERO__)
+// The console has no process_vm_readv: the copy goes through a pipe instead, whose kernel copies report an
+// inaccessible page as EFAULT (no signal) - this thread's own pipe, in 16 KiB steps (less than its buffer).
+#include <fcntl.h>
+#include <unistd.h>
+static bool pipe_copy(void *dst, const void *src, size_t n) {
+    static _Thread_local int fd[2] = {-1, -1};
+    if (fd[0] < 0 && pipe(fd)) { fd[0] = fd[1] = -1; return false; }
+    for (size_t at = 0; at < n;) {
+        size_t k = n - at < 16384 ? n - at : 16384;
+        ssize_t w = write(fd[1], (const char *)src + at, k);
+        if (w <= 0) return false;
+        ssize_t r = read(fd[0], (char *)dst + at, (size_t)w);
+        if (r != w) {  // (the destination inaccessible: what is left in the pipe is drained)
+            char sink[16384];
+            for (ssize_t left = w - (r > 0 ? r : 0); left > 0;) {
+                ssize_t d = read(fd[0], sink, (size_t)left);
+                if (d <= 0) break;
+                left -= d;
+            }
+            return false;
+        }
+        at += (size_t)w;
+    }
+    return true;
+}
+#endif
+
 bool ms_resident(uint64_t addr, size_t npages, uint8_t *resident) {
     if (!npages) return true;
     long page_size = sysconf(_SC_PAGESIZE);
@@ -87,6 +115,8 @@ bool ms_guarded(const void *p, size_t n, MsFn fn, void *ctx, size_t *ret) {
         if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)p, n,
                                   (mach_vm_address_t)(uintptr_t)copy.bytes, &got) != KERN_SUCCESS || got != n)
             return false;
+#elif defined(__PROSPERO__)
+        if (!pipe_copy(copy.bytes, p, n)) return false;
 #else
         struct iovec local = {copy.bytes, n}, remote = {(void *)p, n};
         if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != (ssize_t)n) return false;

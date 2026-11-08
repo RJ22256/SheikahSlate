@@ -28,7 +28,7 @@ static char g_error[256];
 // Whether this CPU runs code built for arch: the x86-64 levels the Makefile uses. Another -march (a build's own
 // GENARCH) isn't checked.
 static bool cpu_runs(const char *arch) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) && !defined(__PROSPERO__)  // (the PS5: always its Zen 2; no compiler-rt for the check there)
     __builtin_cpu_init();
     if (strstr(arch, "x86-64-v3"))
         return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");

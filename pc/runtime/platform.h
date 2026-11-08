@@ -47,7 +47,7 @@ void plat_cpu_placement(void);  // (game start) one logical processor per core o
 void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
 void plat_exec(char *const argv[]);  // replace the process (NULL = same command line); returns only on failure
-#if defined(_WIN32) || defined(__linux__)
+#if defined(_WIN32) || defined(__linux__) || defined(__PROSPERO__)
 void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)
 #endif
 

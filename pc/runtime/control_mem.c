@@ -94,6 +94,33 @@ static int compare(Value a, Value b) {
     if (type == 4) return (a.s > b.s) - (a.s < b.s);
     return (a.u > b.u) - (a.u < b.u);
 }
+#if defined(__PROSPERO__)
+// The console has no process_vm_readv: the copy goes through a pipe instead, whose kernel copies report an
+// inaccessible page as EFAULT (no signal) - this thread's own pipe, in 16 KiB steps (less than its buffer).
+#include <fcntl.h>
+#include <unistd.h>
+static bool pipe_copy(void *dst, const void *src, size_t n) {
+    static _Thread_local int fd[2] = {-1, -1};
+    if (fd[0] < 0 && pipe(fd)) { fd[0] = fd[1] = -1; return false; }
+    for (size_t at = 0; at < n;) {
+        size_t k = n - at < 16384 ? n - at : 16384;
+        ssize_t w = write(fd[1], (const char *)src + at, k);
+        if (w <= 0) return false;
+        ssize_t r = read(fd[0], (char *)dst + at, (size_t)w);
+        if (r != w) {  // (the destination inaccessible: what is left in the pipe is drained)
+            char sink[16384];
+            for (ssize_t left = w - (r > 0 ? r : 0); left > 0;) {
+                ssize_t d = read(fd[0], sink, (size_t)left);
+                if (d <= 0) break;
+                left -= d;
+            }
+            return false;
+        }
+        at += (size_t)w;
+    }
+    return true;
+}
+#endif
 static bool window(uint64_t a, size_t n) {
     return a >= GUEST_LO && a < GUEST_HI && n <= GUEST_HI - a;
 }
@@ -124,6 +151,8 @@ static bool copy_memory(uint64_t a, void *buf, size_t n, bool write) {
     if (write) return mach_vm_write(mach_task_self(), a, (vm_offset_t)buf, (mach_msg_type_number_t)n) == KERN_SUCCESS;
     mach_vm_size_t done = 0;
     return mach_vm_read_overwrite(mach_task_self(), a, n, (mach_vm_address_t)buf, &done) == KERN_SUCCESS && done == n;
+#elif defined(__PROSPERO__)
+    return write ? pipe_copy((void *)(uintptr_t)a, buf, n) : pipe_copy(buf, (const void *)(uintptr_t)a, n);
 #else
     struct iovec local = {buf, n}, remote = {(void *)(uintptr_t)a, n};
     ssize_t done = write ? process_vm_writev(getpid(), &local, 1, &remote, 1, 0)

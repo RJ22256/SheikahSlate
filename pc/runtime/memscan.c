@@ -119,7 +119,11 @@ static bool have_avx2(void) {
     static atomic_int choice;
     int c = atomic_load_explicit(&choice, memory_order_relaxed);
     if (!c) {
+#ifdef __PROSPERO__
+        c = 2;  // (the PS5's Zen 2; no compiler-rt for the check there)
+#else
         c = __builtin_cpu_supports("avx2") ? 2 : 1;
+#endif
         atomic_store_explicit(&choice, c, memory_order_relaxed);
     }
     return c == 2;

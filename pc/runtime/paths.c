@@ -126,6 +126,9 @@ void rt_paths_init(void) {
 #ifdef _WIN32
         snprintf(root, sizeof root, "%s", g_exe_dir);
         wsword_older_root(root, sizeof root);
+#elif defined(__PROSPERO__)
+        // the PS5: the title folder (/app0 = /data/homebrew/<title id>, writable), laid out as the Windows folder
+        snprintf(root, sizeof root, "%s", g_exe_dir[0] ? g_exe_dir : "/app0");
 #elif defined(__linux__)
         // (the AppImage is read-only): $XDG_DATA_HOME/savagewind, ~/.local/share/savagewind by default
         const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");

@@ -258,7 +258,7 @@ static void pick_device(void) {
     // SAVAGEWIND_VK_LEAN_USAGE=0 / =1 overrides.
     const char *lean = getenv("SAVAGEWIND_VK_LEAN_USAGE");
     bool lean_default = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
-#ifdef __linux__
+#if defined(__linux__) || defined(__PROSPERO__)  // (the PS5: RADV too)
     if (g_vk.props.vendorID == 0x1002) lean_default = false;
 #endif
     g_vk.lean_usage = lean && *lean ? atoi(lean) != 0 : lean_default;
@@ -383,7 +383,7 @@ static void create_device(void) {
         VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drv};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
     }
-#ifdef __linux__
+#if defined(__linux__) || defined(__PROSPERO__)
     g_vk.radv = drv.driverID == VK_DRIVER_ID_MESA_RADV;
 #endif
     g_vk.amd_proprietary = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
@@ -2647,7 +2647,7 @@ static void quick_exit_handler(void) {
     if (trace) LOG("[vk] exit: terminating\n");
     fflush(stdout);
     fflush(stderr);
-#if defined(_WIN32) || defined(__linux__)
+#if defined(_WIN32) || defined(__linux__) || defined(__PROSPERO__)
     plat_terminate();
 #endif
 }
