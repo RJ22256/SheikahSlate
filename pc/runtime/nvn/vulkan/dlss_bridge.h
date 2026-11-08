@@ -145,6 +145,12 @@ typedef int (*PFN_wsrs_attach)(void (*log)(const char *line), char *why, int why
 // The view ReShade's effects get as DEPTH from the next present on (0: none); an R32F image's, the window's size, in
 // VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL when the effects run
 typedef void (*PFN_wsrs_depth)(uint64_t view);
+// (0.3.12) ReShade's effects drawn by WSword, once a frame, before the HUD and frame generation: on an image (rtv: a
+// UNORM view, rtv_srgb: its sRGB one, in VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, WSword's work before it submitted)
+// with `depth` as DEPTH (as wsrs_depth's, the image's size), on the recorder thread; that frame's presents then draw
+// none, until wsrs_frame_end (after its last present). 1 drawn, 0 not (no effect runtime yet: ReShade's at present then)
+typedef int (*PFN_wsrs_effects)(uint64_t rtv, uint64_t rtv_srgb, uint64_t depth);
+typedef void (*PFN_wsrs_frame_end)(void);
 
 #ifdef __cplusplus
 }

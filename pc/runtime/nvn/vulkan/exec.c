@@ -19,6 +19,7 @@
 #include "dlss.h"
 #include "dlssg.h"
 #include "rtshadow.h"
+#include "reshade.h"
 #include "mvec.h"
 #include "../output_scale.h"
 #include "record.h"
@@ -8336,7 +8337,7 @@ static TexBackend *fg_world_depth(const float *world_c3) {
 // interpolated frame; (WSword) NVIDIA DLSS frame generation's inputs as the window shows the game's image: 3 the
 // HUD-less image, 4 depth, 5 motion vectors (vk_dlssg_prepare)
 static TexBackend *fg_image(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage) {
-    static TexBackend img[6];
+    static TexBackend img[7];  // (6: ReShade before the HUD, rs_pre_apply)
     TexBackend *d = &img[i];
     if (d->image && (d->width != w || d->height != h || d->format != f)) {
         vk_views_forget(d);
@@ -8385,13 +8386,23 @@ static void fg_copy_hudless(void) {
     fg.hudless_ok = true;
 }
 
+static void rs_pre_apply(void);
+static bool rs_pending;  // (the scene composited this frame: ReShade's effects on it before the next draw - the HUD)
+
 static void fg_before_draw(void) {
+    if (rs_pending) rs_pre_apply();
     if (fg.copy_pending) fg_copy_hudless();
 }
 
 // (WSword) ReShade's depth is wanted (reshade.c: its effects get the game's): the camera candidates are looked for
 // then too (not the HUD-less copy)
 volatile int g_rs_want;
+// (WSword 0.3.12) ReShade's effects drawn by WSword this frame, once, on the composited scene before the HUD and frame
+// generation (rs_pre_apply), not by ReShade at each present: set at the present before (device.c), with frame
+// generation in play. ReShade drew at every present - each generated frame too, its effects' cost twice or more a
+// game frame, which took what frame generation gave (and the generated frames were made from images without them).
+volatile int g_rs_pre;
+volatile int g_rs_pre_done;  // (drawn this frame: none at its presents, nor the window's depth for them - device.c)
 static struct {
     bool ok;
     TexBackend *depth;
@@ -8425,6 +8436,7 @@ static void fg_draw(Prog *pr, CmdRec *r) {
         fg.out_rt = st.rt.color[0];
         fg.scene = t;
         fg.copy_pending = g_fg_want != 0;  // (after this draw: fg_before_draw)
+        rs_pending = g_rs_pre != 0;
     }
 }
 
@@ -8523,7 +8535,8 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
     TexBackend *ob = fg.out_rt ? vk_tex(fg.out_rt, true) : NULL;
     bool same = ob && ob->width == b->width && ob->height == b->height && fg.present_format == unorm_of(b->format);
     fg.present_format = unorm_of(b->format);
-    if (fg.copy_pending) fg_copy_hudless();  // (nothing drawn after the composite)
+    if (rs_pending) rs_pre_apply();  // (nothing drawn after the composite)
+    if (fg.copy_pending) fg_copy_hudless();
     uint64_t now = SDL_GetTicksNS();
     float frame_ms = fg.last_ns ? (float)((now - fg.last_ns) / 1e6) : 16.7f;
     fg.last_ns = now;
@@ -8708,7 +8721,7 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
     }
     fg.have_prev = ok;
     fg.ncand = 0;
-    fg.hudless_ok = fg.copy_pending = false;
+    fg.hudless_ok = fg.copy_pending = rs_pending = false;
     fg.out_rt = fg.scene = NULL;
     return out;
 }
@@ -9145,9 +9158,18 @@ bool vk_dlssg_prepare(VkCommandBuffer cb, float vx, float vy, float vw, float vh
 // as ReShade's default depth settings read it (shaders.c reshade_depth.frag: ReShade.fxh's linearized depth = the
 // distance in metres / 1000), the rest 0 (as far as it goes: the sky); all 0 when this frame drew no 3D scene. Left
 // in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL for ReShade's effects at the present; its view (0: none).
+static VkImageView rs_depth_into(TexBackend *pimg, uint32_t w, uint32_t h, float vx, float vy, float vw, float vh,
+                                 const float pv[8]);
 VkImageView vk_reshade_depth(float vx, float vy, float vw, float vh, const float pv[8]) {
     static TexBackend img;
-    uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
+    return rs_depth_into(&img, g_vk.sc_extent.width, g_vk.sc_extent.height, vx, vy, vw, vh, pv);
+}
+
+// ReShade's depth into *pimg (w x h): each pixel of it, within the rectangle vx..vh, the scene depth's texel pv's
+// mapping (vk_present_draw's: the flip, the uv crop) takes it from (rs_in: this frame's camera)
+static VkImageView rs_depth_into(TexBackend *pimg, uint32_t w, uint32_t h, float vx, float vy, float vw, float vh,
+                                 const float pv[8]) {
+#define img (*pimg)
     if (!w || !h) return VK_NULL_HANDLE;
     if (img.image && (img.width != w || img.height != h)) {
         vk_views_forget(&img);
@@ -9201,6 +9223,80 @@ VkImageView vk_reshade_depth(float vx, float vy, float vw, float vh, const float
     vk_dyn_forget();
     vk_frame_resume();
     return post_view(&img);
+#undef img
+}
+
+// (WSword 0.3.12) ReShade's effects on the composited scene (fg.out_rt: the game's linear 10-bit image, the HUD drawn
+// into it next), once a frame, with frame generation (g_rs_pre): the scene into an 8-bit sRGB image (as the presented
+// one has it - BOTW copies the composite sRGB-encoded into the 8-bit image it presents), ReShade's effects on that
+// (reshade_draw: its own command list, submitted on the game's queue between WSword's submissions - the recorder
+// thread) with the depth placed as that image has it, and back. The HUD then goes over the effects (as in a game
+// ReShade is made for), and every frame generation is made from images that have them; ReShade draws none at the
+// frame's presents. Where it can't (no camera this frame, another format), ReShade's at the present as before.
+static void rs_pre_run(const void *p) {
+    const uint64_t *v = p;
+    if (!reshade_draw(v[0], v[1], v[2])) {
+        static int told;
+        if (!told++) LOG("[reshade] its effects before the HUD: no effect runtime yet (at the present until there is)\n");
+    }
+}
+
+static void rs_pre_apply(void) {
+    rs_pending = false;
+    TexBackend *s = fg.out_rt ? vk_tex(fg.out_rt, true) : NULL;
+    TexBackend *scene = fg.scene ? vk_tex(fg.scene, true) : NULL;
+    if (!s || !scene || !s->image || s->aspect != VK_IMAGE_ASPECT_COLOR_BIT || s->layers != 1 || s->samples != 1) return;
+    VkFormat f = srgb_of(fg.present_format ? fg.present_format : VK_FORMAT_R8G8B8A8_UNORM);
+    if (f != VK_FORMAT_R8G8B8A8_SRGB && f != VK_FORMAT_B8G8R8A8_SRGB) return;
+    int best = -1;  // (the world camera: vk_fg_generate's choice)
+    for (int i = 0; i < fg.ncand; i++) {
+        TexBackend *d = vk_tex(fg.cand[i].depth, true);
+        if (d->image && d->width == scene->width && d->height == scene->height && d->layers == 1 && d->samples == 1 &&
+            (best < 0 || fg.cand[i].draws > fg.cand[best].draws))
+            best = i;
+    }
+    if (best < 0) return;
+    vk_end_pass();
+    const float *pm = fg.cand[best].m;
+    rs_in.ok = true, rs_in.depth = vk_tex(fg.cand[best].depth, true), rs_in.A = pm[38], rs_in.B = pm[39];
+    rs_in.gl = nvn_depth_mode() == 0;
+    static TexBackend dimg;
+    static const float pv[8] = {0, 0, 0, 0, 0, 0, 1, 1};  // (the image's own rows: no flip; all of it)
+    VkImageView dv = rs_depth_into(&dimg, s->width, s->height, 0, 0, (float)s->width, (float)s->height, pv);
+    if (!dv) return;
+    TexBackend *t = fg_image(6, s->width, s->height, f, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    static const VkComponentMapping id = {0};
+    VkImageView vu = vk_image_view(t, VK_IMAGE_VIEW_TYPE_2D, unorm_of(f), 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    VkImageView vs = vk_image_view(t, VK_IMAGE_VIEW_TYPE_2D, f, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    if (g_gpuprof_frame) gp_mark(vk_cmd(), "ReShade before the HUD");
+    VkCommandBuffer cb = vk_cmd();
+    VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                      .srcOffsets = {{0, 0, 0}, {(int32_t)s->width, (int32_t)s->height, 1}},
+                      .dstOffsets = {{0, 0, 0}, {(int32_t)s->width, (int32_t)s->height, 1}}};
+    vk_full_barrier(cb);
+    rec_CmdBlitImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, t->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
+    // ReShade's render target state (its effects read and write it: the layout its Vulkan backend names for it)
+    VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                .image = t->image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+    rec_CmdPipelineBarrier2(cb, &di);
+    vk_full_barrier(cb);
+    renderer_submit();  // (WSword's work so far on the queue first; then ReShade's, on the recorder thread in order)
+    uint64_t args[3] = {(uint64_t)vu, (uint64_t)vs, (uint64_t)dv};
+    rec_call(rs_pre_run, args, sizeof args);
+    g_rs_pre_done = 1;
+    cb = vk_cmd();
+    ib.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    rec_CmdPipelineBarrier2(cb, &di);
+    vk_full_barrier(cb);
+    rec_CmdBlitImage(cb, t->image, VK_IMAGE_LAYOUT_GENERAL, s->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
+    vk_full_barrier(cb);
+    vk_dyn_forget();
 }
 
 // Screenshot of a game texture (presented crop applied to build/frame_* shots), via the present shader into RGBA8.

@@ -26,6 +26,8 @@ static struct {
     char why[400];
     char base[1100];  // where its ReShade.ini is (its base path)
     PFN_wsrs_depth depth;
+    PFN_wsrs_effects effects;
+    PFN_wsrs_frame_end frame_end;
     uint64_t view;
 } g;
 
@@ -401,6 +403,20 @@ void reshade_instance_made(bool with_layer) {
         return;
     }
     g.attached = true;
+    g.effects = (PFN_wsrs_effects)dlss_bridge_proc("wsrs_effects");
+    g.frame_end = (PFN_wsrs_frame_end)dlss_bridge_proc("wsrs_frame_end");
+}
+
+bool reshade_can_draw(void) { return g.attached && g.effects && g.frame_end; }
+
+bool reshade_draw(uint64_t rtv, uint64_t rtv_srgb, uint64_t depth) {
+    if (!reshade_can_draw()) return false;
+    g.view = depth;  // (the present's own view is bound again when it differs: reshade_set_depth)
+    return g.effects(rtv, rtv_srgb, depth) != 0;
+}
+
+void reshade_frame_end(void) {
+    if (reshade_can_draw()) g.frame_end();
 }
 
 void reshade_set_depth(VkImageView view) {
@@ -431,6 +447,9 @@ void reshade_status(char *out, size_t n) {
 #else  // (ReShade on Windows only)
 
 int reshade_instance_layers(const char **names, int max) { (void)names, (void)max; return 0; }
+bool reshade_can_draw(void) { return false; }
+bool reshade_draw(uint64_t rtv, uint64_t rtv_srgb, uint64_t depth) { (void)rtv, (void)rtv_srgb, (void)depth; return false; }
+void reshade_frame_end(void) {}
 void reshade_instance_made(bool with_layer) { (void)with_layer; }
 void reshade_set_depth(VkImageView view) { (void)view; }
 void reshade_status(char *out, size_t n) {

@@ -1950,6 +1950,7 @@ bool vk_dlssg_have_inputs(void);
 bool vk_dlssg_prepare(VkCommandBuffer cb, float vx, float vy, float vw, float vh, const float pv[8], WsSlFrame *out);
 VkImageView vk_reshade_depth(float vx, float vy, float vw, float vh, const float pv[8]);  // (WSword: exec.c)
 extern volatile int g_rs_want;
+extern volatile int g_rs_pre, g_rs_pre_done;  // (WSword 0.3.12: ReShade's effects before the HUD and frame generation - exec.c)
 static uint64_t gen_frames;
 static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame after a generated one saved)
 
@@ -2347,7 +2348,7 @@ static void present_locked(NvnTexture *t) {
             frame_kind = PRES_AFTER_GEN, frame_pos = lsfg_show, frame_group = lsfg_show + 1;
         }
         // (WSword) ReShade's depth for its effects at this present (exec.c), as the window shows the game's image
-        if (reshade_depth_active()) {
+        if (reshade_depth_active() && !g_rs_pre_done) {
             reshade_set_depth(vk_reshade_depth((float)vx, (float)vy, (float)vw, (float)vh, pv));
             cb = vk_cmd();
         }
@@ -2401,6 +2402,14 @@ static void present_locked(NvnTexture *t) {
 presented:
     g_fg_want = fg_wanted();  // (for the next frame's draws)
     g_rs_want = reshade_depth_active();  // (WSword: ReShade's depth - exec.c)
+    // (WSword) ReShade's effects: this frame's presents done (its own at the present again unless the next frame draws
+    // them), and whether the next frame draws them before its HUD - with frame generation in play
+    if (g_rs_pre_done) g_rs_pre_done = 0, reshade_frame_end();
+    {
+        static int at_present = -1;  // (SAVAGEWIND_RESHADE_AT_PRESENT=1: ReShade's at each present, as before 0.3.12)
+        if (at_present < 0) at_present = getenv("SAVAGEWIND_RESHADE_AT_PRESENT") != NULL;
+        g_rs_pre = !at_present && g_rs_want && reshade_can_draw() && (g_fg_want || lsfg_on || dg_on);
+    }
     extern void vk_prof_frame(uint64_t frame, uint64_t present_ns);
     vk_prof_frame(total_frames, SDL_GetTicksNS() - t0);
     extern void vk_list_stats_frame(void);

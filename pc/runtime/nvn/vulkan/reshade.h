@@ -29,6 +29,12 @@ bool reshade_loaded(void);
 bool reshade_depth_active(void);
 // The depth view for its effects from this present on
 void reshade_set_depth(VkImageView view);
+// (0.3.12) With frame generation: ReShade's effects drawn by WSword, once a frame, before the HUD and frame generation
+// (exec.c rs_pre_apply), on an image (VkImageView handles: a UNORM view, its sRGB one) with a depth view of its size; on
+// the recorder thread. The frame's presents then draw none until reshade_frame_end (after its last present).
+bool reshade_can_draw(void);
+bool reshade_draw(uint64_t rtv, uint64_t rtv_srgb, uint64_t depth);
+void reshade_frame_end(void);
 // Settings and the start screen: where its DLL goes, whether it's there, its state in words
 const char *reshade_dir(void);
 const char *reshade_dll_path(void);
