@@ -398,6 +398,12 @@ static LONG WINAPI unhandled_filter(EXCEPTION_POINTERS *ep) {
     rt_fault_report(what, fa, ep->ContextRecord->Rip, lr);
 }
 
+// (WSword) The crash report back as the process's last-chance handler: NVIDIA's NGX and Streamline (DLSS frame
+// generation) set their own when they start, and a crash after that left WSword.log with no report at all
+void plat_crash_handler_reclaim(void) {
+    if (g_report_crashes) SetUnhandledExceptionFilter(unhandled_filter);
+}
+
 void plat_crash_handler_install(void) {
     ULONG guarantee = 64 << 10;  // room for the report after a stack overflow
     SetThreadStackGuarantee(&guarantee);

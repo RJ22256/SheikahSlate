@@ -13,6 +13,7 @@
 #include "../../imageload.h"
 #include "../../paths.h"
 #include "../../perfmon.h"
+#include "../../platform.h"
 #include "../../settings.h"
 #include "../../ui/menu.h"
 #include "../../window_size.h"
@@ -1268,7 +1269,12 @@ static void create_swapchain(void) {
     LOG("[vk] swapchain %ux%u, %u images, present mode %s (VSync %s; surface has %s), %s, display %.2f Hz\n",
         ext.width, ext.height, count, present_mode_name(mode), present_mode_name(wanted_present_mode()), modes, kind,
         winsize_refresh_rate());
+    if (dlssg_loaded()) {  // (WSword: NVIDIA's code set its own crash handler; a crash in there reported again)
+        plat_crash_handler_reclaim();
+        LOG("[dlssg] vkCreateSwapchainKHR through Streamline\n");
+    }
     VK_CHECK(sc_fn.create(g_vk.dev, &ci, NULL, &g_vk.swapchain));
+    if (dlssg_loaded()) LOG("[dlssg] swapchain made\n");
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     hdr_release();
     if (old) sc_fn.destroy(g_vk.dev, old, NULL);

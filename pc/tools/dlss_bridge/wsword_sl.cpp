@@ -59,11 +59,14 @@ void say(char *err, int n, const char *what, sl::Result r) {
     if (err && n > 0) _snprintf_s(err, (size_t)n, _TRUNCATE, "%s (Streamline: %s)", what, sl::getResultAsStr(r));
 }
 
-// Streamline's messages into WSword.log: its warnings and errors always, the rest the first 300 lines
+// Streamline's messages into WSword.log: its warnings and errors always, the rest the first 300 lines (all of them with
+// SAVAGEWIND_DLSSG_LOG=1)
 void sl_log(sl::LogType type, const char *msg) {
     static long n;
     if (!s.log || !msg) return;
-    if (type == sl::LogType::eInfo && InterlockedIncrement(&n) > 300) return;
+    static int all = -1;  // (SAVAGEWIND_DLSSG_LOG=1: every line)
+    if (all < 0) all = getenv("SAVAGEWIND_DLSSG_LOG") != nullptr;
+    if (type == sl::LogType::eInfo && !all && InterlockedIncrement(&n) > 300) return;
     char line[1200];
     _snprintf_s(line, sizeof line, _TRUNCATE, "[dlssg] sl%s: %s", type == sl::LogType::eError ? " error" : type == sl::LogType::eWarn ? " warning" : "", msg);
     size_t l = strlen(line);
@@ -144,7 +147,7 @@ EXPORT int wssl_init(const WsSlInit *in, char *err, int n) {
     p.logLevel = getenv("SAVAGEWIND_DLSSG_LOG") ? sl::LogLevel::eVerbose : sl::LogLevel::eDefault;
     p.pathsToPlugins = paths;
     p.numPathsToPlugins = 1;
-    p.pathToLogsAndData = nullptr;
+    p.pathToLogsAndData = getenv("SAVAGEWIND_DLSSG_LOG") ? in->dir : nullptr;  // (its own log and crash dumps there too)
     p.logMessageCallback = sl_log;
     p.flags |= sl::PreferenceFlags::eUseManualHooking | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
     p.featuresToLoad = features;

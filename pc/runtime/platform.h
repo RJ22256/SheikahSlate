@@ -70,7 +70,8 @@ bool plat_remove_tree(const char *dir);      // rm -rf
 const char *plat_symbol(uint64_t pc, uint64_t *offset);
 void plat_print_backtrace(void);
 void plat_fatal_notice(void);  // a fatal error is about to end the process: tell the user (Windows release: message box)
-void plat_crash_handler_install(void);  // per thread where the OS needs it (alternate signal stack)
+void plat_crash_handler_install(void);
+void plat_crash_handler_reclaim(void);  // (Windows: after a library set its own last-chance handler)  // per thread where the OS needs it (alternate signal stack)
 // Called by the crash handler (runtime/dispatch.c): true = fault handled (watchpoint), resume.
 bool rt_fault_watch(uint64_t fault_addr, uint64_t host_pc);
 extern int g_fault_is_write;  // set by the platform handler before rt_fault_watch: 1 write, 0 read (or unknown)

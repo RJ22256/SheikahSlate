@@ -233,6 +233,8 @@ static void crash_handler(int sig, siginfo_t *si, void *ctx) {
     rt_fault_report(what, fa, pc, lr);
 }
 
+void plat_crash_handler_reclaim(void) {}
+
 void plat_crash_handler_install(void) {
     stack_t ss = {.ss_sp = malloc(1 << 20), .ss_size = 1 << 20};
     sigaltstack(&ss, NULL);
