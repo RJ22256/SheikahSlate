@@ -91,7 +91,7 @@ bool ms_resident(uint64_t addr, size_t npages, uint8_t *resident) {
         if (count > 4096) count = 4096;
         uint64_t start = addr + base * 4096, aligned = start - start % native;
         size_t bytes = (size_t)(start - aligned) + count * 4096;
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__PROSPERO__)  // (char *, as BSD declares it)
         char vec[4097];
 #else
         unsigned char vec[4097];
