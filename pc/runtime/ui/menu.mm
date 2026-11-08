@@ -760,16 +760,6 @@ static void tab_display(void) {
         opt_hero_next(rts_available() ? "Ray-traced sun shadows and ambient occlusion on the game's own objects."
                                       : "Needs a graphics card with hardware ray tracing.", "F6");
         opt_toggle("Ray-Tracing", &g_settings.rt_shadows, false, d.c_str());
-        // (0.3.16) path tracing: the bounce light, with Ray-Tracing's rays (vulkan/rtshadow.c rts_pt)
-        opt_indent(1);
-        if (!rts_available() || !g_settings.rt_shadows) opt_disable_next();
-        opt_toggle("Path tracing", &g_settings.path_tracing, false,
-                   "With Ray-Tracing on: light bouncing between surfaces, traced. Rays go out from every surface over "
-                   "the half of the sky it faces; where one meets another surface in view, that surface's light comes "
-                   "back with its colour - sunlit ground brightening the shade beside it, a red wall tinting what's near "
-                   "it, a lit room's corners filled in. Experimental: it only knows the light of what's on screen, works "
-                   "where Ray-Tracing does (outdoors, in daylight), and costs more GPU time (a few milliseconds more).");
-        opt_indent(-1);
     }
 #endif
     {   // (WSword) Mode: the start screen card's sets of the options below (settings.c mode_into); Custom when they
@@ -904,7 +894,7 @@ static void tab_display(void) {
         std::string desc = tr("How many pictures a second the game draws. The game itself runs at the same speed at "
                               "every rate (the console runs it at 30). Higher rates need a faster computer. Menus, "
                               "cutscenes and conversations use it too, and videos play at their own speed. Off: as "
-                              "many as the computer can draw.");
+                              "many as the computer can draw, up to 1000.");
         int hz = (int)lroundf(winsize_refresh_rate());
         if (hz > 0) {
             char line[200];
@@ -1611,8 +1601,6 @@ static void quick_toggles(ImDrawList *dl, ImVec2 a, ImVec2 b, float scale) {
     std::vector<Q> q;
 #ifndef __APPLE__
     q.push_back({"##qrt", tr("Ray-Tracing"), g_settings.rt_shadows && rts_available(), rts_available(), 0});
-    q.push_back({"##qpt", tr("Path tracing"), g_settings.path_tracing && g_settings.rt_shadows && rts_available(),
-                 rts_available() && g_settings.rt_shadows, 4});
     int fv = g_settings.dlssg > 0 ? 4 + g_settings.dlssg : g_settings.lsfg > 0 ? 1 + g_settings.lsfg : g_settings.frame_gen ? 1 : 0;
     static int fg_last = 1;  // (the frame generation turned back on: the last one on this session, else AMD FSR 3)
     if (fv) fg_last = fv;
@@ -1662,9 +1650,6 @@ static void quick_toggles(ImDrawList *dl, ImVec2 a, ImVec2 b, float scale) {
             }
             case 2:
                 g_settings.reshade = !g_settings.reshade;
-                break;
-            case 4:
-                g_settings.path_tracing = !g_settings.path_tracing;
                 break;
 #endif
             case 3:
@@ -1771,7 +1756,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 char badge[32] = "";
                 bool lit = false;
 #ifndef __APPLE__
-                if (t.id == 0 && g_settings.rt_shadows && rts_available()) snprintf(badge, sizeof badge, g_settings.path_tracing ? "PT" : "RT"), lit = true;
+                if (t.id == 0 && g_settings.rt_shadows && rts_available()) snprintf(badge, sizeof badge, "RT"), lit = true;
 #endif
                 if (t.id == 4) {
                     static int on = -1, all = 0;

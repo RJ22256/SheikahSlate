@@ -56,11 +56,6 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
 // (0.3.13) This frame's ambient occlusion (the rays' result's .b, at the mask's size) and the scene depth beside it:
 // false when there is none this frame. pc: [0] the strength, [1..3] the distance (rts_mask.frag's dist)
 bool rts_ao(VkImageView *vis, VkImageView *depth, float pc[4]);
-// (0.3.16) Path tracing (Settings > Video, under Ray-Tracing): the bounce light at the composited scene. color: the
-// scene's copy (sampled); *gi: its result (RGBA16F at the AO's size: .rgb the bounced light, .a the AO, resolved) for
-// rt_pt.frag; *strength the bounce's. False: none this frame (rts_ao's alone then).
-bool rts_pt_on(void);
-bool rts_pt(VkCommandBuffer cb, VkImageView color, VkImageView *gi, float *strength);
 // The GPU has hardware ray tracing (the device was made with it)
 bool rts_available(void);
 // Settings > Video: its state in words

@@ -124,7 +124,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
 // (WSword PC: its own version, and the Savage Wind Recomp release it is built on - SW_BASE_VERSION)
-#define SAVAGEWIND_VERSION "0.3.16-pc.1"
+#define SAVAGEWIND_VERSION "0.3.17-pc.1"
 #define SW_BASE_VERSION "0.4.1-alpha.4"
 #define SW_BASE_LINE " \xc2\xb7 Savage Wind Recomp " SW_BASE_VERSION  // (after the version, lower right)
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
@@ -1440,8 +1440,7 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
         {
             std::vector<std::pair<std::string, bool>> chips;  // (text, lit: the cyan dot)
             char b[128];
-            if (rts_available() && g_settings.rt_shadows)
-                chips.push_back({tr(g_settings.path_tracing ? "Path tracing On" : "Ray-Tracing On"), true});
+            if (rts_available() && g_settings.rt_shadows) chips.push_back({tr("Ray-Tracing On"), true});
             static const char *const upq[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
             if (g_settings.upscaler == UPSCALE_DLSS) snprintf(b, sizeof b, "DLSS %s", tr(upq[g_settings.upscale_quality % UPQ_COUNT])), chips.push_back({b, false});
             else if (g_settings.upscaler == UPSCALE_FSR3) snprintf(b, sizeof b, "FSR 3 %s", tr(upq[g_settings.upscale_quality % UPQ_COUNT])), chips.push_back({b, false});

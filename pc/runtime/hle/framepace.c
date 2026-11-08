@@ -15,8 +15,8 @@
 //     screen (0.2 s at 30 fps, 0.1 s at 120). The paused game (pause menu, map: the state at 0x7001cb48a4 is 2, 0
 //     while playing) updates VFR twice a frame.
 // So the game already runs at any frame rate as long as VFR is told how long a frame really took. WSword:
-//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 300 fps at
-//     most, FPS_CEILING; with VSync On or Adaptive a little under the display's refresh rate), and skips the frame
+//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 1000 fps at
+//     most, FPS_CEILING - 300 before WSword 0.3.17; with VSync On or Adaptive a little under the display's refresh rate), and skips the frame
 //     loop's vsync wait (rt_frame_wait, tools/patches.py);
 //   - tells VFR how long the frame really took (rt_vfr_update, inside updateInterval after the game set its ratio):
 //     ratio = seconds x 30 (0.5 at 60 fps, 0.25 at 120): one period when the frames keep the pace, the measured time
@@ -164,9 +164,19 @@ int framepace_target(void) {
     return fps;
 }
 
-// No limit still stops at 300 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
-// takes 1/30 of a minute times the step each frame: at 300 fps that is 1% of the value's rounding unit per frame).
-#define FPS_CEILING 300
+// No limit still stops at a ceiling: the game's time step can't be shorter than a frame there (rt_vfr_update), and
+// shorter steps lose precision in the game's float clocks (the time of day, 0..360, takes 1/30 of a minute times the
+// step each frame). (WSword 0.3.17) 1000 fps - 300 before, which fast GPUs reached in light scenes and menus;
+// SAVAGEWIND_FPS_CEILING=<n> (60..4000) for another.
+static double fps_ceiling(void) {
+    static double c;
+    if (!c) {
+        int e = env_int("SAVAGEWIND_FPS_CEILING", 1000);
+        c = e < 60 ? 60 : e > 4000 ? 4000 : e;
+    }
+    return c;
+}
+#define FPS_CEILING fps_ceiling()
 
 // With VSync On or Adaptive (FIFO), a frame rate at or over the display's refresh rate waits for the display: up to a
 // refresh of delay, and with G-SYNC / FreeSync the display leaves its variable rate at the top of its range. So the
@@ -223,7 +233,8 @@ void framepace_presented(uint64_t t, bool on_grid) {
     if (s > 0.25) s = 0.25;
     smooth = smooth > 0 ? smooth + (s - smooth) * 0.25 : s;
     float step = (float)((on_grid ? s : smooth) * 30);
-    g_step = step < 0.1f ? 0.1f : step > 1.5f ? 1.5f : step;
+    float lo = (float)(30.0 / FPS_CEILING);  // (a frame at the ceiling: 0.03 console frames at 1000 fps)
+    g_step = step < lo ? lo : step > 1.5f ? 1.5f : step;
     g_grid_streak = on_grid ? g_grid_streak + 1 : 0;
     static int fixed = -1;
     if (fixed < 0) fixed = env_int("SAVAGEWIND_NO_CONTROLLER_STEP", 0);
