@@ -284,9 +284,9 @@ void plat_init(void) {
 // default only with SMT and 8 or more physical cores. SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
 // starts, so what the start screen runs (the game code build) keeps every logical processor.
 void plat_cpu_placement(void) {
-    DWORD_PTR all, sys, one = 0;
+    DWORD_PTR all, sys, one = 0, fast = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &all, &sys)) return;
-    int logical = __builtin_popcountll((unsigned long long)all), cores = 0;
+    int logical = __builtin_popcountll((unsigned long long)all), cores = 0, nfast = 0, cmin = 255, cmax = -1;
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
     char *buf = len ? malloc(len) : NULL;
@@ -294,10 +294,36 @@ void plat_cpu_placement(void) {
         for (DWORD o = 0; o < len;) {
             SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
             DWORD_PTR m = e->Processor.GroupMask[0].Group == 0 ? e->Processor.GroupMask[0].Mask & all : 0;
-            if (m) cores++, one |= m & -m;  // (the core's first logical processor)
+            if (m) {
+                cores++, one |= m & -m;  // (the core's first logical processor)
+                int c = e->Processor.EfficiencyClass;
+                cmin = c < cmin ? c : cmin, cmax = c > cmax ? c : cmax;
+            }
+            o += e->Size;
+        }
+    // (WSword 0.3.18) a hybrid CPU (Intel 12th gen and later: performance and efficiency cores, EfficiencyClass higher
+    // on the fast ones): the fast cores' first logical processors
+    if (buf && cmax > cmin)
+        for (DWORD o = 0; o < len;) {
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
+            DWORD_PTR m = e->Processor.GroupMask[0].Group == 0 ? e->Processor.GroupMask[0].Mask & all : 0;
+            if (m && e->Processor.EfficiencyClass == cmax) nfast++, fast |= m & -m;
             o += e->Size;
         }
     free(buf);
+    // The game on the fast cores alone - its busy threads (main, job workers, render, WSword's recorder) never on an
+    // efficiency core - where there are 6 or more. SAVAGEWIND_FAST_CORES=1: on, 0: off; by default on in a build tuned
+    // for one CPU (make TUNE=<cpu>: WSWORD_FAST_CORES_DEFAULT).
+#ifndef WSWORD_FAST_CORES_DEFAULT
+#define WSWORD_FAST_CORES_DEFAULT 0
+#endif
+    const char *fx = getenv("SAVAGEWIND_FAST_CORES");
+    if (fast && nfast >= 6 && (fx ? atoi(fx) != 0 : WSWORD_FAST_CORES_DEFAULT)) {
+        fprintf(stderr, "[cpu] %d cores (%d fast), %d logical processors: one logical processor per fast core\n", cores,
+                nfast, logical);
+        SetProcessAffinityMask(GetCurrentProcess(), fast);
+        return;
+    }
     const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
     bool on = one && (x ? atoi(x) != 0 : cores >= 8 && logical > cores);
     fprintf(stderr, "[cpu] %d cores, %d logical processors: %s\n", cores, logical,

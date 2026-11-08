@@ -36,10 +36,24 @@ MINFLAG  := $(if $(MACOS_MIN),-mmacosx-version-min=$(MACOS_MIN))
 CC       := clang $(MINFLAG) $(CROSS)
 CXX      := clang++ $(MINFLAG) $(CROSS)
 IMGUI    := third_party/imgui
-GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime
+# (WSword) TUNE=<cpu> (e.g. alderlake): a build for one CPU - the game code at -O2 with the vectorizers, for that CPU
+# (GENARCH), WSword itself for it too, the game on its fast cores by default (platform/windows.c plat_cpu_placement),
+# the version and the zip named after it (EDITION). The game code is built again once (its id changes). It runs only
+# on that CPU and newer ones like it.
+TUNE     ?=
+ifneq ($(TUNE),)
+GENARCH  := -march=$(TUNE)
+GENOPT   := -O2 -fwrapv
+TUNEFLAGS := -march=$(TUNE) -DWSWORD_FAST_CORES_DEFAULT=1
+EDITION  ?= $(TUNE)
+TUNEFLAGS += -DWSWORD_EDITION='"$(EDITION)"'
+endif
+GENOPT   ?= -O1
+GENFLAGS := $(GENOPT) -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime
 # The start screen's zig cc reads -O1 as its own "fast" mode (clang -O2 with the loop and SLP vectorizers) and adds
-# debug info and frame pointers: these give it what clang -O1 builds here, in a third less time (runtime/gamebuild.c)
-GENFLAGS_ZIG := -Xclang $(filter -O%,$(GENFLAGS)) -fno-vectorize -fno-slp-vectorize -g0 -fomit-frame-pointer
+# debug info and frame pointers: these give it what clang -O1 builds here, in a third less time (runtime/gamebuild.c).
+# A TUNE build keeps the vectorizers.
+GENFLAGS_ZIG := -Xclang $(firstword $(filter -O%,$(GENFLAGS))) $(if $(TUNE),,-fno-vectorize -fno-slp-vectorize) -g0 -fomit-frame-pointer
 
 # The game code (made by `make gen` from your own game files) is its own library next to the app (runtime/gamelib.h);
 # the app itself holds none of it. $(GEN)/layout.c, then a folder per module (main, subsdk*, sdk)
@@ -164,8 +178,8 @@ SW_SOURCE := $(or $(shell git log -1 --format='commit %h, tree %t' 2>/dev/null),
 $(shell mkdir -p $(B) && [ "$$(cat $(B)/source_id 2>/dev/null)" = '$(SW_SOURCE)' ] || echo '$(SW_SOURCE)' > $(B)/source_id)
 
 RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
-RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb $(DEPINC) $(OSFLAGS)
-CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -isystem third_party -Ithird_party/stb $(DEPINC)
+RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb $(DEPINC) $(OSFLAGS) $(TUNEFLAGS)
+CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -isystem third_party -Ithird_party/stb $(DEPINC) $(TUNEFLAGS)
 
 .DEFAULT_GOAL := all
 
@@ -310,7 +324,7 @@ $(B)/rt/platform/windows_config.o: runtime/platform/windows_config.c
 $(B)/WSword-config.exe: $(B)/rt/platform/windows_config.o $(B)/rt/platform/windows_rc.o
 	$(CC) -o $@ $^ -fuse-ld=lld -Wl,--subsystem,windows
 
-VERSION  := $(shell sed -n 's/^\#define SAVAGEWIND_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
+VERSION  := $(shell sed -n 's/^\#define SAVAGEWIND_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)$(if $(EDITION),-$(EDITION))
 
 # macOS: build/Savage Wind.app, runs on macOS $(APP_MIN)+: the game rebuilt for that in build/mac15 against build/deps
 # (`make deps`: SDL3, LGPL FFmpeg, Python, from pinned sources), the generator helper when built

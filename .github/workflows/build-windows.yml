@@ -18,6 +18,14 @@ on:
         description: "The release notes, a Markdown file in the repository (e.g. docs/releases/pc-0.3.10-pc.1.md)"
         required: false
         default: ""
+      tune:
+        description: "A build for one CPU: its -march (e.g. alderlake); empty: the normal build for every PC (pc/Makefile TUNE)"
+        required: false
+        default: ""
+      edition:
+        description: "With tune: the build's name in its version and zip (e.g. i7-12700KF); empty: the tune"
+        required: false
+        default: ""
 
 jobs:
   windows:
@@ -150,7 +158,10 @@ jobs:
         run: tools/fetch_zig.sh
       - name: Release zip
         working-directory: pc
-        run: make -j"$(nproc)" dist
+        env:
+          TUNE: ${{ inputs.tune }}
+          EDITION_IN: ${{ inputs.edition }}
+        run: make -j"$(nproc)" dist ${TUNE:+TUNE="$TUNE"} ${EDITION_IN:+EDITION="$EDITION_IN"}
       - name: Nothing of the game inside, WSword's names
         working-directory: pc
         run: |
@@ -187,13 +198,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.release }}
           NOTES: ${{ inputs.release_notes }}
+          TUNE: ${{ inputs.tune }}
         run: |
           $zip = Get-ChildItem pc/build/dist/*.zip | Select-Object -First 1
           $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($zip.Name)" | Out-File -Encoding ascii "$($zip.FullName).sha256"
           $ver = $zip.Name -replace '^WSword-(.*)-windows\.zip$', '$1'
           if ($env:NOTES -and (Test-Path $env:NOTES)) { $n = @('--notes-file', $env:NOTES) } else { $n = @('--notes', "WSword $ver for Windows.") }
-          gh release create $env:TAG $zip.FullName "$($zip.FullName).sha256" --target $env:GITHUB_SHA --title "WSword $ver - PC (Windows)" @n
+          # (a build for one CPU: a pre-release, so it isn't the latest release that everyone is pointed to)
+          if ($env:TUNE) { $n += '--prerelease'; $t = "WSword $ver - PC (Windows, built for one CPU)" } else { $t = "WSword $ver - PC (Windows)" }
+          gh release create $env:TAG $zip.FullName "$($zip.FullName).sha256" --target $env:GITHUB_SHA --title $t @n
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $url = gh release view $env:TAG --json url --jq .url
           echo "::notice title=Release::$url"

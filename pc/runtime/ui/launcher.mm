@@ -124,7 +124,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
 // (WSword PC: its own version, and the Savage Wind Recomp release it is built on - SW_BASE_VERSION)
-#define SAVAGEWIND_VERSION "0.3.17-pc.1"
+#define SAVAGEWIND_VERSION "0.3.18-pc.1"
 #define SW_BASE_VERSION "0.4.1-alpha.4"
 #define SW_BASE_LINE " \xc2\xb7 Savage Wind Recomp " SW_BASE_VERSION  // (after the version, lower right)
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
@@ -1284,7 +1284,11 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
     text(fh, 21 * u, tx, y + 1 * u, ink, "WSWORD");
     {
         char sub[96];
+#ifdef WSWORD_EDITION  // (make TUNE=<cpu>: a build for one CPU, EDITION its name)
+        snprintf(sub, sizeof sub, "%s  \xc2\xb7  %s", SAVAGEWIND_VERSION, WSWORD_EDITION);
+#else
         snprintf(sub, sizeof sub, "%s  \xc2\xb7  PC", SAVAGEWIND_VERSION);
+#endif
         text(ft, 12 * u, tx, y + 25 * u, muted, sub);
     }
     y += logo + 32 * u;
