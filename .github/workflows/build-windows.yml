@@ -11,11 +11,11 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Publish the zip as a GitHub release with this tag (e.g. v0.3.8-pc.1); empty: none"
+        description: "Publish the zip as a GitHub release with this tag (e.g. v0.3.9-pc.1); empty: none"
         required: false
         default: ""
       release_notes:
-        description: "The release notes, a Markdown file in the repository (e.g. docs/releases/pc-0.3.8-pc.1.md)"
+        description: "The release notes, a Markdown file in the repository (e.g. docs/releases/pc-0.3.9-pc.1.md)"
         required: false
         default: ""
 

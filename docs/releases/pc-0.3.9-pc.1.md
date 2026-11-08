@@ -1,0 +1,32 @@
+**WSword for PC (Windows 10/11, 64-bit)**, still built on **[Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp) 0.4.1-alpha.4** (MIT). This update makes the ray-traced shadows complete.
+
+No game files are included. You need your own dump of *Breath of the Wild* **1.9.0** (recommended) or 1.8.2.
+
+### Ray-traced shadows: trees, bushes and grass too
+
+Settings > Video > **Ray-traced shadows** (experimental; GPUs with hardware ray tracing).
+
+- **Trees, bushes and grass are now traced.** In 0.3.8 their shadows were the game's own, and small plants near the ground lost theirs. Now a ray is blocked where a leaf is solid and goes on through its gaps (the cut-outs are read from the game's own shadow map of the same spot).
+- **No shadows lost.** Shadow casters drawn as triangle strips and fans are traced as well. A caster whose ray tracing shader is still compiling (the first minute or so, and new areas) keeps its game shadow meanwhile.
+- If shadows still look wrong somewhere, press **Ctrl+F9** there and send `WSword.log`, the `build\rt-report` folder and a screenshot.
+
+### Updating
+
+Unzip `WSword-0.3.9-pc.1-windows.zip` **over your WSword folder** and replace the files, `wsword_dlss.dll` included.
+- **From 0.3.0-pc.1 or later:** your game files, game code, saves, settings, mods, `nvngx_dlss.dll` and `streamline\nvngx_dlssg.dll` stay as they are.
+- **From 0.2.8-pc.x:** as 0.3.0-pc.1 describes - it finds your game files and saves, builds the game code once, and starts.
+
+The full guide is in the zip (`WSword-PC-guide.md`).
+
+### Licences
+
+- Savage Wind's: `LICENSE.txt`, and the components' in `SavageWind-README.md`.
+- Inter (the menus' font, OFL): `Inter-OFL.txt`.
+- Lossless frame generation's code is lsfg-vk by PancakeTAS and contributors (GPL-3.0): `lsfg-vk-LICENSE.md` and `lsfg-vk-README.md`. WSword isn't made by or affiliated with Lossless Scaling's developers.
+- `wsword_dlss.dll` is WSword's bridge to NVIDIA's DLSS SDK (under the SDK's licence: `NVIDIA-DLSS-LICENSE.txt`), to NVIDIA's Streamline SDK, and to ReShade (its add-on API headers, BSD-3-Clause: `ReShade-API-LICENSE.md`).
+- The `streamline` folder holds NVIDIA's Streamline: its signed DLLs, and its licence. NVIDIA, RTX, DLSS and Reflex are NVIDIA's trademarks. WSword isn't made by or affiliated with NVIDIA.
+- ReShade is crosire's ([reshade.me](https://reshade.me)); none of it ships with WSword. WSword isn't made by or affiliated with ReShade.
+
+The source is [`pc/`](https://github.com/RJ22256/SheikahSlate/tree/v0.3.9-pc.1/pc) in this repository, with WSword's changes in [`pc/WSWORD.md`](https://github.com/RJ22256/SheikahSlate/blob/v0.3.9-pc.1/pc/WSWORD.md).
+
+If something goes wrong, send `WSword.log` (next to `WSword.exe`).

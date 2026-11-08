@@ -6646,7 +6646,9 @@ static void draw_(CmdRec *r, bool indexed) {
     // shader's capture variant (ShaderKey xfb: the clip position to transform feedback too), once that is built
     Prog *rts_plain = pr;
     bool rts_cap = false;
-    if (r->x[0] == 4 && st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SHADOW && rts_on()) {
+    // (triangles of any kind: lists, strips, fans, quads, polygons - NVN's 4-9)
+    bool rts_caster = r->x[0] >= 4 && r->x[0] <= 9 && st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SHADOW && rts_on();
+    if (rts_caster) {
         ShaderKey xk = {0}, xf = {0};
         xk.glsl = xf.glsl = 1;
         xk.flip_y = xf.flip_y = origin == 0;
@@ -7132,9 +7134,18 @@ have_pipe:
         }
     }
     // (WSword) a shadow caster's vertices to the ray-traced shadows' capture (rtshadow.c)
-    bool rts_x = rts_cap && topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST &&
-                 rts_capture_begin(cb, (const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size, pr->fi->uses_discard,
-                                   (use_index ? icount : count) * inst);
+    // (transform feedback writes each triangle's three vertices: a list's count, a strip's or fan's (n - 2) x 3 - an
+    // upper bound with restarts, the rest left NaN)
+    bool rts_x = false;
+    if (rts_cap) {
+        uint32_t n = use_index ? icount : count, per = 0;
+        if (topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST) per = n - n % 3;
+        else if ((topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN) && n >= 3) per = (n - 2) * 3;
+        uint32_t layer = st.rt.has_dview && (st.rt.dview.setmask & 2) ? st.rt.dview.min_layer : 0;
+        rts_x = per && inst && rts_capture_begin(cb, (const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size,
+                                                  pr->fi->uses_discard, per * inst, vk_tex(st.rt.depth, true), layer);
+    }
+    if (rts_caster && !rts_x) rts_capture_missed((const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size);
     if (!use_index) rec_CmdDraw(cb, count, inst, first, base_inst);
     else rec_CmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
     if (rts_x) rts_capture_end(cb);

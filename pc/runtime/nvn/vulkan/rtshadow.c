@@ -54,6 +54,9 @@ static struct {  // this frame's capture
     double inv[MAX_CASC][16]; // and their inverses
     float sun[3];             // toward the sun (the light's view's z row)
     float view[11];           // the first cascade's view rotation (c3 0-10): the others' must be the same
+    TexBackend *map;          // the cascades' depth array (the game's maps: foliage's opacity in the rays)
+    uint32_t layer[MAX_CASC]; // each cascade's layer in it
+    int missed;               // caster draws not captured (a variant still compiling...): the game's mask kept too
     // the mask (rts_mask_seen)
     bool pending;
     TexBackend *mask, *depth;
@@ -140,8 +143,8 @@ static const char xform_src[] =
 
 // Each pixel of the half-resolution depth: its world position (the world camera's inverse), its normal (from its
 // neighbours, the nearer of each pair), the finest cascade it is in, then RAYS rays over the sun's disc against that
-// cascade's geometry: .r the share that met nothing, .g the share that passed through alpha-tested foliage first (the
-// game's mask decides those); (0, 1): no cascade, or the sky - the game's mask as it is.
+// cascade's geometry: .r the share that met nothing (alpha-tested foliage blocks where its cut-out is solid: solid());
+// (0, 1): no cascade, or the sky - the game's mask as it is.
 static const char trace_src[] =
     "#version 460\n"
     "#extension GL_EXT_ray_query : require\n"
@@ -149,6 +152,7 @@ static const char trace_src[] =
     "layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;\n"
     "layout(set = 0, binding = 1) uniform sampler2D dep;\n"
     "layout(set = 0, binding = 2, rgba8) uniform writeonly image2D vis;\n"
+    "layout(set = 0, binding = 4) uniform sampler2DArray maps;\n"  // the game's cascades (depth): foliage's cut-outs
     "layout(set = 0, binding = 3, std140) uniform U {\n"
     "  mat4 inv_vp;\n"      // (row-major: v * m) the world camera's clip to the world
     "  mat4 casc[8];\n"     // the world to each cascade's clip
@@ -156,7 +160,23 @@ static const char trace_src[] =
     "  vec4 cam;\n"         // xyz: the camera's position
     "  vec4 p;\n"           // x: rows' direction (ysign); y: OpenGL depth (1); z: cascades; w: rays
     "  vec4 bias;\n"        // x: metres; y: per metre of distance; z: the rays' length; w: foliage nearer is passed
+    "  vec4 cl[8];\n"      // x: each cascade's layer in the maps
     "} u;\n"
+    // A candidate hit on alpha-tested foliage at H blocks the ray where the game's own map of that cascade - drawn
+    // with the leaves' cut-outs - has a surface at least as near the light as H there (within 25 cm): the cut-out was
+    // solid at that texel. Elsewhere the ray goes on through the leaf's transparent part.
+    "bool solid(vec3 H, vec3 L, int c) {\n"
+    "  vec4 a = vec4(H, 1.0) * u.casc[c], b = vec4(H + L * 0.25, 1.0) * u.casc[c];\n"
+    "  if (a.w <= 0.0 || b.w <= 0.0) return true;\n"
+    "  vec3 na = a.xyz / a.w, nb = b.xyz / b.w;\n"
+    "  vec2 uv = vec2(na.x * 0.5 + 0.5, na.y * u.p.x * 0.5 + 0.5);\n"
+    "  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return true;\n"
+    "  float da = u.p.y > 0.5 ? na.z * 0.5 + 0.5 : na.z, db = u.p.y > 0.5 ? nb.z * 0.5 + 0.5 : nb.z;\n"
+    "  ivec3 sz = textureSize(maps, 0);\n"
+    "  float dm = texelFetch(maps, ivec3(min(ivec2(uv * vec2(sz.xy)), sz.xy - 1), int(u.cl[c].x)), 0).r;\n"
+    "  float toward = da - db;\n"  // (depth change 25 cm toward the light: its sign is the depth's direction)
+    "  return (da - dm) * sign(toward) >= -abs(toward);\n"
+    "}\n"
     "vec3 world(ivec2 px, ivec2 sz) {\n"
     "  px = clamp(px, ivec2(0), sz - 1);\n"
     "  float d = texelFetch(dep, px, 0).r;\n"
@@ -198,15 +218,12 @@ static const char trace_src[] =
     "    vec3 D = normalize(L + (T * cos(ang) + B * sin(ang)) * r);\n"
     "    rayQueryEXT q;\n"
     "    rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 1u << c, O, 0.0, D, u.bias.z);\n"
-    "    bool f = false;\n"
     "    while (rayQueryProceedEXT(q))\n"
-    "      if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT &&\n"
-    "          rayQueryGetIntersectionTEXT(q, false) > u.bias.w) {\n"
-    "        f = true;\n"
-    "        rayQueryTerminateEXT(q);\n"
+    "      if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {\n"
+    "        float t = rayQueryGetIntersectionTEXT(q, false);\n"
+    "        if (t > u.bias.w && solid(O + D * t, L, c)) rayQueryConfirmIntersectionEXT(q);\n"
     "      }\n"
-    "    if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT) continue;\n"
-    "    if (f) fol += 1.0; else lit += 1.0;\n"
+    "    if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) lit += 1.0;\n"
     "  }\n"
     "  imageStore(vis, px, vec4(lit / float(n), fol / float(n), 0.0, 0.0));\n"
     "}\n";
@@ -251,13 +268,14 @@ static bool setup(void) {
     VkDescriptorSetLayoutCreateInfo xl = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                           .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR, .bindingCount = 1,
                                           .pBindings = &xb};
-    VkDescriptorSetLayoutBinding tb[4] = {
+    VkDescriptorSetLayoutBinding tb[5] = {
         {0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
         {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
         {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
-        {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+        {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
     VkDescriptorSetLayoutCreateInfo tl = xl;
-    tl.bindingCount = 4, tl.pBindings = tb;
+    tl.bindingCount = 5, tl.pBindings = tb;
     if (vkCreateDescriptorSetLayout(g_vk.dev, &xl, NULL, &R.xform_set) != VK_SUCCESS ||
         vkCreateDescriptorSetLayout(g_vk.dev, &tl, NULL, &R.trace_set) != VK_SUCCESS) {
         snprintf(R.why, sizeof R.why, "its descriptor layouts failed");
@@ -289,7 +307,7 @@ static bool setup(void) {
     }
     R.cap_verts = 4u << 20;  // (16 MB a million vertices: the report's frame captured ~3 million; grown when short)
     if (!rbuf_make(&R.cap, (VkDeviceSize)R.cap_verts * VERT,
-                   VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                   VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR) ||
         !rbuf_make(&R.inst, MAX_CASC * sizeof(VkAccelerationStructureInstanceKHR),
                    VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
@@ -351,7 +369,7 @@ static void frame_start(uint64_t fr) {
         uint32_t want = C.need + C.need / 4;
         RBuf nb;
         if (rbuf_make(&nb, (VkDeviceSize)want * VERT, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT |
-                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                                           VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR)) {
             retire(&R.cap, NULL);
             R.cap = nb;
@@ -360,26 +378,43 @@ static void frame_start(uint64_t fr) {
         }
     }
     C.frame = fr, C.cursor = 0, C.need = 0, C.overflow = false, C.nseg = 0, C.ndraws = 0, C.nfol = 0, C.ncasc = 0;
+    C.map = NULL, C.missed = 0;
     C.pending = false;
 }
 
-bool rts_capture_begin(VkCommandBuffer cb, const float *c3, uint64_t c3_size, bool foliage, uint32_t nverts) {
-    if (!rts_on() || !c3 || c3_size < 44 * 4 || !nverts || nverts % 3) return false;
+// One of the sun's cascades: not a standard perspective camera (row 3 of the projection, c3 40-43: 0 0 -1 0 - a spot
+// light's shadow, were the game to draw one), and the first cascade's light direction (the view's rotation, c3 0-10)
+static bool sun_cascade(const float *c3, uint64_t c3_size) {
+    if (!c3 || c3_size < 44 * 4) return false;
+    if (c3[40] == 0 && c3[41] == 0 && c3[42] == -1 && c3[43] == 0) return false;
+    return !C.ncasc || !memcmp(C.view, c3, sizeof C.view);
+}
+
+void rts_capture_missed(const float *c3, uint64_t c3_size) {
+    if (!rts_on()) return;
     uint64_t fr = renderer_present_count();
     if (fr != C.frame) frame_start(fr);
-    // the sun's cascades only: not a perspective camera (row 3 of the projection, c3 40-43: 0 0 -1 0 - a spot light's
-    // shadow, were the game to draw one), and the first one's light direction (the view's rotation, c3 0-10)
-    if (c3[40] == 0 && c3[41] == 0 && c3[42] == -1 && c3[43] == 0) return false;
-    if (C.ncasc && memcmp(C.view, c3, sizeof C.view)) return false;
+    if (sun_cascade(c3, c3_size)) C.missed++;
+}
+
+bool rts_capture_begin(VkCommandBuffer cb, const float *c3, uint64_t c3_size, bool foliage, uint32_t nverts, TexBackend *map,
+                       uint32_t layer) {
+    if (!rts_on() || !c3 || c3_size < 44 * 4 || !nverts || nverts % 3 || !map) return false;
+    uint64_t fr = renderer_present_count();
+    if (fr != C.frame) frame_start(fr);
+    if (!sun_cascade(c3, c3_size)) return false;  // (not the sun's: not missed either)
+    if (C.map && C.map != map) { C.missed++; return false; }  // (one depth array: the sun's)
     const float *vp = c3 + 12;
     int c = 0;
     while (c < C.ncasc && memcmp(C.vp[c], vp, sizeof C.vp[c])) c++;
     if (c == C.ncasc) {  // a cascade not seen this frame
-        if (C.ncasc == MAX_CASC) return false;
+        if (C.ncasc == MAX_CASC) { C.missed++; return false; }
         double m[16];
         for (int i = 0; i < 16; i++) m[i] = vp[i];
-        if (!invert(m, C.inv[c])) return false;
+        if (!invert(m, C.inv[c])) { C.missed++; return false; }
         memcpy(C.vp[c], vp, sizeof C.vp[c]);
+        C.layer[c] = layer;
+        C.map = map;
         if (!c) {  // the sun: the light's view's z row (c3 8-10), toward the light
             memcpy(C.view, c3, sizeof C.view);
             double l = sqrt((double)c3[8] * c3[8] + (double)c3[9] * c3[9] + (double)c3[10] * c3[10]);
@@ -396,7 +431,7 @@ bool rts_capture_begin(VkCommandBuffer cb, const float *c3, uint64_t c3_size, bo
     if (last >= 0 && C.seg[last].casc == c && C.seg[last].foliage == foliage && C.seg[last].start + C.seg[last].count == C.cursor) {
         C.seg[last].count += nverts;
     } else {
-        if (C.nseg == MAX_SEG) return false;
+        if (C.nseg == MAX_SEG) { C.missed++; return false; }
         C.seg[C.nseg].start = C.cursor, C.seg[C.nseg].count = nverts, C.seg[C.nseg].casc = (uint8_t)c;
         C.seg[C.nseg++].foliage = foliage;
     }
@@ -466,8 +501,8 @@ typedef struct {
     VkAccelerationStructureBuildRangeInfoKHR trange;
     VkAccelerationStructureInstanceKHR inst[MAX_CASC];
     int ninst;
-    float ubo[160];
-    VkImageView depth_view, vis_view;
+    float ubo[192];
+    VkImageView depth_view, vis_view, map_view;
     VkImage mask, copy;
     uint32_t w, h;
     // (the handles as of this frame: the main thread may replace R's before the recorder runs this)
@@ -519,7 +554,8 @@ static void run_rt(const void *p) {
     VkDescriptorImageInfo di = {R.nearest, b->depth_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo vi = {VK_NULL_HANDLE, b->vis_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorBufferInfo ui = {b->ubo_buf, 0, sizeof b->ubo};
-    VkWriteDescriptorSet w[4] = {
+    VkDescriptorImageInfo mi = {R.nearest, b->map_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w[5] = {
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = &wa, .dstBinding = 0, .descriptorCount = 1,
          .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR},
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
@@ -527,13 +563,19 @@ static void run_rt(const void *p) {
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 2, .descriptorCount = 1,
          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &vi},
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 3, .descriptorCount = 1,
-         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &ui}};
-    R.push_set(cb, VK_PIPELINE_BIND_POINT_COMPUTE, R.trace_layout, 0, 4, w);
+         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &ui},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 4, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &mi}};
+    R.push_set(cb, VK_PIPELINE_BIND_POINT_COMPUTE, R.trace_layout, 0, 5, w);
     vkCmdDispatch(cb, (b->w + 7) / 8, (b->h + 7) / 8, 1);
     // 4. the game's mask, copied for the compose pass to read while it writes the mask
     VkImageCopy ic = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                       .extent = {b->w, b->h, 1}};
     vkCmdCopyImage(cb, b->mask, VK_IMAGE_LAYOUT_GENERAL, b->copy, VK_IMAGE_LAYOUT_GENERAL, 1, &ic);
+    barrier(cb, ALL, VK_ACCESS_2_MEMORY_WRITE_BIT, ALL, RW);
+    // 5. the capture buffer back to NaN (inactive triangles) for the next frame: what a draw writes less than its
+    // stretch (a strip cut by restarts) never forms a triangle of last frame's leftovers
+    vkCmdFillBuffer(cb, b->cap_buf, 0, VK_WHOLE_SIZE, 0x7fc00000u);
     barrier(cb, ALL, VK_ACCESS_2_MEMORY_WRITE_BIT, ALL, RW);
     free(b->geom);
     free(b);
@@ -555,6 +597,9 @@ bool rts_run(VkCommandBuffer cb, RtsCompose *out) {
     static const VkComponentMapping id = {0};
     b->depth_view = vk_image_view(depth, VK_IMAGE_VIEW_TYPE_2D, depth->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
     b->vis_view = vk_image_view(&R.vis, VK_IMAGE_VIEW_TYPE_2D, R.vis.format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    if (!C.map || !C.map->image) { free(b); return false; }
+    b->map_view = vk_image_view(C.map, VK_IMAGE_VIEW_TYPE_2D_ARRAY, C.map->format, 0, 1, 0, C.map->layers ? C.map->layers : 1, id,
+                                VK_IMAGE_ASPECT_DEPTH_BIT);
     // the transform runs: each stretch of one cascade
     for (int i = 0; i < C.nseg; i++) {
         int last = b->nruns - 1;
@@ -673,14 +718,15 @@ bool rts_run(VkCommandBuffer cb, RtsCompose *out) {
     extern uint32_t nvn_depth_mode(void);
     u[152] = renderer_origin_lower_left() ? 1.0f : -1.0f, u[153] = nvn_depth_mode() == 0 ? 1.0f : 0.0f;
     u[154] = (float)C.ncasc, u[155] = RAYS;
-    // (alpha-tested casters within a metre of the surface - grass, mostly - let the rays through: the game's map
-    // can't resolve a blade's shadow anyway, and on a meadow every ray would otherwise fall back to it)
-    u[156] = bias_m, u[157] = bias_d, u[158] = 3000.0f, u[159] = 1.0f;
+    // (alpha-tested casters within 30 cm of the surface - the grass the pixel stands in - let the rays through)
+    u[156] = bias_m, u[157] = bias_d, u[158] = 3000.0f, u[159] = 0.3f;
+    for (int c = 0; c < MAX_CASC; c++) u[160 + c * 4] = c < C.ncasc ? (float)C.layer[c] : 0;
     rec_call(run_rt, &b, sizeof b);
     C.last_tris = tris, C.last_casc = (uint32_t)C.ncasc, C.runs++;
     if (C.runs == 1 || C.runs % 3600 == 0)
-        LOG("[rts] frame %llu: %d caster draws (%d alpha-tested), %u triangles, %d cascades, mask %ux%u\n",
-            (unsigned long long)C.frame, C.ndraws, C.nfol, tris, C.ncasc, w, h);
+        LOG("[rts] frame %llu: %d caster draws (%d alpha-tested, %d not captured), %u triangles, %d cascades (layers %u %u %u), "
+            "mask %ux%u, maps %ux%ux%u\n", (unsigned long long)C.frame, C.ndraws, C.nfol, C.missed, tris, C.ncasc, C.layer[0],
+            C.layer[1], C.layer[2], w, h, C.map->width, C.map->height, C.map->layers);
     // the compose pass (exec.c): the rays' result, the game's mask, the depth
     out->mask = mask, out->vis = &R.vis, out->copy = &R.copy, out->depth_view = b->depth_view;
     memset(out->pc, 0, sizeof out->pc);
@@ -688,6 +734,7 @@ bool rts_run(VkCommandBuffer cb, RtsCompose *out) {
     if (view < 0) view = getenv("SAVAGEWIND_RTS_VIEW") ? atoi(getenv("SAVAGEWIND_RTS_VIEW")) : 0;
     out->pc[0] = (float)view;
     out->pc[1] = C.world[38], out->pc[2] = C.world[39], out->pc[3] = u[153];  // (the distance: B / (z + A))
+    out->pc[4] = C.missed ? 1.0f : 0.0f;  // (casters not traced this frame: the game's shadows kept as well)
     return true;
 }
 
@@ -706,4 +753,5 @@ void rts_report(void) {
         "alpha-tested), %u vertices of %u, %d runs, %d cascades%s, sun (%.3f %.3f %.3f)\n",
         g_settings.rt_shadows ? "on" : "off", g_vk.rt ? "available" : "not available", R.tried ? (R.ok ? "ready" : R.why) : "not set up",
         C.ndraws, C.nfol, C.cursor, R.cap_verts, C.nseg, C.ncasc, C.overflow ? " (overflow)" : "", C.sun[0], C.sun[1], C.sun[2]);
+    LOG("[rtr] ray-traced shadows: %d caster draws not captured this frame\n", C.missed);
 }

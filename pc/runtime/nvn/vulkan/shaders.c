@@ -1273,7 +1273,8 @@ static const char *builtin_src(const char *name, int *stage) {
     // channel from the rays (t0: .r the share of rays lit, .g through alpha-tested foliage - the game's own mask, t1,
     // decides those), filtered over 3x3 pixels of about the same distance (t2: the half-resolution depth; a.y, a.z the
     // projection's A, B: the distance B / (z + A); a.w OpenGL's depth range); the other channels as the game wrote them.
-    // a.x 1: the rays alone (testing, SAVAGEWIND_RTS_VIEW).
+    // a.x 1: the rays alone (testing, SAVAGEWIND_RTS_VIEW); b.x 1: a caster wasn't traced this frame - the game's
+    // shadow kept as well (the darker of the two), so nothing it casts goes missing.
     if (!strcmp(name, "rts_mask.frag")) {
         *stage = STAGE_FRAGMENT;
         return "#version 450\n"
@@ -1299,6 +1300,7 @@ static const char *builtin_src(const char *name, int *stage) {
                "    }\n"
                "  vec2 v = ws > 1e-4 ? acc / ws : texelFetch(t0, p, 0).rg;\n"
                "  float f = pc.a.x > 0.5 ? v.x + v.y : v.x + v.y * m.r;\n"
+               "  if (pc.b.x > 0.5 && pc.a.x < 0.5) f = min(f, m.r);\n"
                "  o = vec4(clamp(f, 0.0, 1.0), m.gba);\n"
                "}\n";
     }

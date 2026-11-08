@@ -15,8 +15,9 @@
 // opaque, or - its fragment shader discards: leaves, grass - not), with a top-level one over them (instance mask: the
 // cascade), and each pixel of the half-resolution depth traces rays toward the sun (a cone, 4 rays) against the
 // geometry of the finest cascade it is in - the one the game's map would use for it. A ray that meets an opaque
-// triangle is shadowed; one that passes through alpha-tested foliage takes the game's own mask (whose map has the
-// leaves' cut-outs; foliage within a metre of the surface - grass - is passed through); one that meets nothing is lit. The mask's red channel is then rewritten from that (a 3x3
+// triangle is shadowed; alpha-tested foliage (leaves, grass, bushes) blocks it where its cut-out is solid - where the
+// game's own map of that cascade, drawn with the cut-outs, has a surface there (foliage within 30 cm of the pixel
+// passes: the grass it stands in); one that meets nothing is lit. The mask's red channel is then rewritten from that (a 3x3
 // depth-aware filter), its other channels kept. Where the game's map has no cascade, and the sky, keep its value.
 #pragma once
 #include <stdbool.h>
@@ -33,7 +34,12 @@ extern "C" {
 bool rts_on(void);
 // A shadow caster draw (a triangle list into a cascade, nverts vertices with its instances): true when its vertices
 // go to the capture buffer - the draw then goes between rts_capture_begin and rts_capture_end, with the xfb program
-bool rts_capture_begin(VkCommandBuffer cb, const float *c3, uint64_t c3_size, bool foliage, uint32_t nverts);
+// map / layer: the cascade's depth array and its layer (alpha-tested foliage's cut-outs are read from the game's map)
+bool rts_capture_begin(VkCommandBuffer cb, const float *c3, uint64_t c3_size, bool foliage, uint32_t nverts, TexBackend *map,
+                       uint32_t layer);
+// A caster draw that couldn't be captured (its variant still compiling, a topology without triangles): the game's
+// shadows are kept as well this frame (rts_mask.frag's min), so nothing it casts goes missing
+void rts_capture_missed(const float *c3, uint64_t c3_size);
 void rts_capture_end(VkCommandBuffer cb);
 // A draw of the deferred sun shadow mask: its target (the red channel the sun's), the half-resolution depth, and the
 // world camera's context buffer (its fragment c3)
