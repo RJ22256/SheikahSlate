@@ -124,7 +124,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
 // (WSword PC: its own version, and the Savage Wind Recomp release it is built on - SW_BASE_VERSION)
-#define SAVAGEWIND_VERSION "0.3.18-pc.1"
+#define SAVAGEWIND_VERSION "0.3.18-pc.2"
 #define SW_BASE_VERSION "0.4.1-alpha.4"
 #define SW_BASE_LINE " \xc2\xb7 Savage Wind Recomp " SW_BASE_VERSION  // (after the version, lower right)
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
@@ -533,6 +533,24 @@ static std::string dlc_installed(const std::string &root) {
         if (is_dir(root + "/" + aoc_name(AOC_DIR, i))) list += (list.empty() ? "" : " + ") + std::to_string(i);
     std::string v = aoc_version(root + "/aoc1");
     return list.empty() || v.empty() ? list : list + " (" + v + ")";
+}
+
+// (WSword 0.3.18) A game dump with the DLC merged into its own RomFS (System/AocVersion.txt, Pack/AocMainField.pack in
+// romfs/: services/fs.c romfs_has_dlc_merged) - the game reads it from there. "" none, else its version or "merged"
+static std::string dlc_merged(const std::string &root) {
+    std::string v = aoc_version(root + "/romfs");
+    if (!v.empty()) return v;
+    struct stat st;
+    return stat((root + "/romfs/Pack/AocMainField.pack").c_str(), &st) == 0 ? "merged" : "";
+}
+
+// What the screens show of the DLC: set up in its own folders, or merged into the game's files; "" none
+static std::string dlc_summary(const std::string &root) {
+    std::string d = dlc_installed(root);
+    if (!d.empty()) return d;
+    std::string m = dlc_merged(root);
+    if (m.empty()) return "";
+    return m == "merged" ? std::string(tr("in the game's files")) : m + " - " + tr("in the game's files");
 }
 
 static void remove_dlc(const std::string &root) {
@@ -1333,7 +1351,7 @@ static int glass_main(ImVec2 ds, SDL_Window *win, const std::string &status, boo
         float ix = pad + 6 * u, iw = rw - 2 * pad - 12 * u;
         text(ft, 12 * u, ix, cy + 12 * u, muted, tr("Game files"));
         std::string gv = glass_game_version(ready);
-        std::string dlc = dlc_installed(g_root);
+        std::string dlc = dlc_summary(g_root);
         std::string state = busy ? std::string(tr("Setting up...")) :
                             ready ? std::string(tr("Ready")) + (gv.empty() ? "" : "  \xc2\xb7  " + gv) + (dlc.empty() ? "" : " + DLC")
                                   : std::string(trv(status));
@@ -2307,7 +2325,8 @@ extern "C" void launcher_run(const char *root, int mode) {
                     float cw = ImGui::GetContentRegionAvail().x, gap = 12 * sc, sw = (cw - 3 * gap) / 4, fs = ImGui::GetFontSize() * 0.74f;
                     ImVec2 p = ImGui::GetCursorScreenPos();
                     float prog = busy ? extract_progress() : 0;
-                    const float fill[4] = {src.empty() && !busy ? 0.0f : 1.0f, busy ? 1.0f : 0.0f, busy ? fminf(1, fmaxf(0, prog)) : 0.0f, 0.0f};
+                    bool have0 = is_dir(g_root + "/romfs") && is_dir(g_root + "/exefs");
+                    const float fill[4] = {src.empty() && !busy && !have0 ? 0.0f : 1.0f, busy ? 1.0f : 0.0f, busy ? fminf(1, fmaxf(0, prog)) : 0.0f, 0.0f};
                     static const char *const steps[4] = {"Choose your files", "Check", "Build the game code", "Play"};
                     for (int i = 0; i < 4; i++) {
                         float x = p.x + i * (sw + gap);
@@ -2320,14 +2339,18 @@ extern "C" void launcher_run(const char *root, int mode) {
                     }
                     ImGui::Dummy(ImVec2(cw, 12 * sc + fs * 1.3f * 2 + 10 * sc));
                     // what's there: the folder chosen, the DLC set up (green and ticked) - rows in the card
-                    std::string dlv = dlc_installed(g_root);
+                    std::string dlv = dlc_summary(g_root);
+                    bool have = is_dir(g_root + "/romfs") && is_dir(g_root + "/exefs");  // (set up before: the game's files there)
                     struct Found { std::string text, right; bool ok; };
                     std::vector<Found> found;
                     if (!src.empty()) {
                         size_t cut = src.find_last_of("/\\");
                         found.push_back({tr("Game files folder chosen"), cut == std::string::npos ? src : src.substr(cut + 1), true});
+                    } else if (have) {
+                        std::string gv = glass_game_version(true);
+                        found.push_back({tr("Your game files are set up"), gv, true});
                     } else found.push_back({tr("Choose the folder with your own extracted game files"), "", false});
-                    if (!dlv.empty()) found.push_back({std::string(tr("Downloadable content set up")) + ": " + dlv, "", true});
+                    if (!dlv.empty()) found.push_back({std::string(tr("Downloadable content")) + ": " + dlv, "", true});
                     for (const Found &f : found) {
                         ImVec2 a = ImGui::GetCursorScreenPos();
                         float rh = fs * 2.6f;
@@ -2414,10 +2437,11 @@ extern "C" void launcher_run(const char *root, int mode) {
                         if (opt_action("Cancel", "", "Keeps the game files.", true)) g_confirm_delete = false;
                     }
                     if (!g_confirm_delete) {  // the DLC set up (added from the folder chosen below), and removing it
-                        std::string dl = dlc_installed(g_root);
+                        std::string dl = dlc_installed(g_root), dm = dl.empty() ? dlc_summary(g_root) : "";
                         opt_section("Downloadable content");
-                        if (dl.empty()) opt_disable_next();
-                        if (opt_action("Remove downloadable content", dl.empty() ? tr("Not set up") : dl.c_str(),
+                        if (dl.empty()) opt_disable_next();  // (merged into the game's files: it goes with them)
+                        if (opt_action("Remove downloadable content",
+                                       !dl.empty() ? dl.c_str() : !dm.empty() ? dm.c_str() : tr("Not set up"),
                                        tr("The Master Trials and The Champions' Ballad, from your own copy of them. To add "
                                           "them, choose the folder with their extracted RomFS (or the game's folder, if "
                                           "they're in it) below and set up. Removing them keeps your saves."), true)) {
