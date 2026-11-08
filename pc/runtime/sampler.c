@@ -87,6 +87,7 @@ static void *sampler_main(void *arg) {
         else next = now;
     }
     atomic_store(&sample_state, SAMPLE_WRITING);
+    CreateDirectoryA("build", NULL);  // (WSword: a copy without the folder wrote nothing)
     FILE *f = fopen("build/samples.txt", "w");
     if (f) {
         fprintf(f, "M exe %llx\nM swgame %llx\n", (unsigned long long)(uintptr_t)GetModuleHandleA(NULL),

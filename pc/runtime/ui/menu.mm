@@ -881,10 +881,13 @@ static void tab_display(void) {
             g_settings.fov = fov[cur];
     }
     {   // Draw distance (runtime/draw_distance.c)
-        static const char *const names[DRAWDIST_COUNT] = {"Original", "Medium", "High"};  // (DRAWDIST_*)
+        static const char *const names[DRAWDIST_COUNT] = {"Original", "Medium", "High", "Extreme+"};  // (DRAWDIST_*)
         int cur = g_settings.draw_distance;
         if (opt_choice("Draw distance", &cur, names, DRAWDIST_COUNT, DRAWDIST_ORIGINAL,
-                       "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time.",
+                       "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time. "
+                       "Extreme+: as far as the game takes - trees, rocks, buildings and enemies 1.4 times the game's "
+                       "distance, far buildings and the distant forests 1.5 times, grass as High's (its own limit). "
+                       "Further than that the game leaves buildings out or crashes while it loads the world.",
                        true))
             g_settings.draw_distance = cur;
     }

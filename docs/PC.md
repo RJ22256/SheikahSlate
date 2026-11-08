@@ -196,6 +196,7 @@ Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
+- **New in 0.3.20-pc.1:** sharper ray-traced shadows, steadier while new things load in, and Video > Draw distance **Extreme+**.
 - **New in 0.3.19-pc.1:** Ray-Tracing adds **reflections on water**: what's around a lake, river or the sea mirrored in it, rippling with its waves.
 - **New in 0.3.17-pc.1:** Video > Frame rate **Off** goes up to 1000 fps (it stopped at 300). Path tracing (0.3.16-pc.1) is gone again. **Ctrl+F8** in the game records 15 seconds of where the CPU's time goes, into `build\samples.txt`.
 - **New in 0.3.15-pc.1:** the Glass Slate 2 look: WSword Configuration's home with a page rail, your newest saves and what's on; Ray-Tracing first on Settings > Video, with its F6; quick toggles in the in-game menu (F1); the first setup's steps.

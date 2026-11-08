@@ -76,8 +76,9 @@ static int level(void) {
 // The nearer actors' factors were 1.5 and 1.6 until 2026-10-30: at Rito Village, a denser place than the six of round
 // 3, the game then left the entrance bridge, its rocks and the houses out (only the far model of the cliffs was drawn,
 // right next to Link). Walking onto that bridge from a save there (High's other factors kept): 1.1, 1.25 and 1.4 kept
-// them, 1.5 and 1.6 did not. Medium 1.15 and High 1.3 (the user's choice) keep a margin under that.
-static const float k_factor[DRAWDIST_COUNT] = {1.0f, 1.15f, 1.3f};  // (DRAWDIST_*)
+// them, 1.5 and 1.6 did not. Medium 1.15 and High 1.3 (the user's choice) keep a margin under that; (0.3.20) Extreme+
+// 1.4, the highest that kept them there.
+static const float k_factor[DRAWDIST_COUNT] = {1.0f, 1.15f, 1.3f, 1.4f};  // (DRAWDIST_*)
 
 float draw_distance_factor(void) {
     static float env = -1;
@@ -101,6 +102,7 @@ static float far_factor(void) {
     }
     if (env > 0) return env;
     float f = draw_distance_factor();
+    if (level() == DRAWDIST_EXTREME && !getenv("SAVAGEWIND_TRAVERSE_SCALE")) return FAR_MAX;  // (Extreme+: their most)
     return f > FAR_MAX ? FAR_MAX : f;
 }
 
@@ -111,8 +113,8 @@ static float far_factor(void) {
 //   (seen at 3x). The factor in use follows the list (blades_factor).
 // - Crossed quads: their fade only. Their region (about 120 m in play) already holds the cells, and its list is full
 //   in the game's own play (718-768 of 768).
-static const float k_blades[DRAWDIST_COUNT] = {1.0f, 1.15f, 2.5f};  // (DRAWDIST_*)
-static const float k_quads[DRAWDIST_COUNT] = {1.0f, 1.6f, 2.5f};
+static const float k_blades[DRAWDIST_COUNT] = {1.0f, 1.15f, 2.5f, 2.5f};  // (DRAWDIST_*; Extreme+: High's, the list's limit)
+static const float k_quads[DRAWDIST_COUNT] = {1.0f, 1.6f, 2.5f, 2.6f};  // (Extreme+: to their region's edge, ~120 m)
 #define BLADE_LIST 512
 #define BLADE_LIST_HIGH 485  // (listed cells past this: the factor goes down)
 #define BLADE_LIST_LOW 455   // (below this: back up towards the level's)
@@ -203,7 +205,7 @@ int rt_grass_range(uint64_t cam, uint32_t cell_bits, uint32_t *s0, uint32_t *a, 
         union { uint32_t u; float f; } x = {.u = *s0}, p = {.u = *a}, q = {.u = *b};
         float tn = *(float *)(uintptr_t)(cam + 0x134), asp = *(float *)(uintptr_t)(cam + 0x12c);
         float tt = tn > x.f ? tn : x.f;
-        g_cone = f > 1.0f && level() == DRAWDIST_HIGH && !getenv("SAVAGEWIND_GRASS_NOCONE");
+        g_cone = f > 1.0f && level() >= DRAWDIST_HIGH && !getenv("SAVAGEWIND_GRASS_NOCONE");
         g_cone_from = 1 / (tt * p.f) - 1 / (tt * q.f);  // (the game's near distance this frame)
         g_cone_k = tn * (asp > 0 ? asp : 1.0f) * CONE_WIDEN;
     }
@@ -265,7 +267,7 @@ static uint32_t g_blade_slots = 0x100;
 uint32_t rt_grass_blade_slots(uint32_t game) {
     const char *e = getenv("SAVAGEWIND_GRASS_SLOTS");  // (tests: this many instead)
     g_blade_slots = e && atoi(e) >= 16 && atoi(e) <= 4096 ? (uint32_t)atoi(e) :
-                    level() == DRAWDIST_HIGH ? BLADE_SLOTS_HIGH : game;
+                    level() >= DRAWDIST_HIGH ? BLADE_SLOTS_HIGH : game;
     if (g_blade_slots != game) LOG("[draw distance] grass blades: %u draw slots (game %u)\n", g_blade_slots, game);
     return g_blade_slots;
 }

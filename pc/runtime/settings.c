@@ -55,7 +55,7 @@ static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclus
 // the display (75%, 50%, 25%: they keep FSR 1 at the nearest mode).
 #define SETTINGS_VERSION 3
 
-static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high"};  // (DRAWDIST_*)
+static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high", "extreme"};  // (DRAWDIST_*)
 
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
 

@@ -828,8 +828,9 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
     static float cone = -1, bias_m = -1, bias_d = -1;
     if (cone < 0) {  // (testing: SAVAGEWIND_RTS_CONE=<tan>, SAVAGEWIND_RTS_BIAS=<metres>,<per metre>)
         const char *e = getenv("SAVAGEWIND_RTS_CONE");
-        // (0.3.13: 0.005, about the sun's own disc - 0.012 softened the shadows well past the game's own)
-        cone = e ? (float)atof(e) : 0.005f;
+        // (0.3.13: 0.005, about the sun's own disc - 0.012 softened the shadows well past the game's own; 0.3.20:
+        // 0.0025, sharper than the sun's disc, as the game's own shadows are near Link)
+        cone = e ? (float)atof(e) : 0.0025f;
         e = getenv("SAVAGEWIND_RTS_BIAS");
         if (!e || sscanf(e, "%f,%f", &bias_m, &bias_d) != 2) bias_m = 0.03f, bias_d = 0.0025f;
     }
@@ -861,7 +862,12 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
     if (view < 0) view = getenv("SAVAGEWIND_RTS_VIEW") ? atoi(getenv("SAVAGEWIND_RTS_VIEW")) : 0;
     out->pc[0] = (float)view;
     out->pc[1] = C.world[38], out->pc[2] = C.world[39], out->pc[3] = gl_depth;  // (the distance: B / (z + A))
-    out->pc[4] = C.missed ? 1.0f : 0.0f;  // (casters not traced this frame: the game's shadows kept as well)
+    // (casters not traced this frame: the game's shadows kept as well - 0.3.20: for the next 2 seconds too, so a
+    // caster whose variant is still being built doesn't flip the shadows between the two every other frame)
+    static unsigned hold;
+    if (C.missed) hold = 120;
+    else if (hold) hold--;
+    out->pc[4] = hold ? 1.0f : 0.0f;
     AO.frame = C.frame, AO.vis = vis_view, AO.depth = depth_view;
     AO.tlas = R.tlas, AO.ubo = R.ubo.buf;
     AO.pc[0] = 0.85f, AO.pc[1] = C.world[38], AO.pc[2] = C.world[39], AO.pc[3] = gl_depth;  // (strength; the distance)

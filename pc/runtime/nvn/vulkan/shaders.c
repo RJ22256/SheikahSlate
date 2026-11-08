@@ -1296,11 +1296,15 @@ static const char *builtin_src(const char *name, int *stage) {
                "      ivec2 q = clamp(p + ivec2(x, y), ivec2(0), sz - 1);\n"
                "      ivec2 qd = min(ivec2((vec2(q) + 0.5) / vec2(sz) * vec2(dz)), dz - 1);\n"
                "      float w = max(0.0, 1.0 - abs(dist(texelFetch(t2, qd, 0).r) - d0) / (0.02 * abs(d0) + 0.05));\n"
-               "      w *= (x == 0 && y == 0) ? 2.0 : 1.0;\n"
+               "      w *= (x == 0 && y == 0) ? 4.0 : (x == 0 || y == 0) ? 1.0 : 0.5;\n"
                "      acc += texelFetch(t0, q, 0).rg * w;\n"
                "      ws += w;\n"
                "    }\n"
-               "  vec2 v = ws > 1e-4 ? acc / ws : texelFetch(t0, p, 0).rg;\n"
+               "  vec2 c0 = texelFetch(t0, p, 0).rg;\n"
+               // (0.3.20) only a penumbra's pixel - its rays split - is smoothed: a pixel all of whose rays agree
+               // (fully lit or fully shadowed) keeps its own value, so a shadow's edge stays as sharp as the mask
+               "  bool pen = (c0.x > 0.02 && c0.x < 0.98) || (c0.y > 0.02 && c0.y < 0.98);\n"
+               "  vec2 v = pen && ws > 1e-4 ? acc / ws : c0;\n"
                "  float f = pc.a.x > 0.5 ? v.x + v.y : v.x + v.y * m.r;\n"
                "  if (pc.b.x > 0.5 && pc.a.x < 0.5) f = min(f, m.r);\n"
                "  o = vec4(clamp(f, 0.0, 1.0), m.gba);\n"

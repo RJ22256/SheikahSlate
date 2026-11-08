@@ -2449,7 +2449,11 @@ presented:
     static long debug_at = -1;
     if (debug_at < 0) { const char *e = getenv("SAVAGEWIND_DEBUG_FRAME"); debug_at = e ? atol(e) : 0; }
     extern volatile int g_debug_frame_request;
-    if (g_debug_frame_request) { g_debug_frame_request = 0; debug_at = (long)total_frames + 1; }
+    if (g_debug_frame_request) {  // (WSword: the folder made first - a copy without one saved no images)
+        g_debug_frame_request = 0;
+        debug_at = (long)total_frames + 1;
+        mkdir("build", 0755);
+    }
     // SAVAGEWIND_DEBUG_FRAMES=<n> (with SAVAGEWIND_DEBUG_FRAME / F9): dump n consecutive frames (build/pass_<frame>_NNN.png)
     static long debug_n = -1;
     if (debug_n < 0) { const char *e = getenv("SAVAGEWIND_DEBUG_FRAMES"); debug_n = e && atol(e) > 1 ? atol(e) : 1; }
