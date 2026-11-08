@@ -1246,12 +1246,15 @@ uint64_t fs_aoc_base_id(void) { return (g_program_id & ~0xFFFull) + 0x1000; }
 // first add-on content is the game's RomFS itself - the game lists it, mounts it and finds its files as with one set
 // up apart (the title menu's Downloadable Content button, The Master Trials and The Champions' Ballad). Before, such a
 // dump played without its DLC. SAVAGEWIND_NO_MERGED_DLC=1: not.
+// (WSword 0.3.19-pc.2) Both of the game's add-on contents - DLC pack 1 and pack 2 (0x...F001, 0x...F002): the game
+// lists two and, given one, took the DLC as not bought (it never mounted it). Both are the game's RomFS, which holds
+// what both brought.
 static bool aoc_merged(int index) {
     static int merged = -1;
-    if (index != 1 || !g_romfs_dir || !images[0].img) return false;
+    if ((index != 1 && index != 2) || !g_romfs_dir || !images[0].img) return false;
     if (merged < 0) {
         merged = !getenv("SAVAGEWIND_NO_MERGED_DLC") && R == &images[0] && romfs_has_dlc_merged();
-        if (merged) LOG("[fs] the DLC is merged into the game's RomFS: add-on content 1 is the game's RomFS\n");
+        if (merged) LOG("[fs] the DLC is merged into the game's RomFS: add-on contents 1 and 2 are the game's RomFS\n");
     }
     return merged;
 }
