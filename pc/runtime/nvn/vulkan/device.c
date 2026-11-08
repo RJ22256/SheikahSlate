@@ -203,10 +203,19 @@ static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
 // Discrete GPU first (SAVAGEWIND_GPU=<index> picks one), needs Vulkan 1.3 and a queue that can present.
 static void pick_device(void) {
     uint32_t n = 0;
-    vkEnumeratePhysicalDevices(g_vk.inst, &n, NULL);
+    // (WSword) With NVIDIA DLSS frame generation, through Streamline's own vkEnumeratePhysicalDevices: it notes each
+    // GPU's instance there, and its vkCreateDevice takes the instance from that note - without it, none (its plugins'
+    // instance functions all null: WSword closed at start, sl.common calling address 0 after "Initializing plugins")
+    PFN_vkEnumeratePhysicalDevices enumerate = vkEnumeratePhysicalDevices;
+    if (dlssg_loaded()) {
+        PFN_vkEnumeratePhysicalDevices p = (PFN_vkEnumeratePhysicalDevices)dlssg_gipa()(g_vk.inst, "vkEnumeratePhysicalDevices");
+        if (p) enumerate = p;
+        else LOG("[dlssg] no Streamline vkEnumeratePhysicalDevices\n");
+    }
+    enumerate(g_vk.inst, &n, NULL);
     if (!n) FATAL("no Vulkan device\n");
     VkPhysicalDevice *pd = calloc(n, sizeof *pd);
-    vkEnumeratePhysicalDevices(g_vk.inst, &n, pd);
+    enumerate(g_vk.inst, &n, pd);
     int want = getenv("SAVAGEWIND_GPU") ? atoi(getenv("SAVAGEWIND_GPU")) : -1, best = -1, best_score = -1;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
