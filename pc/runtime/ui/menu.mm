@@ -761,10 +761,12 @@ static void tab_display(void) {
         d = std::string(tr("Your graphics card's ray tracing (NVIDIA RTX, AMD Radeon RX 6000 and newer, Intel Arc) on the "
                            "game's own objects: the sun's shadows traced - sharp where things touch, softening with "
                            "distance, without the maps' blur and shimmer - and ambient occlusion: the shade in corners, "
-                           "under rocks and around Link where the sky's light can't reach. Costs GPU time (a few "
-                           "milliseconds). F6 in the game turns it on and off.")) + "\n\n" + tr(st);
+                           "under rocks and around Link where the sky's light can't reach - and reflections on water: "
+                           "what's around a lake, a river or the sea mirrored in it, rippling with its waves, where it's "
+                           "on screen (the sky and what's out of view keep the game's own reflection). Costs GPU time (a "
+                           "few milliseconds). F6 in the game turns it on and off.")) + "\n\n" + tr(st);
         if (!rts_available()) opt_disable_next();
-        opt_hero_next(rts_available() ? "Ray-traced sun shadows and ambient occlusion on the game's own objects."
+        opt_hero_next(rts_available() ? "Ray-traced sun shadows, ambient occlusion and water reflections."
                                       : "Needs a graphics card with hardware ray tracing.", "F6");
         opt_toggle("Ray-Tracing", &g_settings.rt_shadows, false, d.c_str());
     }

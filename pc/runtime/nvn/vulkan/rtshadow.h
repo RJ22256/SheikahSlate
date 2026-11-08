@@ -56,6 +56,12 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
 // (0.3.13) This frame's ambient occlusion (the rays' result's .b, at the mask's size) and the scene depth beside it:
 // false when there is none this frame. pc: [0] the strength, [1..3] the distance (rts_mask.frag's dist)
 bool rts_ao(VkImageView *vis, VkImageView *depth, float pc[4]);
+// (0.3.19) Ray-traced reflections on water. rts_gbuf_seen: a draw into the game's G-buffer (rt0: the material ids, rt3:
+// the world normals), the last one of the frame kept. rts_refl at the composited scene (color: its copy, sampled):
+// *out the reflections (RGBA16F at the G-buffer's size: .rgb, .a their weight) for rt_refl.frag. False: none this frame.
+void rts_gbuf_seen(TexBackend *mat, TexBackend *nrm);
+bool rts_refl_on(void);
+bool rts_refl(VkCommandBuffer cb, VkImageView color, VkImageView *out);
 // The GPU has hardware ray tracing (the device was made with it)
 bool rts_available(void);
 // Settings > Video: its state in words

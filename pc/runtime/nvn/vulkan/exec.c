@@ -6678,6 +6678,13 @@ static void draw_(CmdRec *r, bool indexed) {
                 break;
             }
     }
+    // ---- (WSword 0.3.19) a draw into the game's G-buffer (its targets' formats: rt0 RGBA8 the material ids, rt1 sRGB
+    // the albedo, rt3 RGBA8 the world normals, rt5, rt6 R8; the scene's depth): rt0 and rt3 kept for the ray-traced
+    // reflections on water at the frame's composite (rtshadow.c rts_refl) - the last such draw of the frame
+    if (st.rt.ncolor >= 7 && st.rt.color[0] && st.rt.color[3] && st.rt.color[5] && st.rt.color[6] && st.rt.depth &&
+        rt_format(0) == 0x25 && rt_format(1) == 0x38 && rt_format(3) == 0x25 && rt_format(5) == 0x3f && rt_format(6) == 0x0a &&
+        vk_texture_scale_group(st.rt.depth) == RS_SCENE && rts_on())
+        rts_gbuf_seen(vk_tex(st.rt.color[0], true), vk_tex(st.rt.color[3], true));
     if (st.rt.depth && !depth_read_only()) pass_ds_written = true;
     for (int i = 0; i < st.rt.ncolor && i < 8; i++)
         if (st.rt.color[i] && draw_writes_color(pr, i)) {
@@ -9271,6 +9278,20 @@ static void rt_ao_apply(void) {
     float pc[8] = {apc[0], apc[1], apc[2], apc[3], 0, 0, 0, 0};
     post_pass(cb, "rt_ao.frag", srcs, 3, s, pc, false);
     vk_full_barrier(cb);
+    // (0.3.19) the water's ray-traced reflections, on the scene with its AO: a copy of it again, the rays from the
+    // water (rtshadow.c rts_refl: their colour from that copy), then the scene drawn again with them (rt_refl.frag)
+    if (rts_refl_on()) {
+        if (g_gpuprof_frame) gp_mark(cb, "ray-traced water reflections");
+        rec_CmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, t->image, VK_IMAGE_LAYOUT_GENERAL, 1, &ic);
+        vk_full_barrier(cb);
+        VkImageView rf;
+        if (rts_refl(cb, srcs[0], &rf)) {
+            VkImageView rs[3] = {srcs[0], rf, dep};
+            float rpc[8] = {0};
+            post_pass(cb, "rt_refl.frag", rs, 3, s, rpc, false);
+            vk_full_barrier(cb);
+        }
+    }
     vk_dyn_forget();
 }
 

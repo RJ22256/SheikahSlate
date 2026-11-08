@@ -17,6 +17,8 @@ uint64_t renderer_present_count(void);
 #define VERT 16         // bytes a captured vertex (vec4: the clip position, then the world position in place)
 #define RAYS 8          // per pixel, over the sun's disc (0.3.13: 8 - 4 left the penumbras grainy, the filter blurred them)
 #define AO_RAYS 6       // per pixel, ambient occlusion (0.3.13)
+#define UBO_FLOATS 216  // trace_src's / refl_src's U (0.3.19: the world camera's view-projection, the reflections')
+#define WATER_ID 22     // (0.3.19) the G-buffer's material id of water (rt0's red channel x 255)
 
 typedef struct { VkBuffer buf; VkDeviceMemory mem; VkDeviceSize size; VkDeviceAddress addr; } RBuf;
 
@@ -42,6 +44,12 @@ static struct {
     RBuf blas_buf[MAX_CASC], tlas_buf, scratch, inst, ubo;
     VkAccelerationStructureKHR blas[MAX_CASC], tlas;
     TexBackend vis, copy;  // the rays' result (RGBA8, .r lit, .g through foliage) and a copy of the game's mask
+    // (0.3.19) the water's reflections: made the first time there's water to reflect in
+    bool rf_tried, rf_ok;
+    VkDescriptorSetLayout rf_set;
+    VkPipelineLayout rf_layout;
+    VkPipeline rf;
+    TexBackend refl;       // their result (RGBA16F at the G-buffer's size: .rgb what the ray met, .a how much of it)
 } R;
 
 static struct {  // this frame's capture
@@ -163,6 +171,8 @@ static const char trace_src[] =
     "  vec4 bias;\n"        // x: metres; y: per metre of distance; z: the rays' length; w: foliage nearer is passed
     "  vec4 cl[8];\n"      // x: each cascade's layer in the maps
     "  vec4 aop;\n"        // x: ambient occlusion's rays' length (metres); y: its rays (0: none)
+    "  mat4 vp;\n"         // (0.3.19) the world camera's: the world to its clip (refl_src)
+    "  vec4 rfp;\n"        // x: the reflections' rays' length; z: water's material id; w: their strength
     "} u;\n"
     // A candidate hit on alpha-tested foliage at H blocks the ray where the game's own map of that cascade - drawn
     // with the leaves' cut-outs - has a surface at least as near the light as H there (within 25 cm): the cut-out was
@@ -252,6 +262,69 @@ static const char trace_src[] =
     "  }\n"
     "  float ao = na > 0 ? 1.0 - occ / float(na) : 1.0;\n"
     "  imageStore(vis, px, vec4(lit / float(n), fol / float(n), ao, 0.0));\n"
+    "}\n";
+
+// (0.3.19) Ray-traced reflections on water, at the composited scene (before the HUD). For each pixel the game's
+// G-buffer marks water (rt0's red channel: material id WATER_ID), a ray from the surface along the view reflected in
+// its normal (rt3: the world-space normal, the waves' included) against the casters' opaque geometry, every cascade,
+// as far as u.rfp.x. Where it meets a surface the camera sees - the scene's depth there is that surface - the
+// reflection is the scene's colour there, its weight the water's Fresnel term (Schlick, F0 0.02) times the strength,
+// faded at the screen's edges; a ray to the sky, or to a surface out of view or hidden, leaves the game's own
+// reflection (its sky and light) as it is (weight 0).
+static const char refl_src[] =
+    "#version 460\n"
+    "#extension GL_EXT_ray_query : require\n"
+    "layout(local_size_x = 8, local_size_y = 8) in;\n"
+    "layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;\n"
+    "layout(set = 0, binding = 1) uniform sampler2D dep;\n"
+    "layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D outr;\n"
+    "layout(set = 0, binding = 3, std140) uniform U {\n"
+    "  mat4 inv_vp; mat4 casc[8]; vec4 sun; vec4 cam; vec4 p; vec4 bias; vec4 cl[8]; vec4 aop; mat4 vp; vec4 rfp;\n"
+    "} u;\n"
+    "layout(set = 0, binding = 4) uniform sampler2D col;\n"   // the composited scene
+    "layout(set = 0, binding = 5) uniform sampler2D mat;\n"   // the G-buffer's rt0 (.r: the material id / 255)
+    "layout(set = 0, binding = 6) uniform sampler2D nrm;\n"   // the G-buffer's rt3 (.xyz: the world normal * 0.5 + 0.5)
+    "ivec2 at(vec2 uv, ivec2 s) { return clamp(ivec2(uv * vec2(s)), ivec2(0), s - 1); }\n"
+    "float depth_uv(vec2 uv) { return texelFetch(dep, at(uv, textureSize(dep, 0)), 0).r; }\n"
+    "vec3 world_uv(vec2 uv, float d) {\n"
+    "  vec4 c = vec4(uv.x * 2.0 - 1.0, (uv.y * 2.0 - 1.0) * u.p.x, u.p.y > 0.5 ? d * 2.0 - 1.0 : d, 1.0);\n"
+    "  vec4 w = c * u.inv_vp;\n"
+    "  return w.xyz / w.w;\n"
+    "}\n"
+    "void main() {\n"
+    "  ivec2 sz = imageSize(outr), px = ivec2(gl_GlobalInvocationID.xy);\n"
+    "  if (px.x >= sz.x || px.y >= sz.y) return;\n"
+    "  vec2 uv = (vec2(px) + 0.5) / vec2(sz);\n"
+    "  float id = texelFetch(mat, at(uv, textureSize(mat, 0)), 0).r * 255.0;\n"
+    "  if (abs(id - u.rfp.z) > 0.5) { imageStore(outr, px, vec4(0.0)); return; }\n"
+    "  float d = depth_uv(uv);\n"
+    "  if (d >= 0.999999) { imageStore(outr, px, vec4(0.0)); return; }\n"
+    "  vec3 P = world_uv(uv, d);\n"
+    "  vec3 N = texelFetch(nrm, at(uv, textureSize(nrm, 0)), 0).xyz * 2.0 - 1.0;\n"
+    "  N = dot(N, N) > 1e-6 ? normalize(N) : vec3(0.0, 1.0, 0.0);\n"
+    "  vec3 V = normalize(u.cam.xyz - P);\n"
+    "  if (dot(N, V) < 0.02) N = normalize(N + V * (0.02 - dot(N, V)));\n"   // (a wave facing away: as if edge-on)
+    "  vec3 R = reflect(-V, N);\n"
+    "  if (R.y < 0.01) R = normalize(vec3(R.x, 0.01, R.z));\n"              // (into the water: along it)
+    "  float c = clamp(dot(N, V), 0.0, 1.0), F = 0.02 + 0.98 * pow(1.0 - c, 5.0);\n"
+    "  vec3 O = P + N * (0.03 + length(u.cam.xyz - P) * 0.0005);\n"
+    "  rayQueryEXT q;\n"
+    "  rayQueryInitializeEXT(q, tlas, gl_RayFlagsCullNoOpaqueEXT, 0xFFu, O, 0.05, R, u.rfp.x);\n"
+    "  while (rayQueryProceedEXT(q)) {}\n"
+    "  if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) { imageStore(outr, px, vec4(0.0)); return; }\n"
+    "  vec3 H = O + R * rayQueryGetIntersectionTEXT(q, true);\n"
+    "  vec4 hc = vec4(H, 1.0) * u.vp;\n"
+    "  if (hc.w <= 1e-4) { imageStore(outr, px, vec4(0.0)); return; }\n"
+    "  vec2 huv = vec2(hc.x / hc.w * 0.5 + 0.5, hc.y / hc.w * u.p.x * 0.5 + 0.5);\n"
+    "  vec2 e2 = min(huv, 1.0 - huv);\n"
+    "  if (min(e2.x, e2.y) <= 0.0) { imageStore(outr, px, vec4(0.0)); return; }\n"
+    "  float hd = depth_uv(huv);\n"
+    "  vec3 S = world_uv(huv, hd);\n"
+    "  float dh = length(H - u.cam.xyz);\n"
+    "  if (hd >= 0.999999 || length(S - H) > 0.03 * dh + 0.5) { imageStore(outr, px, vec4(0.0)); return; }\n"
+    "  vec3 L = textureLod(col, huv, 0.0).rgb;\n"
+    "  float w = clamp(F * u.rfp.w, 0.0, 0.7) * smoothstep(0.0, 0.06, min(e2.x, e2.y));\n"
+    "  imageStore(outr, px, vec4(L, w));\n"
     "}\n";
 
 static VkPipeline compute_pipeline(const char *src, const char *name, VkPipelineLayout layout) {
@@ -527,7 +600,7 @@ typedef struct {
     VkAccelerationStructureBuildRangeInfoKHR trange;
     VkAccelerationStructureInstanceKHR inst[MAX_CASC];
     int ninst;
-    float ubo[196];
+    float ubo[UBO_FLOATS];
     VkImageView depth_view, vis_view, map_view;
     VkImage mask, copy;
     uint32_t w, h;
@@ -608,7 +681,8 @@ static void run_rt(const void *p) {
 }
 
 // (0.3.13) Ambient occlusion with the shadows' rays (trace_src's .b), put on the composited scene (exec.c rt_ao_apply)
-static struct { uint64_t frame; VkImageView vis, depth; float pc[4]; } AO;
+static struct { uint64_t frame; VkImageView vis, depth; float pc[4]; VkAccelerationStructureKHR tlas; VkBuffer ubo; } AO;
+static float refl_strength(void);  // (0.3.19: the water reflections', below)
 static bool ao_wanted(void) {
     static int ao = -1;  // (SAVAGEWIND_RT_AO=0: none)
     if (ao < 0) ao = !(getenv("SAVAGEWIND_RT_AO") && !strcmp(getenv("SAVAGEWIND_RT_AO"), "0"));
@@ -769,6 +843,8 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
     u[156] = bias_m, u[157] = bias_d, u[158] = 3000.0f, u[159] = 0.3f;
     for (int c = 0; c < MAX_CASC; c++) u[160 + c * 4] = c < C.ncasc ? (float)C.layer[c] : 0;
     u[192] = 1.5f, u[193] = ao_wanted() ? AO_RAYS : 0, u[194] = u[195] = 0;
+    for (int i = 0; i < 16; i++) u[196 + i] = C.world[12 + i];  // (0.3.19: the world camera's own, for the reflections)
+    u[212] = 400.0f, u[213] = 0, u[214] = (float)WATER_ID, u[215] = refl_strength();
     // (b is the recorder thread's from here - run_rt frees it: what's needed of it after, read now)
     VkImageView depth_view = b->depth_view, vis_view = b->vis_view;
     float gl_depth = u[153];
@@ -787,7 +863,115 @@ bool rts_run(VkCommandBuffer cb, TexBackend *(*scene_depth)(const float *world_c
     out->pc[1] = C.world[38], out->pc[2] = C.world[39], out->pc[3] = gl_depth;  // (the distance: B / (z + A))
     out->pc[4] = C.missed ? 1.0f : 0.0f;  // (casters not traced this frame: the game's shadows kept as well)
     AO.frame = C.frame, AO.vis = vis_view, AO.depth = depth_view;
+    AO.tlas = R.tlas, AO.ubo = R.ubo.buf;
     AO.pc[0] = 0.85f, AO.pc[1] = C.world[38], AO.pc[2] = C.world[39], AO.pc[3] = gl_depth;  // (strength; the distance)
+    return true;
+}
+
+// ---------------------------------------------------------------- (0.3.19) ray-traced reflections on water
+
+static struct { uint64_t frame; TexBackend *mat, *nrm; } GB;
+void rts_gbuf_seen(TexBackend *mat, TexBackend *nrm) {
+    GB.frame = renderer_present_count(), GB.mat = mat, GB.nrm = nrm;
+}
+
+static float refl_strength(void) {
+    static float k = -1;  // (testing: SAVAGEWIND_RT_REFL=<strength>, 0: none)
+    if (k < 0) k = getenv("SAVAGEWIND_RT_REFL") ? (float)atof(getenv("SAVAGEWIND_RT_REFL")) : 2.0f;
+    return k;
+}
+
+static bool refl_setup(void) {
+    if (R.rf_tried) return R.rf_ok;
+    R.rf_tried = true;
+    VkDescriptorSetLayoutBinding tb[7] = {
+        {0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+    VkDescriptorSetLayoutCreateInfo tl = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                          .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR, .bindingCount = 7,
+                                          .pBindings = tb};
+    if (vkCreateDescriptorSetLayout(g_vk.dev, &tl, NULL, &R.rf_set) != VK_SUCCESS) return false;
+    VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                     .pSetLayouts = &R.rf_set};
+    if (vkCreatePipelineLayout(g_vk.dev, &pl, NULL, &R.rf_layout) != VK_SUCCESS) return false;
+    R.rf = compute_pipeline(refl_src, "rts_refl.comp", R.rf_layout);
+    if (!R.rf) {
+        LOG("[rts] the water reflections' shader failed to compile: Ray-Tracing without them\n");
+        return false;
+    }
+    LOG("[rts] ray-traced water reflections ready (material %d)\n", WATER_ID);
+    return R.rf_ok = true;
+}
+
+typedef struct {
+    VkCommandBuffer cb;
+    VkAccelerationStructureKHR tlas;
+    VkBuffer ubo;
+    VkImageView depth, out, color, mat, nrm;
+    uint32_t w, h;
+} RfBlock;
+
+static void run_refl(const void *p) {
+    const RfBlock *b = (const RfBlock *)p;
+    barrier(b->cb, ALL, VK_ACCESS_2_MEMORY_WRITE_BIT, ALL, RW);
+    vkCmdBindPipeline(b->cb, VK_PIPELINE_BIND_POINT_COMPUTE, R.rf);
+    VkWriteDescriptorSetAccelerationStructureKHR wa = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+                                                       .accelerationStructureCount = 1, .pAccelerationStructures = &b->tlas};
+    VkDescriptorImageInfo di = {R.nearest, b->depth, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo oi = {VK_NULL_HANDLE, b->out, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorBufferInfo ui = {b->ubo, 0, UBO_FLOATS * 4};
+    VkDescriptorImageInfo ci = {R.nearest, b->color, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo mi = {R.nearest, b->mat, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo ni = {R.nearest, b->nrm, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w[7] = {
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = &wa, .dstBinding = 0, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &di},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 2, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 3, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &ui},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 4, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ci},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 5, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &mi},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 6, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ni}};
+    R.push_set(b->cb, VK_PIPELINE_BIND_POINT_COMPUTE, R.rf_layout, 0, 7, w);
+    vkCmdDispatch(b->cb, (b->w + 7) / 8, (b->h + 7) / 8, 1);
+    barrier(b->cb, ALL, VK_ACCESS_2_MEMORY_WRITE_BIT, ALL, RW);
+}
+
+static VkImageView color_view(TexBackend *t) {
+    static const VkComponentMapping id = {0};
+    return vk_image_view(t, VK_IMAGE_VIEW_TYPE_2D, t->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+}
+
+bool rts_refl_on(void) {
+    return rts_on() && refl_strength() > 0 && !(R.rf_tried && !R.rf_ok) && GB.frame == renderer_present_count() &&
+           GB.mat && GB.nrm && AO.frame == renderer_present_count() && AO.tlas && AO.depth;
+}
+
+bool rts_refl(VkCommandBuffer cb, VkImageView color, VkImageView *out) {
+    if (!rts_refl_on()) return false;
+    TexBackend *m = GB.mat, *n = GB.nrm;
+    if (!m->image || !n->image || m->layers != 1 || n->layers != 1 || m->samples != 1 || n->samples != 1 ||
+        m->aspect != VK_IMAGE_ASPECT_COLOR_BIT || n->aspect != VK_IMAGE_ASPECT_COLOR_BIT)
+        return false;
+    if (!refl_setup()) return false;
+    if (!own_image(&R.refl, m->width, m->height, VK_FORMAT_R16G16B16A16_SFLOAT,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+        return false;
+    RfBlock b = {.cb = cb, .tlas = AO.tlas, .ubo = AO.ubo, .depth = AO.depth, .color = color, .mat = color_view(m),
+                 .nrm = color_view(n), .out = color_view(&R.refl), .w = R.refl.width, .h = R.refl.height};
+    rec_call(run_refl, &b, sizeof b);
+    *out = b.out;
     return true;
 }
 
@@ -798,8 +982,10 @@ void rts_status(char *out, size_t n) {
     else if (!g_settings.rt_shadows) snprintf(out, n, "Off.");
     else if (R.tried && !R.ok) snprintf(out, n, "Not running: %s.", R.why);
     else if (!C.runs) snprintf(out, n, "On - waiting for the game's sun shadows (outdoors, in daylight).");
-    else snprintf(out, n, "On: shadows%s, %u triangles from %u cascades in the last frame traced.",
-                  ao_wanted() ? " and ambient occlusion" : "", C.last_tris, C.last_casc);
+    else snprintf(out, n, "On: shadows%s%s, %u triangles from %u cascades in the last frame traced.",
+                  ao_wanted() ? ", ambient occlusion" : "",
+                  refl_strength() <= 0 ? "" : R.rf_tried && !R.rf_ok ? " (water reflections failed to start)" : " and water reflections",
+                  C.last_tris, C.last_casc);
 }
 
 void rts_report(void) {

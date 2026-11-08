@@ -1500,6 +1500,32 @@ static const char *builtin_src(const char *name, int *stage) {
                "  o = vec4(c.rgb * mix(1.0, ao, pc.a.x), c.a);\n"
                "}\n";
     }
+    // (WSword 0.3.19) The water's ray-traced reflections (rtshadow.c refl_src) on the scene: t1's .rgb mixed in by its
+    // .a, over the pixel and its four neighbours where they're water too (the waves' edges smoothed).
+    if (!strcmp(name, "rt_refl.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D t1;\n"
+               "layout(set = 0, binding = 2) uniform sampler2D t2;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  ivec2 op = ivec2(gl_FragCoord.xy), osz = textureSize(t0, 0);\n"
+               "  vec4 c = texelFetch(t0, op, 0);\n"
+               "  ivec2 sz = textureSize(t1, 0);\n"
+               "  ivec2 p = min(ivec2((vec2(op) + 0.5) / vec2(osz) * vec2(sz)), sz - 1);\n"
+               "  vec4 r = texelFetch(t1, p, 0);\n"
+               "  if (r.a <= 0.0) { o = c; return; }\n"
+               "  vec4 acc = vec4(r.rgb * r.a, r.a) * 2.0;\n"
+               "  const ivec2 k[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));\n"
+               "  for (int i = 0; i < 4; i++) {\n"
+               "    vec4 v = texelFetch(t1, clamp(p + k[i], ivec2(0), sz - 1), 0);\n"
+               "    acc += vec4(v.rgb * v.a, v.a);\n"
+               "  }\n"
+               "  vec3 rc = acc.rgb / max(acc.a, 1e-4);\n"
+               "  o = vec4(mix(c.rgb, rc, r.a), c.a);\n"
+               "}\n";
+    }
     if (!strcmp(name, "clear.vert")) {
         *stage = STAGE_VERTEX;
         return "#version 450\n"
