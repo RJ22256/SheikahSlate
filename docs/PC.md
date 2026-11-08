@@ -138,6 +138,7 @@ NVIDIA's frame generation on **NVIDIA RTX 40** graphics cards and newer: **2x** 
 - The menus, the map, the title screen and the F1 Settings show the game's own frames.
 - The frame generation line in Settings > Video says what it does, or why it doesn't: no RTX 40, no `nvngx_dlssg.dll`, scheduling off, an old driver. So does `WSword.log` (its `[dlssg]` lines).
 - To leave it out completely, choose another Frame generation and restart.
+- **If WSword closes while it starts,** the next start turns NVIDIA's frame generation off, so WSword starts again (the line in Settings > Video says so); `WSword.prev.log` has what happened.
 - The `streamline` folder in the zip holds NVIDIA's Streamline (its signed `sl.*.dll` files and licence). NVIDIA, RTX, DLSS and Reflex are NVIDIA's trademarks; WSword isn't made by or affiliated with NVIDIA.
 
 ## ReShade
@@ -156,6 +157,7 @@ WSword loads your own ReShade itself, with no installer. ReShade isn't included 
   - **ReShade's own detection:** ReShade's Generic Depth add-on looks for the depth itself.
   - Where the game draws no 3D scene (the title screen, some menus), the depth is empty (far away).
 - ReShade's effects cover the whole window, WSword's own menus and the performance overlay too.
+- **With frame generation** (AMD FSR 3, Lossless or NVIDIA DLSS): WSword draws ReShade's effects itself, once a game frame, on the game's picture before its HUD - the generated frames are made from it, so they have the effects at no extra cost, and the HUD stays as the game draws it. Your effects then run at the game's output resolution. (`SAVAGEWIND_RESHADE_AT_PRESENT=1`: at every frame shown, as before.)
 - `WSword.log` says what happened (its `[reshade]` lines), and ReShade's own `ReShade.log` is in the `reshade` folder.
 - To leave it out, turn Settings > Video > ReShade off and restart.
 - ReShade is crosire's ([reshade.me](https://reshade.me)). WSword isn't made by or affiliated with ReShade. The bridge's ReShade part uses ReShade's add-on API headers (BSD-3-Clause, `ReShade-API-LICENSE.md`).
@@ -192,7 +194,11 @@ Mods for the Switch version, laid out as for Ryujinx, Yuzu or Eden, work as they
 - **New in 0.3.2-pc.1:** NVIDIA DLSS upscaling, with your own `nvngx_dlss.dll`; 0.3.3-pc.1 made it faster and added Video > DLSS model.
 - **New in 0.3.4-pc.1:** NVIDIA DLSS frame generation, with your own `nvngx_dlssg.dll`.
 - **Back from 0.2.8 (0.3.5-pc.1):** mods, on Settings > Mods.
-- **New in 0.3.11-pc.1:** NVIDIA DLSS frame generation works (WSword closed at start with it on).
+- **New in 0.3.13-pc.1:**
+  - With frame generation on, ReShade's effects are drawn once a game frame, before the HUD, so frame generation adds frames with ReShade on too, and the HUD is no longer blurred or tinted by the effects.
+  - A dump with the DLC merged into the game's RomFS gets its DLC (the title menu's Downloadable Content button, The Master Trials, The Champions' Ballad).
+  - If WSword closes while NVIDIA DLSS frame generation starts, the next start turns it off, so WSword starts again.
+- **New in 0.3.11-pc.1:** NVIDIA DLSS frame generation's first crash at start fixed (Streamline's GPU list).
 - **New in 0.3.10-pc.1:** ray-traced shadows fixed (they had been missing).
 - **New in 0.3.9-pc.1:** ray-traced shadows of trees, bushes and grass too, and no shadows lost.
 - **New in 0.3.8-pc.1:** ray-traced shadows (experimental), Settings > Video.
