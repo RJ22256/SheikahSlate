@@ -23,6 +23,7 @@
 #include "archive.h"
 #include "fs_layout.h"
 #include "../nvn/pad_illust.h"
+#include "wide_ui.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -62,6 +63,7 @@ typedef struct {
     int ngrown;
     uint8_t *rstb_blob;      // the patched ResourceSizeTable served from memory (rstb_patch)
     uint8_t *hud_pack;       // Pack/Bootup.pack with the HUD letters patched (hud_letters_patch)
+    uint8_t *title_pack;     // Pack/Title.pack with the start screen laid out for a wide window (title_wide_patch)
     uint8_t *voice_banks;    // the text language's voice banks with the chosen voices' lengths (bars_hybrid)
 } RomImage;
 #define AOC_MAX 8
@@ -80,7 +82,7 @@ RT_ON_RESET(fs_reset) {
         }
         for (int i = 0; i < m->npatches; i++) free(m->patches[i].data);  // (ov_meta and the extended table are among these)
         for (int i = 0; i < m->rom_nfiles; i++) free(m->rom_files[i].path);
-        free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->voice_banks);
+        free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->title_pack), free(m->voice_banks);
         free(m->roots);
         for (int i = 0; i < m->nrf; i++) free(m->rf[i].rel);
         free(m->rf);
@@ -866,6 +868,59 @@ static uint8_t *rom_file_bytes(int k, size_t *n, bool *from_mod) {
     return b;
 }
 
+// The start screen (Pack/Title.pack: Layout/Title.sblarc, Title_00) across a wide window as the HUD
+// (services/wide_ui.c): changed in place, recompressed, the pack served from memory.
+static void title_wide_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+    static const char pack_path[] = "Pack/Title.pack";
+    if (R != &images[0]) return;
+    float shape = wide_ui_shape_wanted();
+    if (shape <= 1.0f) return;
+    int k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
+    if (k == R->rom_nfiles) return;
+    bool from_mod = false;
+    size_t pn = 0, an = 0, zn = 0;
+    uint8_t *pack = rom_file_bytes(k, &pn, &from_mod), *arc = NULL, *z2 = NULL;
+    uint32_t pdoff, ps, pe;
+    int node = pack ? sarc_find(pack, pn, "Layout/Title.sblarc", &pdoff, &ps, &pe) : -1;
+    if (node >= 0) arc = yaz0_unpack(pack + pdoff + ps, pe - ps, &an);
+    static const char *const title[] = {"Title_00"};
+    if (!arc || wide_ui_archive(arc, an, title, 1, shape) <= 0) {
+        LOG("[fs] wide start screen: %s, the game's stays\n", !pack ? "no Title.pack" : !arc ? "no Layout/Title.sblarc" :
+                                                                 "layout not as expected");
+        free(pack), free(arc);
+        return;
+    }
+    z2 = yaz0_pack(arc, an, pack + pdoff + ps, &zn);
+    uint64_t old = pe - ps, delta = zn > old ? (zn - old + 0x1FFF) & ~0x1FFFull : 0;
+    size_t qn = pn + delta;
+    free(R->title_pack);
+    R->title_pack = calloc(1, qn);
+    memcpy(R->title_pack, pack, pdoff + ps);
+    memcpy(R->title_pack + pdoff + ps, z2, zn);
+    memcpy(R->title_pack + pdoff + pe + delta, pack + pdoff + pe, pn - pdoff - pe);
+    uint32_t cnt = pack[0x1A] | pack[0x1B] << 8, ne = (uint32_t)(ps + zn), q32 = (uint32_t)qn;
+    for (uint32_t i = 0; i < cnt; i++) {
+        uint32_t s, e;
+        memcpy(&s, R->title_pack + 0x20 + i * 16 + 8, 4);
+        memcpy(&e, R->title_pack + 0x20 + i * 16 + 12, 4);
+        if (i == (uint32_t)node) { memcpy(R->title_pack + 0x20 + i * 16 + 12, &ne, 4); continue; }
+        if (s >= pe) s += (uint32_t)delta, e += (uint32_t)delta;
+        memcpy(R->title_pack + 0x20 + i * 16 + 8, &s, 4);
+        memcpy(R->title_pack + 0x20 + i * 16 + 12, &e, 4);
+    }
+    memcpy(R->title_pack + 8, &q32, 4);
+    free(pack), free(arc), free(z2);
+    meta_copy(fmeta, foff, fsz);
+    uint64_t rel = R->ov_end - R->rom_data_off, size = qn;
+    memcpy(R->ov_meta + R->rom_files[k].meta + 8, &rel, 8);
+    memcpy(R->ov_meta + R->rom_files[k].meta + 0x10, &size, 8);
+    if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+    R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, R->title_pack};
+    R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+    LOG("[fs] wide start screen: Title_00 for %.2f x 16:9%s\n", shape, from_mod ? " (on a mod's Title.pack)" : "");
+}
+
 static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char pack_path[] = "Pack/Bootup.pack";
     static const char *const layouts[] = {"blyt/PaDoCommandA_00.bflyt", "blyt/PaDoCommandB_00.bflyt",
@@ -894,6 +949,16 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
         arc2 = malloc(an + 4 * (0x80 + 0x2000) + (ctl ? ctl_n + 0x80 : 0));
         memcpy(arc2, arc, an);
         nn = an;
+        // a wide window: the HUD and the map across it (services/wide_ui.c; in place, the archive's layout kept)
+        static const char *const wide[] = {
+            "MainScreen_00", "MainScreenMS_00", "MainScreenHeartIchigekiDLC_00", "MainHorse_00", "MainDungeon_00",
+            "MainHardMode_00", "EnergyMeterDLC_00", "DoCommand_00", "KologNum_00", "AkashiNum_00", "KeyNum_00",
+            "MamoNum_00", "DLCSinJuAkashiNum_00", "LoadSaveIcon_00", "GameTitle_00", "AppMap_00"};
+        if (R == &images[0]) {
+            g_wide_ui_shape = 1.0f;
+            float shape = wide_ui_shape_wanted();
+            if (wide_ui_archive(arc2, an, wide, (int)(sizeof wide / sizeof *wide), shape) > 0) g_wide_ui_shape = shape;
+        }
         for (int i = 0; i < 4 && !why; i++) {
             int li = sarc_find(arc, an, layouts[i], &adoff, &as, &ae);
             if (li < 0 || ae - as > 0x2000 - 64) { why = "layout not found"; break; }
@@ -1160,6 +1225,7 @@ static void rom_index(void) {
         break;
     }
     hud_letters_patch(fmeta, foff, fsz);
+    title_wide_patch(fmeta, foff, fsz);
     if (R == &images[0] && !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire))
         LOG("[fs] Inventory clip layout unavailable; using the game's clipping\n");
     rstb_patch(fmeta, foff, fsz);

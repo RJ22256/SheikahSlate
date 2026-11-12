@@ -49,6 +49,7 @@ extern int16_t g_bind_key[BIND_KEY_COUNT];  // SDL_Scancode or BIND_MOUSE + butt
 bool bind_pad_slot(int slot);               // does the controller bind this input? the 16 buttons and BIND_FLY
 
 const char *bind_input_name(int slot);         // "A", "D-pad Up", "Left stick Up"
+const char *bind_action_name(int slot);        // what it does in the game: "Jump", "Attack", "Move forward"
 const char *bind_pad_label(int host, int fam); // controller button in the pad family's own words (fam: input_pad_family)
 const char *bind_key_label(int scancode);
 int bind_label_family(void);                   // the connected controller's family (also on the start screen)

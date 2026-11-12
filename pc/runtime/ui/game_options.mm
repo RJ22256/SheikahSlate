@@ -353,6 +353,11 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more of the world on screens that aren't 16:9 (wider or taller), instead of bars.",
                        [](const Item &) { return (int)g_settings.wide_view; },
                        [](const Item &, int x) { g_settings.wide_view = x; }, 1));
+    v.push_back(toggle(P_VIDEO, "Wide HUD and menus",
+                       "On screens wider than 16:9: the HUD at the edges, the start screen filled, more map to the sides. "
+                       "Applies after a restart.",
+                       [](const Item &) { return (int)g_settings.wide_ui; },
+                       [](const Item &, int x) { g_settings.wide_ui = x; }, 1));
     v.push_back(choice(P_VIDEO, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
                        [](const Item &) { return N(k_fov); },
                        [](const Item &, int x) {
@@ -645,7 +650,7 @@ void build_items(void) {
                        [](const Item &) { return g_settings.motion_invert & 3; },
                        [](const Item &, int x) { g_settings.motion_invert = x; }, 0));
     {   // the tilt key: held, the mouse tilts the controller (for motion puzzles without a gyroscope)
-        Item it = button(P_CONTROLS, bind_input_name(BIND_TILT),
+        Item it = button(P_CONTROLS, bind_action_name(BIND_TILT),
                          "Hold it and move the mouse to tilt the controller. Press A, then the new key.", nullptr,
                          A_BIND_KEY, BIND_TILT);
         it.label = bind_label;
@@ -658,17 +663,29 @@ void build_items(void) {
                        [](const Item &) { return g_settings.button_icons; },
                        [](const Item &, int x) { g_settings.button_icons = x; }, ICONS_AUTO));
 
-    // Keyboard and controller: one button per Switch input, showing what drives it; A waits for the new one
+    // Keyboard and controller: one button per input, named by what it does in the game (Jump, Attack, Move forward),
+    // showing what drives it; A waits for the new one. The Switch's button it stands for is in the description.
     auto bind = [&](int page, int action, int slot) {
-        Item it = button(page, bind_input_name(slot),
+        Item it = button(page, bind_action_name(slot),
                          action == A_BIND_KEY ? "Press A, then the new key. Esc cancels."
                                               : "Press A, then the new button.",
                          nullptr, action, slot);
         it.label = bind_label;
-        if (action == A_BIND_KEY) it.desc_fn = [](const Item &) {
+        it.desc_fn = [](const Item &it) {
             static std::string desc;
-            desc = std::string(tr("Press A, then the new key. Esc cancels.")) + " " +
-                   tr("In the title, pause and map menus, unbound arrow keys act as the left stick and Enter selects.");
+            bool key = it.action == A_BIND_KEY;
+            desc = std::string(tr(key ? "Press A, then the new key. Esc cancels." : "Press A, then the new button."));
+            if (key) desc += std::string(" ") + tr("In the title, pause and map menus, unbound arrow keys act as the left stick and Enter selects.");
+            if (it.arg < BIND_LS_UP) {
+                char sw[96];
+                snprintf(sw, sizeof sw, tr("(The Switch's %s. The game's Jump button option swaps Jump and Sprint.)"),
+                         tr(bind_input_name(it.arg)));
+                if (it.arg == BIND_X || it.arg == BIND_B) desc += std::string(" ") + sw;
+                else {
+                    snprintf(sw, sizeof sw, tr("(The Switch's %s.)"), tr(bind_input_name(it.arg)));
+                    desc += std::string(" ") + sw;
+                }
+            }
             return desc.c_str();
         };
         v.push_back(it);

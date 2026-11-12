@@ -726,3 +726,110 @@ bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, 
     if (nlog++ < 16) LOG("[glyphs] layout icon %04X (%ux%u): %s icons%s\n", li->code, w, h, k_kind_names[kind], drawn ? "" : ", kept");
     return true;
 }
+
+// ---- (WSword) the controls screen's picture as a keyboard (System > Controls; nvn/pad_illust.c finds the picture)
+// The game's picture is the handheld Switch from the front (576x288) and the top (576x100), grey + alpha, with the
+// screen's label lines led to its buttons. On the keyboard it becomes a keyboard: a deck with rows of keys, and at
+// every button's place the key (or mouse button) bound to it, labelled - so each line still ends at what does that.
+
+typedef struct { float x, y; int slot; float size; } PicKey;  // a button's place in the picture, its input
+enum { PK_BLANK = -1, PK_LSTICK_KEYS = -2, PK_RSTICK_MOUSE = -3 };
+
+static const PicKey k_front[] = {
+    {81, 53, BIND_MINUS, 22},  {494, 53, BIND_PLUS, 22},
+    {58, 84, PK_LSTICK_KEYS, 34}, {58, 106, BIND_LSTICK, 18},
+    {58, 134, BIND_UP, 22},    {40, 151, BIND_LEFT, 22},  {76, 151, BIND_RIGHT, 22}, {58, 169, BIND_DOWN, 22},
+    {71, 194, PK_BLANK, 14},   {505, 194, PK_BLANK, 14},
+    {517, 71, BIND_X, 18},     {499, 88, BIND_Y, 18},     {535, 88, BIND_A, 18},     {517, 105, BIND_B, 18},
+    {517, 147, PK_RSTICK_MOUSE, 36},
+};
+static const PicKey k_top[] = {
+    {47, 23, BIND_ZL, 24}, {47, 45, BIND_L, 22}, {529, 23, BIND_ZR, 24}, {529, 45, BIND_R, 22},
+};
+
+// luminance and alpha into the picture (RG8: R grey, G alpha), a over what is there
+static void pic_put(uint8_t *lin, uint32_t row, int x, int y, float grey, float a) {
+    uint8_t *p = lin + (uint64_t)y * row + 2 * (uint64_t)x;
+    float g0 = p[0], a0 = p[1] / 255.0f, ao = a + a0 * (1 - a);
+    float g = ao > 0 ? (grey * a + g0 * a0 * (1 - a)) / ao : 0;
+    p[0] = (uint8_t)lroundf(clampf(g, 0, 255)), p[1] = (uint8_t)lroundf(clampf(ao * 255, 0, 255));
+}
+
+static void pic_box(uint8_t *lin, uint32_t row, uint32_t w, uint32_t h, float cx, float cy, float hw, float hh, float r,
+                    float grey, float alpha) {
+    Shape s = box(cx, cy, hw, hh, r);
+    for (int y = (int)floorf(cy - hh - 1); y <= (int)ceilf(cy + hh + 1); y++)
+        for (int x = (int)floorf(cx - hw - 1); x <= (int)ceilf(cx + hw + 1); x++) {
+            if (x < 0 || y < 0 || x >= (int)w || y >= (int)h) continue;
+            float a = cover(sd(&s, x + 0.5f, y + 0.5f));
+            if (a > 0) pic_put(lin, row, x, y, grey, a * alpha);
+        }
+}
+
+// One icon drawn in a cell canvas (a 40-unit box) and set into the picture size units wide at (cx, cy)
+static void pic_icon(uint8_t *lin, uint32_t row, uint32_t w, uint32_t h, const PicKey *k, float grey) {
+    static Canvas cv;
+    memset(&cv, 0, sizeof cv);
+    Box b = {CELL / 2.0f, CELL / 2.0f, 40, 80};
+    if (k->slot == PK_LSTICK_KEYS) {
+        static const int ls[4] = {BIND_LS_UP, BIND_LS_DOWN, BIND_LS_LEFT, BIND_LS_RIGHT};
+        keys_icon(&cv, b, ls, DIR_U | DIR_D | DIR_L | DIR_R);
+    } else if (k->slot == PK_RSTICK_MOUSE) {  // the camera: the mouse (its press's button lit), or the camera keys
+        static const int rs[4] = {BIND_RS_UP, BIND_RS_DOWN, BIND_RS_LEFT, BIND_RS_RIGHT};
+        int press = g_bind_key[BIND_RSTICK];
+        if (g_settings.mouse_camera)
+            mouse(&cv, b, press > BIND_MOUSE && press <= BIND_MOUSE_LAST ? press - BIND_MOUSE : 0,
+                  DIR_U | DIR_D | DIR_L | DIR_R);
+        else keys_icon(&cv, b, rs, DIR_U | DIR_D | DIR_L | DIR_R);
+    } else if (k->slot == PK_BLANK) {
+        keycap(&cv, b, "", 0);
+    } else {
+        key_icon(&cv, b, g_bind_key[k->slot]);
+    }
+    float scale = 40.0f / k->size;  // canvas units per picture pixel
+    int r = (int)ceilf(k->size * CELL / 80.0f) + 1;
+    for (int y = (int)k->y - r; y <= (int)k->y + r; y++)
+        for (int x = (int)k->x - r; x <= (int)k->x + r; x++) {
+            if (x < 0 || y < 0 || x >= (int)w || y >= (int)h) continue;
+            float a = 0;  // 2x2 samples of the canvas under the pixel
+            for (int sy = 0; sy < 2; sy++)
+                for (int sx = 0; sx < 2; sx++) {
+                    float fx = CELL / 2.0f + (x + 0.25f + 0.5f * sx - k->x) * scale;
+                    float fy = CELL / 2.0f + (y + 0.25f + 0.5f * sy - k->y) * scale;
+                    int ix = (int)fx, iy = (int)fy;
+                    if (ix >= 0 && iy >= 0 && ix < CELL && iy < CELL) a += cv.a[iy * CELL + ix] / 4;
+                }
+            if (a > 0) pic_put(lin, row, x, y, grey, a);
+        }
+}
+
+bool glyphs_controls_keyboard(uint32_t w, uint32_t h, uint8_t *lin, uint32_t row) {
+    if (resolve_kind() != ICONS_KEYBOARD) return false;
+    bool front = h == 288;
+    for (uint32_t y = 0; y < h; y++) memset(lin + (uint64_t)y * row, 0, (size_t)w * 2);
+    const float body = 196, deck = 168, idle = 120, key = 52;
+    if (front) {
+        pic_box(lin, row, w, h, 288, 144, 268, 116, 26, 140, 1);   // the keyboard: rim
+        pic_box(lin, row, w, h, 288, 144, 265, 113, 24, body, 1);  // its top
+        pic_box(lin, row, w, h, 288, 136, 168, 82, 8, deck, 1);    // the key deck in the middle
+        for (int r = 0; r < 5; r++)                                // its rows of keys (no labels: the deck)
+            for (int c = 0; c < 13; c++) {
+                float cx = 128 + 12 + c * 24.8f + (r == 4 ? 0 : r * 3.0f), cy = 70 + r * 30.0f;
+                if (r == 4 && c > 0 && c < 12) {  // the space bar row: one long key in the middle
+                    if (c == 6) pic_box(lin, row, w, h, 288, cy, 100, 11, 3, idle, 1);
+                    if (c > 1 && c < 11) continue;
+                }
+                if (cx + 11 > 455) continue;
+                pic_box(lin, row, w, h, cx, cy, 10.5f, 11, 3, idle, 1);
+            }
+    } else {
+        pic_box(lin, row, w, h, 288, 36, 268, 32, 14, 140, 1);  // the keyboard from behind: its back edge, the keys
+        pic_box(lin, row, w, h, 288, 36, 265, 29, 12, body, 1);  // at the shoulder buttons' places on it
+    }
+    const PicKey *keys = front ? k_front : k_top;
+    size_t n = front ? sizeof k_front / sizeof *k_front : sizeof k_top / sizeof *k_top;
+    for (size_t i = 0; i < n; i++) pic_icon(lin, row, w, h, &keys[i], keys[i].slot == PK_BLANK ? idle : key);
+    static int nlog;
+    if (nlog++ < 4) LOG("[glyphs] controls screen: the keyboard (%ux%u)\n", w, h);
+    return true;
+}

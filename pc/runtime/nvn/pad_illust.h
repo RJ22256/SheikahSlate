@@ -17,3 +17,5 @@ uint8_t *pad_illust_layout(size_t *n);
 // A texture going up (nvn/vulkan/textures.c: RG8, level 0, deswizzled): true if it was one of the game's two
 // controller pictures and the player's replaced it
 bool pad_illust_apply(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, uint32_t row);
+// The texture is one of the game's two controller pictures as it is (before anything replaced it)
+bool pad_illust_picture(uint32_t format, uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row);

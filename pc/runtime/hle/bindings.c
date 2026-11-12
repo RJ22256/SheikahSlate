@@ -58,6 +58,19 @@ static const char *const k_names[BIND_KEY_COUNT] = {
     "Gyro turn left (only in shrines)", "Gyro turn right (only in shrines)", "Gyro recenter (only in shrines)",
     "Fly mode (test builds)",
 };
+// What each input does in the game (the settings' binding rows name these, not the Switch's buttons)
+static const char *const k_actions[BIND_KEY_COUNT] = {
+    "Action (talk, pick up, open)", "Sprint / Cancel", "Jump", "Attack", "Crouch", "Look around (scope)", "Use rune",
+    "Throw weapon", "Shield / Lock on", "Bow", "Inventory (pause menu)", "Map",
+    "Shields (quick menu)", "Runes (quick menu)", "Weapons (quick menu)", "Whistle",
+    "Move forward", "Move back", "Move left", "Move right", "Camera up", "Camera down", "Camera left", "Camera right",
+    "Walk (hold)", "Tilt with the mouse (hold)",
+    "Gyro tilt up (only in shrines)", "Gyro tilt down (only in shrines)", "Gyro tilt left (only in shrines)", "Gyro tilt right (only in shrines)",
+    "Gyro turn left (only in shrines)", "Gyro turn right (only in shrines)", "Gyro recenter (only in shrines)",
+    "Fly mode (test builds)",
+};
+const char *bind_action_name(int slot) { return slot >= 0 && slot < BIND_KEY_COUNT ? k_actions[slot] : "?"; }
+
 // controller buttons by position (savagewind.ini)
 static const char *const k_pad_ini[PADB_HOST_COUNT] = {
     "south", "east", "west", "north", "back", "guide", "start", "lstick", "rstick", "lshoulder", "rshoulder",
