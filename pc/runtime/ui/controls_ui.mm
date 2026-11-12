@@ -70,18 +70,18 @@ extern "C" void controls_bindings_draw(float scale) {
         if (kind == 5)
             snprintf(msg, sizeof msg, "%s", tr(rdev == BIND_DEV_PAD ? "Controller bindings reset to the defaults."
                                                                      : "Keyboard bindings reset to the defaults."));
-        else if (kind == 1) snprintf(msg, sizeof msg, tr("%s is now %s."), tr(bind_action_name(rslot)), now);
+        else if (kind == 1) snprintf(msg, sizeof msg, tr("%s is now %s."), tr(bind_input_name(rslot)), now);
         else if (kind == 2)
-            snprintf(msg, sizeof msg, tr("%s is now %s; %s moved to %s (swapped)."), tr(bind_action_name(rslot)), now,
-                     tr(bind_action_name(rother)), tr(rdev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[rother], fam) : bind_key_label(g_bind_key[rother])));
-        else if (kind == 3) snprintf(msg, sizeof msg, tr("Cancelled: %s unchanged."), tr(bind_action_name(rslot)));
-        else if (kind == 4) snprintf(msg, sizeof msg, tr("Nothing pressed: %s unchanged."), tr(bind_action_name(rslot)));
+            snprintf(msg, sizeof msg, tr("%s is now %s; %s moved to %s (swapped)."), tr(bind_input_name(rslot)), now,
+                     tr(bind_input_name(rother)), tr(rdev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[rother], fam) : bind_key_label(g_bind_key[rother])));
+        else if (kind == 3) snprintf(msg, sizeof msg, tr("Cancelled: %s unchanged."), tr(bind_input_name(rslot)));
+        else if (kind == 4) snprintf(msg, sizeof msg, tr("Nothing pressed: %s unchanged."), tr(bind_input_name(rslot)));
         if (kind == 1 || kind == 2 || kind == 5) settings_save();
     }
     if (msg[0]) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", msg);
 
     if (ImGui::BeginTable("##binds", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
-        ImGui::TableSetupColumn(tr("Action"), ImGuiTableColumnFlags_WidthStretch, 1.4f);
+        ImGui::TableSetupColumn("Switch", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn(tr("Controller"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
         ImGui::TableSetupColumn(tr("Keyboard"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
         ImGui::TableHeadersRow();
@@ -98,7 +98,7 @@ extern "C" void controls_bindings_draw(float scale) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(tr(bind_action_name(slot)));
+            ImGui::TextUnformatted(tr(bind_input_name(slot)));
             ImGui::TableNextColumn();
             if (bind_pad_slot(slot)) cell(BIND_DEV_PAD, slot, fam, cd, cs, ms);
             else ImGui::TextDisabled("%s", tr(slot == BIND_WALK ? "Tilt the stick" : slot == BIND_TILT ? "Motion sensors" :

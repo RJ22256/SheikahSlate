@@ -106,7 +106,6 @@ typedef struct {
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
     int shadow_res;      // SHADOW_*: shadow maps at the console's size or bigger
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
-    bool wide_ui;        // with wide_view on a wider window: the HUD, start screen and map laid out across it (services/wide_ui.c)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int hdr_peak;        // (WSword) nits the brightest highlights reach in HDR (0: none past SDR's white - the PC's)

@@ -35,11 +35,6 @@ uint8_t *pad_illust_layout(size_t *n) {
     return b;
 }
 
-bool pad_illust_picture(uint32_t format, uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row) {
-    if (format != FMT_RG8 || w != 576 || (h != 288 && h != 100) || row < w * 2) return false;
-    return fnv1a_rows(lin, (size_t)w * 2, row, h) == k_hash[h == 288 ? 0 : 1];
-}
-
 bool pad_illust_apply(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, uint32_t row) {
     if (format != FMT_RG8 || w != 576 || (h != 288 && h != 100) || row < w * 2) return false;
     int k = h == 288 ? 0 : 1;

@@ -38,7 +38,6 @@ Settings g_settings = {
     .precompile_shaders = true,
     .vsync = VSYNC_DEFAULT,
     .wide_view = true,
-    .wide_ui = true,
     .fov = 100,
     .color_lut_strength = 100,
 #ifdef __PROSPERO__
@@ -201,7 +200,6 @@ void settings_load(void) {
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
-        else if (!strcmp(key, "wide_ui")) g_settings.wide_ui = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
             for (int i = 0; i < HDR_COUNT; i++)
                 if (!strcmp(val, k_hdr[i])) g_settings.hdr = i;
@@ -373,7 +371,6 @@ void settings_save(void) {
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
-    fprintf(f, "wide_ui = %d\n", g_settings.wide_ui);
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
     fprintf(f, "hdr_peak = %d\n", g_settings.hdr_peak);

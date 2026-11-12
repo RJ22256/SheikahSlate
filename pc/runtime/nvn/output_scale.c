@@ -26,7 +26,6 @@
 #include "../platform.h"
 #include "../settings.h"
 #include "output_scale.h"
-#include "../services/wide_ui.h"
 
 #define MAX_TEX 16384.0
 #define SCENE_LINES 900.0  // the height of the game's 3D scene targets (docked)
@@ -114,9 +113,7 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     // (#125); the HUD keeps its 16:9 layout in the middle either way. The start screen and its menus, a 16:9 layout
     // over 16:9 pictures with no world to show more of, keep the 16:9 picture with bars, and so does the loading screen
     // (#98: widened, its tip went to the window's edges and its logo stayed in the 16:9 middle).
-    // (Wide HUD and menus, services/wide_ui.c: the start screen laid out for the wide window, so widened too)
-    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && (!framepace_title_ui() || g_wide_ui_shape > 1.0f) &&
-                   !framepace_loading_ui();
+    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !framepace_title_ui() && !framepace_loading_ui();
     if (!reshape) shape = 1.0;
     // render height in units of the Switch's 1080 lines: the window's (Metal: divided by the upscaler's factor)
 #ifdef __APPLE__

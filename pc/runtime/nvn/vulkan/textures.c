@@ -1045,12 +1045,8 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
             if (lv == 0 && layer == 0 && t->format == 0x01 && !linear &&  // (the HUD's button textures, likewise)
                 glyphs_apply_layout(t->format, l.w, l.h, lin, row))
                 b->glyph_gen = glyphs_generation();
-            if (lv == 0 && layer == 0 && t->format == 0x0D && !linear &&  // (the controls screen's picture: the
-                pad_illust_picture(t->format, l.w, l.h, lin, row)) {       // player's, else a keyboard on the keyboard,
-                if (!pad_illust_apply(t->format, l.w, l.h, lin, row))     // going up again when the device changes)
-                    glyphs_controls_keyboard(l.w, l.h, lin, row);
-                b->glyph_gen = glyphs_generation();
-            }
+            if (lv == 0 && layer == 0 && t->format == 0x0D && !linear)  // (the controls screen's picture, the player's)
+                pad_illust_apply(t->format, l.w, l.h, lin, row);
             if (t->target == 2 && lv == 0 && getenv("SAVAGEWIND_DUMP_TEX3D")) {  // (debugging) 3D texels as uploaded
                 char path[128];
                 snprintf(path, sizeof path, "build/tex3d_%llu_%ux%ux%u_f%x.raw", (unsigned long long)t->debug_id, l.w, l.h, l.d,

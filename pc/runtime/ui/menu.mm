@@ -912,19 +912,9 @@ static void tab_display(void) {
         if (opt_toggle("Fill wide screens", &wv, true,
                        "On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: "
                        "to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). "
-                       "With Wide HUD and menus off, the HUD stays 16:9 in the middle and the start screen is "
-                       "shown 16:9."))
+                       "The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown "
+                       "16:9."))
             g_settings.wide_view = wv;
-    }
-    {   // Wide HUD and menus (runtime/services/wide_ui.c: the layouts, as the game opens its files)
-        bool wu = g_settings.wide_ui;
-        ImGui::BeginDisabled(!g_settings.wide_view);
-        if (opt_toggle("Wide HUD and menus", &wu, true,
-                       "On a window or screen wider than 16:9 (21:9, 32:9): the hearts, mini-map, button prompts and "
-                       "the rest of the HUD go to the screen's edges, the start screen fills it, and the map shows "
-                       "more to the sides. The pause menu's pages stay in the middle. Applies after a restart."))
-            g_settings.wide_ui = wu;
-        ImGui::EndDisabled();
     }
 #endif
     {   // Field of view (runtime/nvn/output_scale.c rt_persp)

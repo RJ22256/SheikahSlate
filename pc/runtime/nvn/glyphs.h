@@ -15,8 +15,3 @@ bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, 
 
 // Changes whenever the icons to draw change (device, bindings, setting): sheets uploaded under another one go up again.
 uint32_t glyphs_generation(void);
-
-// (WSword) The controls screen's picture (576x288 front, 576x100 top, RG8 rows `row` bytes apart in lin: nvn/pad_illust.c
-// found it) drawn as a keyboard with the bound keys at the buttons' places, when the keyboard is in use (Button icons);
-// false: not the keyboard, the picture stays.
-bool glyphs_controls_keyboard(uint32_t w, uint32_t h, uint8_t *lin, uint32_t row);
