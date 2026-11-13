@@ -311,6 +311,8 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   [CINEMA 3](https://freshluts.com/luts/219) and "Dormant" is [CARIBE](https://freshluts.com/luts/217), both
   uploaded by Andy; "Ember" is [powerful cold](https://freshluts.com/luts/107), uploaded by sagi hershkovich
   (`third_party/luts/README.md`).
+- The amiibo bar's list of figures (their public ids and names) comes from
+  [AmiiboAPI](https://github.com/N3evin/AmiiboAPI) (MIT); no figure's data or keys.
 
 ## License
 
